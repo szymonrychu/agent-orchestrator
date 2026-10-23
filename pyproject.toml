@@ -13,7 +13,7 @@ dependencies = [
     "pydantic",
     "pydantic-settings",
     "pyyaml",
-    "any-mcp @ git+https://github.com/szymonrychu/any-mcp@2b9cc653173a95aa74c73568db0c383ba2cd9618",
+    "any-mcp @ git+https://github.com/szymonrychu/any-mcp@v0.1.0",
 ]
 
 [project.scripts]

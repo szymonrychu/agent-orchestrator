@@ -34,7 +34,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "any-mcp", git = "https://github.com/szymonrychu/any-mcp?rev=2b9cc653173a95aa74c73568db0c383ba2cd9618" },
+    { name = "any-mcp", git = "https://github.com/szymonrychu/any-mcp?rev=v0.1.0" },
     { name = "fastapi", specifier = "==0.160.0" },
     { name = "httpx" },
     { name = "lightkube", specifier = "==1.0.1" },
@@ -87,7 +87,7 @@ wheels = [
 [[package]]
 name = "any-mcp"
 version = "0.1.0"
-source = { git = "https://github.com/szymonrychu/any-mcp?rev=2b9cc653173a95aa74c73568db0c383ba2cd9618#2b9cc653173a95aa74c73568db0c383ba2cd9618" }
+source = { git = "https://github.com/szymonrychu/any-mcp?rev=v0.1.0#2b9cc653173a95aa74c73568db0c383ba2cd9618" }
 dependencies = [
     { name = "fastmcp" },
     { name = "httpx" },
