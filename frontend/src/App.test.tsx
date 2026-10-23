@@ -187,15 +187,12 @@ describe('App', () => {
 })
 
 describe('ribbon retirement', () => {
-  test('ribbon_files_retired', async () => {
-    // No @types/node in this project: load the module by a non-literal specifier.
-    const specifier = 'node:child_process'
-    const { execFileSync } = (await import(/* @vite-ignore */ specifier)) as { execFileSync: (cmd: string, args: string[], opts: { encoding: 'utf8' }) => string }
-    const tracked = execFileSync('git', ['ls-files', '--', 'src/ribbon', 'src/layout/Shell.tsx'], { encoding: 'utf8' }).split('\n').filter(Boolean)
-    for (const gone of ['Ribbon.tsx', 'ClusterRow.tsx', 'Ribbon.test.tsx']) {
-      expect(tracked.filter((f) => f.endsWith(`ribbon/${gone}`))).toEqual([])
+  test('ribbon_files_retired', () => {
+    // Filesystem check via Vite's glob (keys only, nothing is imported), independent of git state.
+    const onDisk = Object.keys(import.meta.glob(['./ribbon/*', './layout/*']))
+    for (const gone of ['./ribbon/Ribbon.tsx', './ribbon/ClusterRow.tsx', './ribbon/Ribbon.test.tsx', './layout/Shell.tsx']) {
+      expect(onDisk).not.toContain(gone)
     }
-    expect(tracked.filter((f) => f.endsWith('layout/Shell.tsx'))).toEqual([])
-    expect(tracked.some((f) => f.endsWith('ribbon/useClusters.ts'))).toBe(true)
+    expect(onDisk).toContain('./ribbon/useClusters.ts')
   })
 })
