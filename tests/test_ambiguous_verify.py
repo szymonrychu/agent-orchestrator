@@ -238,14 +238,22 @@ async def test_unknown_outcome_waits_then_fails_at_deadline(env):
         # only the user's explicit Retry sends it again
         async with env.pool.connection() as conn:
             assert await q.retry_message(conn, unreachable_m["id"])
-        await env.exec(
-            "UPDATE agents SET last_dispatched_at = NULL WHERE id=%s", (reachable["id"],)
-        )
         await d.drain()
         assert (await env.message(unreachable_m["id"]))["status"] == "sent"
         assert env.fake.received_turns == 1
     finally:
         await d.aclose()
+
+
+async def test_ambiguous_fail_keeps_newer_reservation(env):
+    agent = await env.agent()
+    m = await env.verifying(agent, age=DEADLINE + 0.1)
+    await env.exec("UPDATE agents SET last_dispatched_at = now() WHERE id=%s", (agent["id"],))
+    newer = (await env.agent_row(agent["id"]))["last_dispatched_at"]
+    async with env.pool.connection() as conn:
+        assert await q.fail_ambiguous(conn, m["id"])
+        assert await q.retry_message(conn, m["id"])
+    assert (await env.agent_row(agent["id"]))["last_dispatched_at"] == newer
 
 
 async def test_stale_dispatching_resolved_by_verifier(env):

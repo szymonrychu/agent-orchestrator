@@ -154,6 +154,15 @@ async def cancel_message(conn: psycopg.AsyncConnection, id: int) -> bool:
     return row is not None
 
 
+async def _release_reservation(conn: psycopg.AsyncConnection, row: dict) -> None:
+    """Clear the agent's reservation, only while it is still this message's."""
+    if row.get("agent_id") is not None and row.get("dispatched_at") is not None:
+        await conn.execute(
+            "UPDATE agents SET last_dispatched_at = NULL WHERE id = %s AND last_dispatched_at = %s",
+            (row["agent_id"], row["dispatched_at"]),
+        )
+
+
 async def retry_message(conn: psycopg.AsyncConnection, id: int) -> bool:
     """The user's explicit Retry of a failed message: a fresh attempt budget."""
     async with conn.transaction():
@@ -161,11 +170,13 @@ async def retry_message(conn: psycopg.AsyncConnection, id: int) -> bool:
             conn,
             "UPDATE messages SET status = 'queued', attempts = 0, error = NULL,"
             " not_before = NULL, ambiguous_at = NULL, heartbeat_at = NULL"
-            " WHERE id = %(id)s AND status = 'failed' RETURNING cluster_id",
+            " WHERE id = %(id)s AND status = 'failed'"
+            " RETURNING cluster_id, agent_id, dispatched_at",
             {"id": id},
         )
         if row is None:
             return False
+        await _release_reservation(conn, row)
         await notify(conn, "message_queued", {"cluster_id": str(row["cluster_id"])})
         return True
 
@@ -500,24 +511,24 @@ async def resolve_not_started(
         )
         if row is None:
             return None
-        if row["agent_id"] is not None and row["dispatched_at"] is not None:
-            await conn.execute(
-                "UPDATE agents SET last_dispatched_at = NULL"
-                " WHERE id = %s AND last_dispatched_at = %s",
-                (row["agent_id"], row["dispatched_at"]),
-            )
+        await _release_reservation(conn, row)
         return row["status"]
 
 
 async def fail_ambiguous(conn: psycopg.AsyncConnection, id: int) -> bool:
     """No definite answer by the deadline: failed as ambiguous; only Retry re-sends it."""
-    row = await _transition(
-        conn,
-        "UPDATE messages SET status = 'failed', error = 'ambiguous'"
-        " WHERE id = %(id)s AND status = 'verifying' RETURNING cluster_id",
-        {"id": id},
-    )
-    return row is not None
+    async with conn.transaction():
+        row = await _transition(
+            conn,
+            "UPDATE messages SET status = 'failed', error = 'ambiguous'"
+            " WHERE id = %(id)s AND status = 'verifying'"
+            " RETURNING cluster_id, agent_id, dispatched_at",
+            {"id": id},
+        )
+        if row is None:
+            return False
+        await _release_reservation(conn, row)
+        return True
 
 
 async def verify_stale_dispatching(conn: psycopg.AsyncConnection, older_than_seconds: float) -> int:

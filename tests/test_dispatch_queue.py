@@ -606,7 +606,7 @@ async def test_gone_target_fails_with_target_gone(pool):
 # ---------------------------------------------------------------- ambiguous sends
 
 
-async def test_ambiguous_keeps_reservation(pool):
+async def test_ambiguous_keeps_reservation_until_failed(pool):
     cid = (await insert_cluster(pool))["id"]
     agent = await _ready_agent(pool, cid, free_ago=30)
     m1 = await _enqueue(pool, cid, "maybe")
@@ -622,10 +622,7 @@ async def test_ambiguous_keeps_reservation(pool):
     assert await _claim(pool) is None
     assert await _call(pool, q.fail_ambiguous, m1) is True
     assert (await _msg(pool, m1))["status"] == "failed"
-    assert await _claim(pool) is None
-    assert (await _msg(pool, m2))["status"] == "queued"
-
-    await _set_free(pool, agent["id"])
+    # the failed message released its reservation, so the agent is pickable again
     c2 = await _claim(pool)
     assert (c2.message_id, c2.agent_id) == (m2, agent["id"])
 
