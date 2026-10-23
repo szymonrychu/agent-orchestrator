@@ -127,6 +127,54 @@ async def test_notify_listen_roundtrip(dsn, pool):
     await stream.aclose()
 
 
+async def test_listen_reconnects_after_connection_killed(dsn, pool):
+    stream = listen(dsn, ["orch_rc"], initial_backoff=0.05, max_backoff=0.2)
+    got: list = []
+
+    async def reader():
+        async for item in stream:
+            got.append(item)
+            if len(got) == 2:
+                return
+
+    async def wait_listener() -> None:
+        for _ in range(100):
+            async with pool.connection() as conn:
+                cur = await conn.execute(
+                    "SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'LISTEN%%'"
+                    " AND pid <> pg_backend_pid() AND datname = current_database()"
+                )
+                if (await cur.fetchone())[0]:
+                    return
+            await asyncio.sleep(0.05)
+        raise AssertionError("listener never connected")
+
+    task = asyncio.create_task(reader())
+    await wait_listener()
+    async with pool.connection() as conn:
+        await notify(conn, "orch_rc", {"n": 1})
+    for _ in range(100):
+        if got:
+            break
+        await asyncio.sleep(0.05)
+    assert got == [("orch_rc", {"n": 1})]
+    async with pool.connection() as conn:
+        await conn.execute(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity"
+            " WHERE query LIKE 'LISTEN%%' AND pid <> pg_backend_pid()"
+            " AND datname = current_database()"
+        )
+    for _ in range(100):
+        await asyncio.sleep(0.1)
+        async with pool.connection() as conn:
+            await notify(conn, "orch_rc", {"n": 2})
+        if len(got) == 2:
+            break
+    await asyncio.wait_for(task, 5)
+    assert got[1] == ("orch_rc", {"n": 2})
+    await stream.aclose()
+
+
 async def test_dispatch_columns_and_rebootstrap_kind(pool):
     assert "last_dispatched_at" in _columns(pool.conninfo, "agents")
     assert "wrapper_idle_since" in _columns(pool.conninfo, "agent_status")
