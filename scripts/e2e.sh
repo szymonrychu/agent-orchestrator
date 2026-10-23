@@ -257,12 +257,21 @@ echo "ORCH_PVC_STORAGE_CLASS=$STORAGE_CLASS"
 
 log "namespace $NS and the e2e Postgres"
 kubectl create namespace "$NS"
+# credentials are generated per run; nothing secret-shaped is committed
+gen_secret() { openssl rand -hex 16; }
+PG_PASSWORD="$(gen_secret)"
+MASTER_KEY="$(gen_secret)"
+CLAUDE_TOKEN="$(gen_secret)"
+kubectl -n "$NS" create secret generic postgres-credentials --from-literal="password=$PG_PASSWORD"
 kubectl -n "$NS" apply -f e2e/manifests/postgres.yaml
 kubectl -n "$NS" rollout status deployment/postgres --timeout=300s
 
 log "helm install $RELEASE"
 helm install "$RELEASE" chart/agent-orchestrator -n "$NS" -f e2e/values-kind.yaml \
-  --set-string "env.ORCH_PVC_STORAGE_CLASS=$STORAGE_CLASS" --wait --timeout 10m
+  --set-string "env.ORCH_PVC_STORAGE_CLASS=$STORAGE_CLASS" \
+  --set-string "postgres.url=postgresql://orch:$PG_PASSWORD@postgres:5432/orch" \
+  --set-string "masterKey.value=$MASTER_KEY" \
+  --set-string "claude.token=$CLAUDE_TOKEN" --wait --timeout 10m
 
 log "helm test $RELEASE"
 helm test "$RELEASE" -n "$NS" --timeout 5m

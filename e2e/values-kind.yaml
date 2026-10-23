@@ -7,15 +7,9 @@ image:
 
 agentImage: agent-orchestrator-agent-test:e2e
 
-postgres:
-  url: postgresql://orch:orch-e2e-password@postgres:5432/orch
-
-masterKey:
-  value: e2e-master-key-0123456789abcdef0123456789abcdef
-
-claude:
-  # The test agent image runs the wrapper's fake claude, which never reads the token.
-  token: e2e-dummy-claude-token
+# postgres.url, masterKey.value and claude.token are generated per run by scripts/e2e.sh and
+# passed with --set-string at install time (no secret-shaped literal lives in the repo). The
+# test agent image runs the wrapper's fake claude, which never reads the claude token.
 
 env:
   # kubectl port-forward connects from loopback inside the api pod; every pod-network
