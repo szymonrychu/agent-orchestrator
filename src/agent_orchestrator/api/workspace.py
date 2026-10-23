@@ -13,6 +13,7 @@ a query string, a response, an error message or a log record.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import uuid
@@ -22,12 +23,13 @@ from urllib.parse import quote
 
 import httpx
 import psycopg
-from fastapi import APIRouter, FastAPI, Query, Request
+from fastapi import APIRouter, Depends, FastAPI, Query, Request, Response
 from pydantic import BaseModel, ValidationError
 
 from agent_orchestrator.api import schemas
 from agent_orchestrator.api.clusters import Cfg, Pool
 from agent_orchestrator.api.errors import ApiError, not_found
+from agent_orchestrator.api.origin import require_allowed_origin
 from agent_orchestrator.db import agents as agents_repo
 from agent_orchestrator.db import clusters as clusters_repo
 from agent_orchestrator.settings import Settings, SettingsError
@@ -114,19 +116,50 @@ async def resolve_agent(
     if cluster.desired != "active" or not candidates:
         raise ApiError(409, "agent_not_ready", "no agent of the cluster is ready")
     chosen = candidates[0]
+    return _target(chosen, cluster_id, _cluster_token(settings, cluster_id))
+
+
+def _cluster_token(settings: Settings, cluster_id: uuid.UUID) -> str:
     try:
-        token = tokens_for(settings, cluster_id).auth
+        return tokens_for(settings, cluster_id).auth
     except SettingsError:
         raise ApiError(503, "unavailable", "wrapper access is not configured") from None
-    assert chosen.url is not None and chosen.session_id is not None
+
+
+def _target(agent: agents_repo.Agent, cluster_id: uuid.UUID, token: str) -> WrapperTarget:
+    assert agent.url is not None and agent.session_id is not None
     return WrapperTarget(
-        agent_id=chosen.id,
+        agent_id=agent.id,
         cluster_id=cluster_id,
-        pod_name=chosen.pod_name,
-        url=chosen.url,
-        session_id=chosen.session_id,
+        pod_name=agent.pod_name,
+        url=agent.url,
+        session_id=agent.session_id,
         token=token,
     )
+
+
+async def resolve_agents(
+    conn: psycopg.AsyncConnection, settings: Settings, cluster_id: uuid.UUID
+) -> list[WrapperTarget]:
+    """Every usable agent of the cluster by ordinal (the fan-out of `resolve_agent`'s rule).
+
+    An unknown cluster is 404. A discarding cluster or one with no usable agent yields an empty
+    list, so a fan-out answers with nothing to report; the master key is only needed (503
+    `unavailable` when unset) once there is an agent to call.
+    """
+    cluster = await clusters_repo.get(conn, cluster_id)
+    if cluster is None:
+        raise not_found("cluster")
+    if cluster.desired != "active":
+        return []
+    states = await agents_repo.list_states(conn, cluster_id)
+    usable = [
+        a for a in await agents_repo.list_agents(conn, cluster_id) if _usable(a, states.get(a.id))
+    ]
+    if not usable:
+        return []
+    token = _cluster_token(settings, cluster_id)
+    return [_target(a, cluster_id, token) for a in usable]
 
 
 # -------------------------------------------------------------------------- shared client
@@ -278,3 +311,87 @@ async def file_content(
         {"path": path},
         schemas.FileContent,
     )
+
+
+# -------------------------------------------------------------------------- terminal routes
+
+guarded = [Depends(require_allowed_origin)]
+
+
+def _terminal_view(target: WrapperTarget, body: Any) -> schemas.TerminalView:
+    """The wrapper's terminal record with the agent identity added (its session id dropped)."""
+    try:
+        return schemas.TerminalView.model_validate(
+            {
+                **body,
+                "agent_id": target.agent_id,
+                "cluster_id": target.cluster_id,
+                "pod_name": target.pod_name,
+            }
+        )
+    except (ValidationError, TypeError):
+        raise ApiError(
+            502, "wrapper_error", f"wrapper of {target.pod_name} answered an unexpected body"
+        ) from None
+
+
+def _terminals_path(target: WrapperTarget, tail: str = "") -> str:
+    return f"/sessions/{quote(target.session_id, safe='')}/terminals{tail}"
+
+
+@router.post(
+    "/agents/{agent_id}/terminals",
+    status_code=201,
+    response_model=schemas.TerminalView,
+    dependencies=guarded,
+)
+async def create_terminal(
+    request: Request,
+    pool: Pool,
+    settings: Cfg,
+    agent_id: uuid.UUID,
+    body: schemas.CreateTerminal | None = None,
+) -> schemas.TerminalView:
+    """Start a shell in the agent's session workdir; the wrapper's limits pass through."""
+    async with pool.connection() as conn:
+        target = await resolve_agent(conn, settings, agent_id=agent_id)
+    sizes = body.model_dump(exclude_none=True) if body else {}
+    made = await forward(request.app, target, "POST", _terminals_path(target), json=sizes)
+    return _terminal_view(target, made)
+
+
+async def _agent_terminals(
+    app: FastAPI, target: WrapperTarget
+) -> list[schemas.TerminalView] | None:
+    """One agent's shells, or None when the agent cannot answer."""
+    try:
+        body = await forward(app, target, "GET", _terminals_path(target))
+        return [_terminal_view(target, t) for t in body["terminals"]]
+    except (ApiError, KeyError, TypeError):
+        log.debug("terminals of agent %s unavailable", target.agent_id)
+        return None
+
+
+@router.get("/clusters/{cluster_id}/terminals", response_model=schemas.TerminalList)
+async def list_terminals(
+    request: Request, pool: Pool, settings: Cfg, cluster_id: uuid.UUID
+) -> schemas.TerminalList:
+    """Every ready agent's shells, queried concurrently; failing agents are reported, not fatal."""
+    async with pool.connection() as conn:
+        targets = await resolve_agents(conn, settings, cluster_id)
+    answers = await asyncio.gather(*(_agent_terminals(request.app, t) for t in targets))
+    terminals = [view for found in answers if found for view in found]
+    down = [t.agent_id for t, found in zip(targets, answers, strict=True) if found is None]
+    return schemas.TerminalList(terminals=terminals, unavailable_agents=down)
+
+
+@router.delete("/agents/{agent_id}/terminals/{terminal_id}", status_code=204, dependencies=guarded)
+async def delete_terminal(
+    request: Request, pool: Pool, settings: Cfg, agent_id: uuid.UUID, terminal_id: str
+) -> Response:
+    """Close one shell; an unknown id is the wrapper's 404 `terminal_not_found`."""
+    validate_terminal_id(terminal_id)
+    async with pool.connection() as conn:
+        target = await resolve_agent(conn, settings, agent_id=agent_id)
+    await forward(request.app, target, "DELETE", _terminals_path(target, f"/{terminal_id}"))
+    return Response(status_code=204)

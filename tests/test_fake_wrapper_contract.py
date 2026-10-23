@@ -7,6 +7,7 @@ The `real` leg needs ORCH_TEST_WRAPPER_IMAGE (see tests/fakes/real_wrapper.py) a
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
 from collections.abc import AsyncIterator, Iterator
@@ -15,6 +16,7 @@ from typing import Any
 
 import httpx
 import pytest
+import websockets
 from fakes.fake_wrapper import FakeWrapper
 from fakes.real_wrapper import RealWrapper
 
@@ -553,3 +555,186 @@ async def test_fake_files_paging_and_too_large(fake_leg: Leg, fake: FakeWrapper)
     assert small["kind"] == "text" and small["content"] == "dot\n"
     long = (await leg.http.get(url, params={"path": "src/main.py"})).json()  # 12 bytes
     assert long["kind"] == "too_large" and long["content"] is None and long["size"] == 12
+
+
+# ------------------------------------------------------------------------------ terminals
+
+TERM_FIELDS = {
+    "terminal_id",
+    "session_id",
+    "created_at",
+    "alive",
+    "exit_code",
+    "attached",
+    "rows",
+    "cols",
+}
+MARK = b"contract-marker"
+
+
+async def _term(leg: Leg, **body: Any) -> tuple[str, dict[str, Any]]:
+    sid = await leg.create("term")
+    resp = await leg.http.post(f"/v1/sessions/{sid}/terminals", json=body)
+    assert resp.status_code == 201, resp.text
+    return sid, resp.json()
+
+
+def _attach_url(leg: Leg, sid: str, terminal_id: str) -> str:
+    return (
+        f"{leg.base_url.replace('http', 'ws', 1)}/v1/sessions/{sid}/terminals/{terminal_id}/attach"
+    )
+
+
+def _bearer(token: str = TOKEN) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+async def _read_until(ws: Any, needle: bytes, seen: bytes = b"") -> bytes:
+    """Binary output accumulated until `needle` shows up; control frames are skipped."""
+    async with asyncio.timeout(TIMEOUT):
+        while needle not in seen:
+            frame = await ws.recv()
+            if isinstance(frame, bytes):
+                seen += frame
+    return seen
+
+
+async def _control(ws: Any, frame: dict[str, Any]) -> dict[str, Any]:
+    """Send a control frame and read until the next JSON control frame."""
+    await ws.send(json.dumps(frame))
+    async with asyncio.timeout(TIMEOUT):
+        while True:
+            got = await ws.recv()
+            if isinstance(got, str):
+                return json.loads(got)
+
+
+async def test_terminals_http_lifecycle(leg: Leg) -> None:
+    sid, made = await _term(leg, rows=30, cols=100)
+    assert set(made) == TERM_FIELDS
+    assert made["session_id"] == sid and made["terminal_id"].startswith("term_")
+    assert made["alive"] is True and made["exit_code"] is None and made["attached"] is False
+    assert (made["rows"], made["cols"]) == (30, 100)
+    base = f"/v1/sessions/{sid}/terminals"
+
+    default = (await leg.http.post(base)).json()
+    assert (default["rows"], default["cols"]) == (24, 80)
+
+    listed = (await leg.http.get(base)).json()
+    assert set(listed) == {"terminals"}
+    assert {t["terminal_id"] for t in listed["terminals"]} == {
+        made["terminal_id"],
+        default["terminal_id"],
+    }
+
+    assert (await leg.http.delete(f"{base}/{made['terminal_id']}")).status_code == 204
+    gone = await leg.http.delete(f"{base}/{made['terminal_id']}")
+    assert gone.status_code == 404 and gone.json()["error"]["code"] == "terminal_not_found"
+    left = (await leg.http.get(base)).json()["terminals"]
+    assert [t["terminal_id"] for t in left] == [default["terminal_id"]]
+
+
+async def test_terminals_http_errors(leg: Leg) -> None:
+    sid = await leg.create("term-errors")
+    base = f"/v1/sessions/{sid}/terminals"
+    for body in ({"rows": 0}, {"cols": 1001}, {"rows": 1001, "cols": 1}):
+        resp = await leg.http.post(base, json=body)
+        assert resp.status_code == 422, (body, resp.text)
+        assert resp.json()["error"]["code"] == "invalid_size", (body, resp.text)
+    resp = await leg.http.post(base, json={"shell": "/bin/zsh"})
+    assert resp.status_code == 422 and resp.json()["error"]["code"] == "invalid_request"
+    resp = await leg.http.delete(f"{base}/not-a-terminal")
+    assert resp.status_code == 422 and resp.json()["error"]["code"] == "invalid_request"
+    resp = await leg.http.post("/v1/sessions/ses_unknown/terminals")
+    assert resp.status_code == 404 and resp.json()["error"]["code"] == "not_found"
+    async with httpx.AsyncClient(base_url=leg.base_url) as anon:
+        assert (await anon.post(base)).status_code == 401
+        assert (await anon.get(base)).status_code == 401
+
+
+async def test_terminal_attach_echo_and_replay(leg: Leg) -> None:
+    sid, made = await _term(leg)
+    url = _attach_url(leg, sid, made["terminal_id"])
+    async with websockets.connect(url, additional_headers=_bearer()) as ws:
+        await ws.send(b"echo " + MARK + b"\n")
+        seen = await _read_until(ws, MARK)
+        assert MARK in seen
+        listed = (await leg.http.get(f"/v1/sessions/{sid}/terminals")).json()["terminals"]
+        assert listed[0]["attached"] is True
+    # a second attach replays the scrollback printed meanwhile
+    async with websockets.connect(url, additional_headers=_bearer()) as ws:
+        assert MARK in await _read_until(ws, MARK)
+
+
+async def test_terminal_attach_control_frames(leg: Leg) -> None:
+    sid, made = await _term(leg)
+    url = _attach_url(leg, sid, made["terminal_id"])
+    async with websockets.connect(url, additional_headers=_bearer()) as ws:
+        assert await _control(ws, {"type": "ping"}) == {"type": "pong"}
+        await ws.send(json.dumps({"type": "resize", "cols": 120, "rows": 40}))
+        # out of range and malformed resizes are ignored, the socket stays open
+        for bad in (
+            {"type": "resize", "cols": 0, "rows": 40},
+            {"type": "resize", "cols": 120, "rows": 1001},
+            {"type": "resize", "cols": "x", "rows": 40},
+            {"type": "resize"},
+        ):
+            await ws.send(json.dumps(bad))
+        assert await _control(ws, {"type": "ping"}) == {"type": "pong"}
+        listed = (await leg.http.get(f"/v1/sessions/{sid}/terminals")).json()["terminals"]
+        assert (listed[0]["rows"], listed[0]["cols"]) == (40, 120)
+    async with websockets.connect(url, additional_headers=_bearer()) as ws:
+        await ws.send(json.dumps({"type": "nonsense"}))
+        with pytest.raises(websockets.ConnectionClosed) as closed:
+            async with asyncio.timeout(TIMEOUT):
+                while True:
+                    await ws.recv()
+        assert closed.value.rcvd is not None and closed.value.rcvd.code == 1003
+
+
+async def test_terminal_attach_denied_before_accept(leg: Leg) -> None:
+    sid, made = await _term(leg)
+    tid = made["terminal_id"]
+
+    async def denied(url: str, headers: dict[str, str]) -> int:
+        with pytest.raises(websockets.InvalidStatus) as err:
+            async with websockets.connect(url, additional_headers=headers):
+                pass
+        return err.value.response.status_code
+
+    assert await denied(_attach_url(leg, sid, tid), {}) == 401
+    assert await denied(_attach_url(leg, sid, tid), _bearer("wrong")) == 401
+    assert await denied(_attach_url(leg, sid, "term_0123456789ab"), _bearer()) == 404
+    assert await denied(_attach_url(leg, "ses_unknown", tid), _bearer()) == 404
+    assert await denied(_attach_url(leg, sid, "term_zz"), _bearer()) == 422
+
+
+async def test_fake_terminal_limit_exit_and_session_state(fake_leg: Leg, fake: FakeWrapper) -> None:
+    leg = fake_leg
+    sid = await leg.create("term-fake")
+    base = f"/v1/sessions/{sid}/terminals"
+    fake.terminals_max = 1
+    made = (await leg.http.post(base)).json()
+    resp = await leg.http.post(base)
+    assert resp.status_code == 409 and resp.json()["error"]["code"] == "terminal_limit"
+
+    # shell exit: scrollback, then the exit frame, then close 1000; later attaches replay too
+    url = _attach_url(leg, sid, made["terminal_id"])
+    async with websockets.connect(url, additional_headers=_bearer()) as ws:
+        await ws.send(b"hello\n")
+        await _read_until(ws, b"hello")
+        fake.exit_terminal(made["terminal_id"], 7)
+        assert json.loads(await asyncio.wait_for(ws.recv(), 5)) == {"type": "exit", "code": 7}
+        with pytest.raises(websockets.ConnectionClosedOK):
+            await asyncio.wait_for(ws.recv(), 5)
+    info = (await leg.http.get(base)).json()["terminals"][0]
+    assert info["alive"] is False and info["exit_code"] == 7
+    async with websockets.connect(url, additional_headers=_bearer()) as ws:
+        assert await _read_until(ws, b"hello")
+        assert json.loads(await asyncio.wait_for(ws.recv(), 5)) == {"type": "exit", "code": 7}
+
+    # a stopped session is known but not active
+    await leg.http.delete(f"{base}/{made['terminal_id']}")
+    await leg.http.delete(f"/v1/sessions/{sid}")
+    resp = await leg.http.post(base)
+    assert resp.status_code == 409 and resp.json()["error"]["code"] == "session_not_active"

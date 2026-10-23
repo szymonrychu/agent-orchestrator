@@ -11,8 +11,11 @@ import asyncio
 import contextlib
 import functools
 import json
+import logging
 import mimetypes
 import os
+import re
+import secrets
 import shutil
 import socket
 import stat
@@ -25,9 +28,10 @@ from typing import Any
 
 import uvicorn
 from claude_code_wrapper.events import EVENT_TYPES
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from starlette.requests import HTTPConnection
 
 MAX_SESSIONS = 4
 REPLAY = 100
@@ -35,6 +39,16 @@ MAX_PAGE = 1000
 BINARY_SNIFF_BYTES = 8192
 RESUMABLE = ("stopped", "failed", "dead")
 _CLOSE = object()
+
+log = logging.getLogger(__name__)
+
+# the wrapper terminal protocol (wrapper README, design D2/D3)
+TERMINAL_ID_RE = re.compile(r"^term_[0-9a-f]{12}$")
+TERMINALS_MAX = 8
+TERMINAL_SCROLLBACK_BYTES = 262144
+TERMINAL_MAX_FRAME_BYTES = 65536
+TERMINAL_SIZE = range(1, 1001)
+ACTIVE_STATES = ("ready", "busy")
 
 
 def _now() -> str:
@@ -147,6 +161,45 @@ class _Session:
         }
 
 
+@dataclass
+class _Terminal:
+    terminal_id: str
+    session_id: str
+    rows: int
+    cols: int
+    created_at: str = field(default_factory=_now)
+    alive: bool = True
+    exit_code: int | None = None
+    scrollback: bytearray = field(default_factory=bytearray)
+    clients: set[asyncio.Queue[Any]] = field(default_factory=set)
+
+    def record(self) -> dict[str, Any]:
+        return {
+            "terminal_id": self.terminal_id,
+            "session_id": self.session_id,
+            "created_at": self.created_at,
+            "alive": self.alive,
+            "exit_code": self.exit_code,
+            "attached": bool(self.clients),
+            "rows": self.rows,
+            "cols": self.cols,
+        }
+
+    def output(self, data: bytes) -> None:
+        """Append to the replay buffer (capped) and fan the bytes out to every client."""
+        self.scrollback += data
+        del self.scrollback[:-TERMINAL_SCROLLBACK_BYTES]
+        for queue in list(self.clients):
+            queue.put_nowait(data)
+
+    def finish(self, code: int) -> None:
+        """The shell exited: every client gets the exit frame, then a clean close."""
+        self.alive, self.exit_code = False, code
+        for queue in list(self.clients):
+            queue.put_nowait({"type": "exit", "code": code})
+            queue.put_nowait(1000)
+
+
 class FakeWrapper:
     def __init__(self, token: str = "test-token", ping_interval: float = 15.0) -> None:
         self.token = token
@@ -172,6 +225,10 @@ class FakeWrapper:
         self._tmp = tempfile.TemporaryDirectory(prefix="fake-wrapper-")
         self.files_max_entries = 2000
         self.file_preview_max_bytes = 1048576
+        # terminal API: per-process registry, as in the wrapper
+        self.terminals: dict[str, _Terminal] = {}
+        self.terminals_max = TERMINALS_MAX
+        self.requests: list[tuple[str, str]] = []  # (method, path) of every authenticated call
         self.app = self._build_app()
 
     # ------------------------------------------------------------------ lifecycle
@@ -197,7 +254,7 @@ class FakeWrapper:
             log_level="warning",
             lifespan="off",
             timeout_graceful_shutdown=1,
-            ws="none",
+            ws="websockets-sansio",
         )
         self._uv = uvicorn.Server(config)
         self._task = asyncio.create_task(self._uv.serve(sockets=[sock]))
@@ -226,6 +283,20 @@ class FakeWrapper:
     def workdir(self, session_id: str | None = None) -> Path:
         """The real directory of a session workdir (default: the newest session)."""
         return Path(self._session(session_id).workdir)
+
+    def terminal(self, terminal_id: str | None = None) -> _Terminal:
+        """A terminal by id (default: the newest one)."""
+        if terminal_id is not None:
+            return self.terminals[terminal_id]
+        return next(reversed(self.terminals.values()))
+
+    def terminal_output(self, data: bytes, terminal_id: str | None = None) -> None:
+        """Make the shell print `data`: buffered for replay and sent to every attached client."""
+        self.terminal(terminal_id).output(data)
+
+    def exit_terminal(self, terminal_id: str | None = None, code: int = 0) -> None:
+        """The shell exits with `code`; the terminal stays listed, not alive, until deleted."""
+        self.terminal(terminal_id).finish(code)
 
     def _session(self, session_id: str | None = None) -> _Session:
         if session_id is not None:
@@ -370,9 +441,11 @@ class FakeWrapper:
             if conn.transport.get_extra_info("peername") == peer:
                 conn.transport.abort()
 
-    def _auth(self, request: Request) -> None:
+    def _auth(self, request: HTTPConnection) -> None:
         if request.headers.get("authorization") != f"Bearer {self.token}":
             raise _Err(401, "unauthorized", "missing or invalid bearer token")
+        method = request.scope.get("method") or request.scope["type"]
+        self.requests.append((method, request.url.path))
 
     def _get(self, session_id: str) -> _Session:
         ses = self.sessions.get(session_id)
@@ -446,6 +519,7 @@ class FakeWrapper:
             if ses.state != "stopped":
                 self._set_state(ses, "stopped")
             snap = ses.snapshot()
+            self._close_terminals(session_id)
             self.emit("session_closed", {}, session_id)
             for q in list(ses.subscribers):
                 q.put_nowait(_CLOSE)
@@ -618,6 +692,58 @@ class FakeWrapper:
                 out["kind"] = "binary"
             return out
 
+        @app.post("/v1/sessions/{session_id}/terminals", status_code=201)
+        async def create_terminal(session_id: str, request: Request) -> dict[str, Any]:
+            self._auth(request)
+            ses = self._get(session_id)
+            body = await self._json_body(request)
+            if set(body) - {"rows", "cols"}:
+                raise _Err(422, "invalid_request", "only rows and cols are accepted")
+            size = {"rows": body.get("rows", 24), "cols": body.get("cols", 80)}
+            for value in size.values():
+                if not isinstance(value, int) or isinstance(value, bool):
+                    raise _Err(422, "invalid_request", "rows and cols must be integers")
+                if value not in TERMINAL_SIZE:
+                    raise _Err(422, "invalid_size", "rows and cols must be between 1 and 1000")
+            if ses.state not in ACTIVE_STATES:
+                raise _Err(409, "session_not_active", f"the session is {ses.state}")
+            if len(self.terminals) >= self.terminals_max:
+                raise _Err(409, "terminal_limit", "too many terminals")
+            tid = f"term_{secrets.token_hex(6)}"  # unique across fakes, like the wrapper
+            term = _Terminal(tid, session_id, **size)
+            self.terminals[tid] = term
+            return term.record()
+
+        @app.get("/v1/sessions/{session_id}/terminals")
+        async def list_terminals(session_id: str, request: Request) -> dict[str, Any]:
+            self._auth(request)
+            self._get(session_id)
+            rows = [t.record() for t in self.terminals.values() if t.session_id == session_id]
+            return {"terminals": rows}
+
+        @app.delete("/v1/sessions/{session_id}/terminals/{terminal_id}", status_code=204)
+        async def delete_terminal(session_id: str, terminal_id: str, request: Request) -> Response:
+            self._auth(request)
+            self._get(session_id)
+            self._terminal_of(session_id, terminal_id).finish(-9)
+            del self.terminals[terminal_id]
+            return Response(status_code=204)
+
+        @app.websocket("/v1/sessions/{session_id}/terminals/{terminal_id}/attach")
+        async def attach_terminal(ws: WebSocket, session_id: str, terminal_id: str) -> None:
+            try:  # denied before accept with the HTTP status the real wrapper answers
+                self._auth(ws)
+                ses = self._get(session_id)
+                term = self._terminal_of(session_id, terminal_id)
+                if ses.state not in ACTIVE_STATES:
+                    raise _Err(409, "session_not_active", f"the session is {ses.state}")
+            except _Err as exc:
+                body = {"error": {"code": exc.code, "message": exc.message}}
+                await ws.send_denial_response(JSONResponse(body, status_code=exc.status))
+                return
+            await ws.accept()
+            await self._serve_terminal(ws, term)
+
         @app.get("/v1/peers")
         async def peers(request: Request) -> dict[str, Any]:
             self._auth(request)
@@ -695,6 +821,83 @@ class FakeWrapper:
             )
 
         return app
+
+    def _terminal_of(self, session_id: str, terminal_id: str) -> _Terminal:
+        if not TERMINAL_ID_RE.fullmatch(terminal_id):
+            raise _Err(422, "invalid_request", "invalid terminal id")
+        term = self.terminals.get(terminal_id)
+        if term is None or term.session_id != session_id:
+            raise _Err(404, "terminal_not_found", f"unknown terminal {terminal_id}")
+        return term
+
+    def _close_terminals(self, session_id: str) -> None:
+        for tid, term in list(self.terminals.items()):
+            if term.session_id == session_id:
+                term.finish(-9)
+                del self.terminals[tid]
+
+    async def _serve_terminal(self, ws: WebSocket, term: _Terminal) -> None:
+        """The wrapper attach protocol: replay, echo input as output, resize/ping, exit frame."""
+        for start in range(0, len(term.scrollback), TERMINAL_MAX_FRAME_BYTES):
+            await ws.send_bytes(bytes(term.scrollback[start : start + TERMINAL_MAX_FRAME_BYTES]))
+        if not term.alive:
+            await ws.send_text(json.dumps({"type": "exit", "code": term.exit_code}))
+            await ws.close(1000)
+            return
+        queue: asyncio.Queue[Any] = asyncio.Queue()
+        term.clients.add(queue)
+        pump = asyncio.create_task(self._pump(ws, queue))
+        try:
+            while True:
+                msg = await ws.receive()
+                if msg["type"] == "websocket.disconnect":
+                    return
+                if msg.get("bytes") is not None:
+                    if len(msg["bytes"]) > TERMINAL_MAX_FRAME_BYTES:
+                        queue.put_nowait(1009)
+                        continue
+                    term.output(msg["bytes"])
+                elif not self._control(term, msg.get("text") or "", queue):
+                    queue.put_nowait(1003)
+        finally:
+            term.clients.discard(queue)
+            pump.cancel()
+
+    @staticmethod
+    async def _pump(ws: WebSocket, queue: asyncio.Queue[Any]) -> None:
+        """Send queued items: bytes as binary, dicts as JSON text, an int closes with that code."""
+        while True:
+            item = await queue.get()
+            if isinstance(item, bytes):
+                await ws.send_bytes(item)
+            elif isinstance(item, dict):
+                await ws.send_text(json.dumps(item))
+            else:
+                await ws.close(item)
+                return
+
+    @staticmethod
+    def _control(term: _Terminal, text: str, queue: asyncio.Queue[Any]) -> bool:
+        """Handle one JSON control frame; False for a frame the protocol does not know."""
+        try:
+            frame = json.loads(text)
+        except ValueError:
+            return False
+        kind = frame.get("type") if isinstance(frame, dict) else None
+        if kind == "ping":
+            queue.put_nowait({"type": "pong"})
+        elif kind == "resize":
+            rows, cols = frame.get("rows"), frame.get("cols")
+            if all(
+                isinstance(v, int) and not isinstance(v, bool) and v in TERMINAL_SIZE
+                for v in (rows, cols)
+            ):
+                term.rows, term.cols = rows, cols
+            else:
+                log.warning("ignored bad resize frame %r", frame)
+        else:
+            return False
+        return True
 
     @staticmethod
     def _locate(ses: _Session, rel: str) -> tuple[Path, Path]:

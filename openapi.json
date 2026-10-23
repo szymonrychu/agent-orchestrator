@@ -577,6 +577,36 @@
         "title": "CreateCluster",
         "type": "object"
       },
+      "CreateTerminal": {
+        "additionalProperties": false,
+        "description": "Both sizes are optional; the wrapper validates the 1..1000 range (`invalid_size`).",
+        "properties": {
+          "cols": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cols"
+          },
+          "rows": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rows"
+          }
+        },
+        "title": "CreateTerminal",
+        "type": "object"
+      },
       "EventView": {
         "properties": {
           "agent_id": {
@@ -1252,6 +1282,99 @@
         "title": "Resources",
         "type": "object"
       },
+      "TerminalList": {
+        "properties": {
+          "terminals": {
+            "items": {
+              "$ref": "#/components/schemas/TerminalView"
+            },
+            "title": "Terminals",
+            "type": "array"
+          },
+          "unavailable_agents": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Unavailable Agents",
+            "type": "array"
+          }
+        },
+        "required": [
+          "terminals",
+          "unavailable_agents"
+        ],
+        "title": "TerminalList",
+        "type": "object"
+      },
+      "TerminalView": {
+        "properties": {
+          "agent_id": {
+            "format": "uuid",
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "alive": {
+            "title": "Alive",
+            "type": "boolean"
+          },
+          "attached": {
+            "title": "Attached",
+            "type": "boolean"
+          },
+          "cluster_id": {
+            "format": "uuid",
+            "title": "Cluster Id",
+            "type": "string"
+          },
+          "cols": {
+            "title": "Cols",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "exit_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Code"
+          },
+          "pod_name": {
+            "title": "Pod Name",
+            "type": "string"
+          },
+          "rows": {
+            "title": "Rows",
+            "type": "integer"
+          },
+          "terminal_id": {
+            "title": "Terminal Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_id",
+          "cluster_id",
+          "pod_name",
+          "terminal_id",
+          "created_at",
+          "alive",
+          "exit_code",
+          "attached",
+          "rows",
+          "cols"
+        ],
+        "title": "TerminalView",
+        "type": "object"
+      },
       "TurnView": {
         "properties": {
           "completed_at": {
@@ -1481,6 +1604,107 @@
           }
         },
         "summary": "Restart Agent"
+      }
+    },
+    "/api/v1/agents/{agent_id}/terminals": {
+      "post": {
+        "description": "Start a shell in the agent's session workdir; the wrapper's limits pass through.",
+        "operationId": "create_terminal_api_v1_agents__agent_id__terminals_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Agent Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CreateTerminal"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TerminalView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Terminal"
+      }
+    },
+    "/api/v1/agents/{agent_id}/terminals/{terminal_id}": {
+      "delete": {
+        "description": "Close one shell; an unknown id is the wrapper's 404 `terminal_not_found`.",
+        "operationId": "delete_terminal_api_v1_agents__agent_id__terminals__terminal_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "terminal_id",
+            "required": true,
+            "schema": {
+              "title": "Terminal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Terminal"
       }
     },
     "/api/v1/checks/{check_id}": {
@@ -2275,6 +2499,47 @@
           }
         },
         "summary": "Post Message"
+      }
+    },
+    "/api/v1/clusters/{cluster_id}/terminals": {
+      "get": {
+        "description": "Every ready agent's shells, queried concurrently; failing agents are reported, not fatal.",
+        "operationId": "list_terminals_api_v1_clusters__cluster_id__terminals_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cluster_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Cluster Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TerminalList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Terminals"
       }
     },
     "/api/v1/commands/{command_id}": {

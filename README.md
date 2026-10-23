@@ -400,7 +400,7 @@ Versioning: `/api/v1` is additive only. New routes, new optional request fields 
 
 Source allowlist: the api checks the direct socket peer against `ORCH_ALLOWED_CIDRS` (default `192.168.1.0/24`). `Forwarded`, `X-Forwarded-For` and `X-Real-IP` are never read. A caller outside the list gets `403 forbidden`. `/healthz` and `/readyz` are exempt.
 
-Error codes: `bad_request` (400), `forbidden` (403), `forbidden_origin` (403, `Origin` not in `ORCH_ALLOWED_ORIGINS`), `not_found` (404), `conflict` (409, slug exists), `cluster_deleting` (409), `cluster_limit` (409, `ORCH_MAX_CLUSTERS` reached), `not_queued` (409), `not_failed` (409), `agent_gone` (409), `agent_not_ready` (409, no ready agent for a file or terminal proxy), `invalid_path` (400, a file path is absolute, holds a NUL byte or leaves the workdir), `not_a_directory` (400, listing a file), `not_a_file` (400, reading a directory or special file), `invalid_request` (422), `target_gone` (422), `internal` (500, 503 on `/readyz`), `wrapper_error` (502, the wrapper answered 5xx), `wrapper_unreachable` (502, the wrapper pod could not be reached), `unavailable` (503, no master key for the proxies).
+Error codes: `bad_request` (400), `forbidden` (403), `forbidden_origin` (403, `Origin` not in `ORCH_ALLOWED_ORIGINS` on a terminal POST or DELETE or a WebSocket upgrade), `not_found` (404), `conflict` (409, slug exists), `cluster_deleting` (409), `cluster_limit` (409, `ORCH_MAX_CLUSTERS` reached), `not_queued` (409), `not_failed` (409), `agent_gone` (409), `agent_not_ready` (409, no ready agent for a file or terminal proxy), `invalid_path` (400, a file path is absolute, holds a NUL byte or leaves the workdir), `not_a_directory` (400, listing a file), `not_a_file` (400, reading a directory or special file), `terminal_limit` (409, the wrapper's per-pod terminal cap is reached), `session_not_active` (409, the agent's wrapper session is not active), `terminal_not_found` (404, no such shell on that agent), `invalid_size` (422, rows or cols outside 1..1000), `invalid_request` (422, also a terminal id that is not `term_` plus 12 lowercase hex digits), `target_gone` (422), `internal` (500, 503 on `/readyz`), `wrapper_error` (502, the wrapper answered 5xx), `wrapper_unreachable` (502, the wrapper pod could not be reached), `unavailable` (503, no master key for the proxies).
 
 ### `GET /api/v1/meta`
 
@@ -513,6 +513,43 @@ Reads one file of the cluster workdir through the same agent choice as the listi
 ```
 
 `mime` is guessed from the file name (null when unknown). `kind` is `too_large` when `size` exceeds the wrapper's `limits.file_preview_max_bytes` (default 1 MiB; `content` null), `binary` when the first 8 KiB hold a NUL byte or the file is not valid UTF-8 (`content` null), else `text` with the decoded `content`. The content is relayed as stored and is not passed through the secret redactor. Errors: 400 `invalid_path`, 400 `not_a_file`, 404 `not_found`, 409 `agent_not_ready`, 502 `wrapper_unreachable`, 502 `wrapper_error`, 503 `unavailable`.
+
+### `POST /api/v1/agents/{agent_id}/terminals`
+
+Starts an interactive login shell in the agent's session workdir, through the agent's wrapper. Body (optional, extra keys are refused): `{"rows": 24, "cols": 80}`, both 1..1000 and defaulting to 24 and 80. Guarded by the Origin allowlist: a request whose `Origin` is not in `ORCH_ALLOWED_ORIGINS` is `403 forbidden_origin`; a request without `Origin` passes. Response 201:
+
+```json
+{
+  "agent_id": "0c1d...", "cluster_id": "5b7e...", "pod_name": "demo-0",
+  "terminal_id": "term_0123456789ab", "created_at": "2026-10-23T09:03:00.000Z",
+  "alive": true, "exit_code": null, "attached": false, "rows": 24, "cols": 80
+}
+```
+
+Attach to the shell with the WebSocket route. Errors: 403 `forbidden_origin`, 404 `not_found` (agent), 409 `agent_not_ready`, 409 `terminal_limit` (the wrapper allows 8 shells per pod), 409 `session_not_active`, 422 `invalid_size`, 422 `invalid_request` (unknown body key), 502 `wrapper_unreachable`, 502 `wrapper_error`, 503 `unavailable`. The wrapper status and code are passed through unchanged for 4xx.
+
+### `GET /api/v1/clusters/{cluster_id}/terminals`
+
+Lists the shells of every ready agent of the cluster. The agents are queried concurrently; one that cannot answer is listed in `unavailable_agents` instead of failing the request, and a cluster with no ready agent answers an empty list. Response 200:
+
+```json
+{
+  "terminals": [
+    {
+      "agent_id": "0c1d...", "cluster_id": "5b7e...", "pod_name": "demo-0",
+      "terminal_id": "term_0123456789ab", "created_at": "2026-10-23T09:03:00.000Z",
+      "alive": true, "exit_code": null, "attached": true, "rows": 40, "cols": 120
+    }
+  ],
+  "unavailable_agents": ["7a2f..."]
+}
+```
+
+`attached` is true while a client is attached; an exited shell stays listed with `alive` false and its `exit_code` until closed or reaped. Errors: 404 `not_found` (cluster), 503 `unavailable`.
+
+### `DELETE /api/v1/agents/{agent_id}/terminals/{terminal_id}`
+
+Closes one shell and everything it started. Guarded by the Origin allowlist like the create route. `terminal_id` must be `term_` plus 12 lowercase hex digits, else `422 invalid_request` before any wrapper call. Response 204 without a body. Errors: 403 `forbidden_origin`, 404 `not_found` (agent), 404 `terminal_not_found`, 409 `agent_not_ready`, 422 `invalid_request`, 502 `wrapper_unreachable`, 502 `wrapper_error`, 503 `unavailable`.
 
 ### `GET /api/v1/stream`
 

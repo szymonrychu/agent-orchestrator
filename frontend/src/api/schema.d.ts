@@ -55,6 +55,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/agents/{agent_id}/terminals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Terminal
+         * @description Start a shell in the agent's session workdir; the wrapper's limits pass through.
+         */
+        post: operations["create_terminal_api_v1_agents__agent_id__terminals_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agents/{agent_id}/terminals/{terminal_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Terminal
+         * @description Close one shell; an unknown id is the wrapper's 404 `terminal_not_found`.
+         */
+        delete: operations["delete_terminal_api_v1_agents__agent_id__terminals__terminal_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/checks/{check_id}": {
         parameters: {
             query?: never;
@@ -229,6 +269,26 @@ export interface paths {
         put?: never;
         /** Post Message */
         post: operations["post_message_api_v1_clusters__cluster_id__messages_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/clusters/{cluster_id}/terminals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Terminals
+         * @description Every ready agent's shells, queried concurrently; failing agents are reported, not fatal.
+         */
+        get: operations["list_terminals_api_v1_clusters__cluster_id__terminals_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -533,6 +593,16 @@ export interface components {
              */
             spec: components["schemas"]["ClusterSpec"];
         };
+        /**
+         * CreateTerminal
+         * @description Both sizes are optional; the wrapper validates the 1..1000 range (`invalid_size`).
+         */
+        CreateTerminal: {
+            /** Cols */
+            cols?: number | null;
+            /** Rows */
+            rows?: number | null;
+        };
         /** EventView */
         EventView: {
             /**
@@ -790,6 +860,45 @@ export interface components {
                 [key: string]: string;
             };
         };
+        /** TerminalList */
+        TerminalList: {
+            /** Terminals */
+            terminals: components["schemas"]["TerminalView"][];
+            /** Unavailable Agents */
+            unavailable_agents: string[];
+        };
+        /** TerminalView */
+        TerminalView: {
+            /**
+             * Agent Id
+             * Format: uuid
+             */
+            agent_id: string;
+            /** Alive */
+            alive: boolean;
+            /** Attached */
+            attached: boolean;
+            /**
+             * Cluster Id
+             * Format: uuid
+             */
+            cluster_id: string;
+            /** Cols */
+            cols: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Exit Code */
+            exit_code: number | null;
+            /** Pod Name */
+            pod_name: string;
+            /** Rows */
+            rows: number;
+            /** Terminal Id */
+            terminal_id: string;
+        };
         /** TurnView */
         TurnView: {
             /** Completed At */
@@ -911,6 +1020,71 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["CommandAccepted"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_terminal_api_v1_agents__agent_id__terminals_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["CreateTerminal"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TerminalView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_terminal_api_v1_agents__agent_id__terminals__terminal_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+                terminal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
@@ -1367,6 +1541,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MessageAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_terminals_api_v1_clusters__cluster_id__terminals_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cluster_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TerminalList"];
                 };
             };
             /** @description Validation Error */
