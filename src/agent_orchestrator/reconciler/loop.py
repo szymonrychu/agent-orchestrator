@@ -113,10 +113,11 @@ class Reconciler:
                 await self._record_error(cluster, exc)
 
     async def pre_discard(self, cluster: Cluster) -> bool:
-        """The gate before a discard deletes anything: True lets the deletion proceed.
+        """The gate before a discard deletes anything (D15): True lets the deletion proceed.
 
-        With no pre-discard hook there is nothing to deliver, so the deletion proceeds; the
-        discard hook (D15) decides here once it is configured.
+        The base reconciler has no pre-discard hook, so it always returns True. A subclass
+        overrides this to deliver the cluster's history export and returns False to block
+        the deletion until delivery succeeds.
         """
         return True
 
