@@ -20,6 +20,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 from psycopg_pool import AsyncConnectionPool
@@ -31,6 +32,7 @@ from agent_orchestrator.db.pool import listen, notify
 from agent_orchestrator.k8s.kube import FIELD_MANAGER, KubeApi, Obj, is_owned, pod_ready
 from agent_orchestrator.k8s.labels import cluster_labels, object_names, prefix
 from agent_orchestrator.k8s.render import pod_url, render_cluster
+from agent_orchestrator.reconciler.sessions import SessionBootstrapper
 from agent_orchestrator.settings import Settings
 from agent_orchestrator.tokens import tokens_for
 
@@ -57,6 +59,9 @@ class Reconciler:
         self.kube = kube
         self.settings = settings
         self.wrapper_factory = wrapper_factory
+        self.bootstrapper = (
+            SessionBootstrapper(pool, wrapper_factory) if wrapper_factory is not None else None
+        )
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -98,6 +103,7 @@ class Reconciler:
 
     async def reconcile_once(self) -> None:
         await self._run_restarts()
+        await self._run_rebootstraps()
         async with self.pool.connection() as conn:
             rows = await clusters.list_clusters(conn)
         for cluster in rows:
@@ -148,12 +154,28 @@ class Reconciler:
         else:
             phase = "pending" if ready == 0 else "degraded"
             message = f"{ready} of {replicas} pods ready"
+        problems = await self._bootstrap_sessions(cluster)
+        if problems:
+            message = "; ".join(filter(None, [message, *problems]))
         log.debug("cluster %s in %s: %s", slug, ns, phase)
         await self._write_status(
             cluster,
             {"phase": phase, "ready": ready, "replicas": replicas, "message": message},
             cluster.generation,
         )
+
+    async def _bootstrap_sessions(self, cluster: Cluster) -> list[str]:
+        """Give every ready agent without a live session one (D6); messages of the failures."""
+        if self.bootstrapper is None:
+            return []
+        async with self.pool.connection() as conn:
+            agents = [
+                a
+                for a in await agents_repo.list_agents(conn, cluster.id)
+                if a.ready and a.gone_at is None
+            ]
+        token = tokens_for(self.settings, cluster.id).auth
+        return await self.bootstrapper.bootstrap_many(agents, cluster.spec, token)
 
     async def _foreign(self, slug: str, objs: list[Obj]) -> list[str]:
         """`foreign_object <kind>/<name>` for each rendered name held by an unlabelled object."""
@@ -286,6 +308,46 @@ class Reconciler:
             return "failed", {"error": "pod_not_found"}
         await self.kube.delete_pod(ns, agent.pod_name)
         return "done", {"pod": agent.pod_name}
+
+    # ------------------------------------------------------------------ rebootstrap commands
+
+    async def _run_rebootstraps(self) -> None:
+        """Clear the session of each agent a rebootstrap command names and bootstrap it again."""
+        while True:
+            async with self.pool.connection() as conn:
+                cmd = await queue.claim_command(conn, ["rebootstrap"])
+            if cmd is None:
+                return
+            try:
+                status, result = await self._rebootstrap(cmd)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.exception("rebootstrap command %s failed", cmd.id)
+                status, result = "failed", {"error": str(exc) or type(exc).__name__}
+            async with self.pool.connection() as conn:
+                await queue.complete_command(conn, cmd.id, status, result)
+
+    async def _rebootstrap(self, cmd: queue.Command) -> tuple[str, dict[str, Any]]:
+        async with self.pool.connection() as conn:
+            agent = await agents_repo.get_agent(conn, cmd.agent_id)
+            cluster = await clusters.get(conn, cmd.cluster_id)
+        if agent is None or cluster is None:
+            return "failed", {"error": "agent_not_found"}
+        if agent.gone_at is not None:
+            return "failed", {"error": "agent_gone"}
+        if cluster.desired == "deleting":
+            return "failed", {"error": "cluster_deleting"}
+        async with self.pool.connection() as conn:
+            await agents_repo.clear_session(conn, agent.id)
+        agent = replace(agent, session_id=None, session_created_at=None)
+        if self.bootstrapper is None or not agent.ready:
+            return "done", {"cleared": True, "bootstrapped": False}
+        token = tokens_for(self.settings, cluster.id).auth
+        problem = await self.bootstrapper.bootstrap(agent, cluster.spec, token)
+        if problem:  # the session stays cleared: the next tick retries (D6)
+            return "done", {"cleared": True, "bootstrapped": False, "message": problem}
+        return "done", {"cleared": True, "bootstrapped": True}
 
     # ------------------------------------------------------------------ status
 

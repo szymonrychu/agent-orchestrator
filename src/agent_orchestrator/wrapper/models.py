@@ -31,6 +31,7 @@ class Snapshot(_Model):
     context: Context | None = None
     model: str | None = None
     workdir: str | None = None
+    created_at: datetime | None = None
     turns_completed: int = 0
     # The wrapper reports no transcript field (its resume check tests the file on disk). A
     # completed turn proves a transcript exists (True); zero completed turns proves nothing,
