@@ -71,10 +71,15 @@ function toolItem(base: Base, d: Record<string, unknown>, res?: ToolResult): Cha
     kind: 'tool',
     toolUseId: str(d.tool_use_id),
     name: str(d.name ?? d.tool_name),
-    input: d.input,
+    input: d.tool_input ?? d.input,
     status: res ? (res.isError ? 'error' : 'ok') : 'running',
     output: res?.output,
   };
+}
+
+function usageOf(d: Record<string, unknown>): Usage | undefined {
+  const rec = d.record as Record<string, unknown> | undefined;
+  return ((rec?.usage ?? d.usage) as Usage | undefined) ?? undefined;
 }
 
 /** Item for a row, or null when the row yields no standalone item. */
@@ -105,7 +110,7 @@ function toItem(row: EventRow, ordinals: Readonly<Record<string, number>>, orpha
     case 'tool_denied':
       return { ...base, kind: 'denied', name: str(d.name ?? d.tool_name), reason: str(d.reason) };
     case 'turn_completed':
-      return { ...base, kind: 'turn_end', usage: (d.usage as Usage | undefined) ?? undefined };
+      return { ...base, kind: 'turn_end', usage: usageOf(d) };
     case 'turn_failed':
     case 'error':
       return { ...base, kind: 'error', message: str(d.error ?? d.message ?? d.reason, row.type) };
@@ -143,7 +148,7 @@ function merge(state: ChatState, rows: readonly EventRow[]): ChatState {
   for (const r of results) {
     const d = r.data ?? {};
     orphans[str(d.tool_use_id)] = {
-      output: str(d.output ?? d.content),
+      output: str(d.response ?? d.output ?? d.content),
       isError: d.is_error === true || d.status === 'error',
     };
   }

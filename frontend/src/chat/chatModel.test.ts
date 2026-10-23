@@ -28,9 +28,9 @@ describe('chatModel', () => {
       row(4, 'user_message', { text: 'c', origin: 'command' }),
       row(5, 'assistant_text', { text: 'yo' }),
       row(6, 'thinking', { text: 'hmm' }),
-      row(7, 'tool_call', { tool_use_id: 'x', name: 'Bash', input: {} }),
+      row(7, 'tool_call', { tool_use_id: 'x', tool_name: 'Bash', tool_input: {} }),
       row(8, 'tool_denied', { name: 'Bash', reason: 'no' }),
-      row(9, 'turn_completed', { usage: { input_tokens: 3 } }),
+      row(9, 'turn_completed', { record: { usage: { input_tokens: 3 } } }),
       row(10, 'turn_failed', { error: 'boom' }),
       row(11, 'error', { message: 'bad' }),
       row(12, 'peer_message_received', { from: 'a2', message: 'psst' }),
@@ -51,20 +51,20 @@ describe('chatModel', () => {
   });
 
   it('pairs tool calls with results', () => {
-    let s = applyEvents(fresh(), [row(1, 'tool_call', { tool_use_id: 'x', name: 'Bash', input: { c: 1 } })]);
+    let s = applyEvents(fresh(), [row(1, 'tool_call', { tool_use_id: 'x', tool_name: 'Bash', tool_input: { c: 1 } })]);
     expect(s.items[0]).toMatchObject({ kind: 'tool', status: 'running' });
-    s = applyEvents(s, [row(2, 'tool_result', { tool_use_id: 'x', output: 'done', is_error: false })]);
+    s = applyEvents(s, [row(2, 'tool_result', { tool_use_id: 'x', response: 'done', is_error: false })]);
     expect(s.items).toHaveLength(1);
     expect(s.items[0]).toMatchObject({ status: 'ok', output: 'done' });
     s = applyEvents(s, [
-      row(3, 'tool_call', { tool_use_id: 'y', name: 'Bash', input: {} }),
-      row(4, 'tool_result', { tool_use_id: 'y', output: 'e', is_error: true }),
+      row(3, 'tool_call', { tool_use_id: 'y', tool_name: 'Bash', tool_input: {} }),
+      row(4, 'tool_result', { tool_use_id: 'y', response: 'e', is_error: true }),
     ]);
     expect(s.items[1]).toMatchObject({ status: 'error', output: 'e' });
     // across the page boundary: result newer, call arrives via prepend
-    let p = applyEvents(fresh(), [row(12, 'tool_result', { tool_use_id: 'z', output: 'late' })]);
+    let p = applyEvents(fresh(), [row(12, 'tool_result', { tool_use_id: 'z', response: 'late' })]);
     expect(p.items).toHaveLength(0);
-    p = prependHistory(p, [row(11, 'tool_call', { tool_use_id: 'z', name: 'Read', input: {} })]);
+    p = prependHistory(p, [row(11, 'tool_call', { tool_use_id: 'z', tool_name: 'Read', tool_input: {} })]);
     expect(p.items[0]).toMatchObject({ kind: 'tool', status: 'ok', output: 'late' });
   });
 
