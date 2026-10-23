@@ -1,4 +1,4 @@
-/** Hand-rolled cluster store for the ribbon: initial REST load, live /api/v1/stream deltas, selected cluster id. */
+/** Hand-rolled cluster store for the top bar: initial REST load, live /api/v1/stream deltas, selected cluster id. */
 import { useCallback, useEffect, useReducer } from 'react'
 import { listAgents, listClusters, statusStreamUrl } from '../api/client'
 import type { AgentView, ClusterView } from '../api/client'
@@ -90,7 +90,7 @@ export const sortedAgents = (entry: ClusterEntry): AgentView[] =>
 
 const STREAM_EVENTS = ['snapshot', 'cluster_status', 'agent_status', 'message_status', 'cluster_removed']
 
-/** Maps one decoded stream frame to a reducer action; null for frames the ribbon ignores. */
+/** Maps one decoded stream frame to a reducer action; null for frames the app ignores. */
 export function actionFromEvent(type: string, data: unknown): ClustersAction | null {
   const d = data as Record<string, unknown> | null
   if (d === null || typeof d !== 'object') return null

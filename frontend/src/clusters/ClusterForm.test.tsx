@@ -217,24 +217,3 @@ describe('DiscardClusterDialog', () => {
     expect(screen.queryByText(/exported to/)).toBeNull()
   })
 })
-
-describe('Ribbon wiring', () => {
-  test('ribbon opens create, edit and discard', async () => {
-    const { Ribbon } = await import('../ribbon/Ribbon')
-    const entry = { cluster: { ...existing(), status: { discard_hook_failed: true } }, agents: {} }
-    wrap(<Ribbon clusters={[entry]} selectedId={null} onSelect={vi.fn()} />)
-    expect(screen.getByText('hook failed')).toBeTruthy()
-    await userEvent.click(button('New cluster'))
-    expect(await screen.findByLabelText('Slug')).toBeTruthy()
-    await userEvent.click(button('Cancel'))
-    await waitFor(() => expect(screen.queryByLabelText('Slug')).toBeNull())
-    await userEvent.click(button('actions alpha'))
-    await userEvent.click(screen.getByRole('menuitem', { name: 'Edit' }))
-    await waitFor(() => expect(field('Replicas').value).toBe('2'))
-    await userEvent.click(button('Cancel'))
-    await waitFor(() => expect(screen.queryByLabelText('Slug')).toBeNull())
-    await userEvent.click(button('actions alpha'))
-    await userEvent.click(screen.getByRole('menuitem', { name: 'Discard' }))
-    expect(await screen.findByLabelText('Type the slug to confirm')).toBeTruthy()
-  })
-})
