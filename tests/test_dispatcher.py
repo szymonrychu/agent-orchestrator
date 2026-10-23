@@ -159,17 +159,17 @@ async def test_503_retried_with_backoff_then_fails_at_max_attempts(pool, dsn):
         await env.agent()
         m = await env.msg()
         env.fake.set_turn_status(503)
-        d = env.dispatcher()
+        d = env.dispatcher(retry_backoff_base_seconds=1, retry_backoff_max_seconds=1)
         await d.drain()
         row = await env.message(m["id"])
         assert (row["status"], row["attempts"], row["error"]) == ("queued", 1, "unavailable")
         assert row["not_before"] is not None
         await d.drain()  # still inside the backoff: not touched
         assert (await env.message(m["id"]))["attempts"] == 1
-        await asyncio.sleep(0.35)
+        await asyncio.sleep(1.1)
         await d.drain()
         assert (await env.message(m["id"]))["attempts"] == 2
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(1.1)
         await d.drain()
         row = await env.message(m["id"])
         assert (row["status"], row["attempts"], row["error"]) == ("failed", 3, "unavailable")
@@ -179,7 +179,7 @@ async def test_503_retried_with_backoff_then_fails_at_max_attempts(pool, dsn):
         await d.drain()
         assert (await env.message(m2["id"]))["status"] == "queued"
         env.fake.set_turn_status(None)
-        await asyncio.sleep(0.35)
+        await asyncio.sleep(1.1)
         await d.drain()
         await d.aclose()
         assert (await env.message(m2["id"]))["status"] == "sent"
