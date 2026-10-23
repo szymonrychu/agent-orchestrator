@@ -99,7 +99,7 @@ jobs:
           HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
           HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
         run: |
-          # Helm 4 against a Harbor robot answers 401 on `helm registry login`; write config.json directly.
+          # Harbor robot accounts reject the Helm 4 login probe, so credentials are written to the registry config.json.
           mkdir -p "$HOME/.config/helm/registry"
           AUTH="$(printf '%s:%s' "$HARBOR_USERNAME" "$HARBOR_PASSWORD" | base64 -w0)"
           printf '{"auths":{"%s":{"auth":"%s"}}}' "$HARBOR_URL" "$AUTH" > "$HOME/.config/helm/registry/config.json"
@@ -137,7 +137,7 @@ jobs:
           HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
           HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
         run: |
-          # Helm 4 against a Harbor robot answers 401 on `helm registry login`; write config.json directly.
+          # Harbor robot accounts reject the Helm 4 login probe, so credentials are written to the registry config.json.
           mkdir -p "$HOME/.config/helm/registry"
           AUTH="$(printf '%s:%s' "$HARBOR_USERNAME" "$HARBOR_PASSWORD" | base64 -w0)"
           printf '{"auths":{"%s":{"auth":"%s"}}}' "$HARBOR_URL" "$AUTH" > "$HOME/.config/helm/registry/config.json"
