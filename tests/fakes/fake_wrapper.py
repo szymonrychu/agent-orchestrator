@@ -1,0 +1,625 @@
+"""In-process fake of the claude-code-wrapper /v1 API, served by uvicorn on 127.0.0.1.
+
+It listens on a real socket so SSE, timeouts and connection resets behave as over the network.
+tests/test_fake_wrapper_contract.py runs one suite against this fake and the real wrapper image,
+which keeps it honest. Turns stay `running` until a test calls `complete_turn`.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import functools
+import json
+import socket
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from typing import Any
+
+import uvicorn
+from claude_code_wrapper.events import EVENT_TYPES
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, StreamingResponse
+
+MAX_SESSIONS = 4
+REPLAY = 100
+MAX_PAGE = 1000
+RESUMABLE = ("stopped", "failed", "dead")
+_CLOSE = object()
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat(timespec="milliseconds")
+
+
+class _Err(Exception):
+    def __init__(self, status: int, code: str, message: str = "") -> None:
+        self.status, self.code, self.message = status, code, message or code
+
+
+@dataclass
+class _Turn:
+    turn_id: str
+    text: str
+    metadata: dict[str, Any]
+    started_at: str
+    state: str = "running"
+    final_text: str | None = None
+    completed_at: str | None = None
+
+    def record(self, session_id: str) -> dict[str, Any]:
+        return {
+            "turn_id": self.turn_id,
+            "session_id": session_id,
+            "origin": "client",
+            "state": self.state,
+            "text": self.text,
+            "final_text": self.final_text,
+            "stop_reason": "end_turn" if self.state == "completed" else None,
+            "error": None,
+            "started_at": self.started_at,
+            "completed_at": self.completed_at,
+            "annotations": {},
+            "metadata": self.metadata,
+        }
+
+    def summary(self) -> dict[str, Any]:
+        rec = self.record("")
+        return {
+            k: rec[k]
+            for k in ("turn_id", "origin", "state", "started_at", "completed_at", "stop_reason")
+        }
+
+
+@dataclass
+class _Session:
+    session_id: str
+    name: str | None
+    workdir: str
+    model: str | None
+    state: str = "creating"
+    has_transcript: bool = False
+    idle_since: str | None = None
+    context: dict[str, Any] | None = None
+    current_turn_id: str | None = None
+    turns: dict[str, _Turn] = field(default_factory=dict)
+    events: list[dict[str, Any]] = field(default_factory=list)
+    next_seq: int = 1
+    turns_completed: int = 0
+    created_at: str = field(default_factory=_now)
+    subscribers: set[asyncio.Queue[Any]] = field(default_factory=set)
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "name": self.name,
+            "state": self.state,
+            "step": self.state,
+            "error": None,
+            "workdir": self.workdir,
+            "model": self.model,
+            "effort": None,
+            "created_at": self.created_at,
+            "updated_at": _now(),
+            "last_activity_at": _now(),
+            "idle_since": self.idle_since if self.state == "ready" else None,
+            "turns_completed": self.turns_completed,
+            "outstanding_subagents": 0,
+            "current_turn_id": self.current_turn_id,
+            "stall_suspected_since": None,
+            "restarts": 0,
+            "context": self.context,
+        }
+
+
+class FakeWrapper:
+    def __init__(self, token: str = "test-token", ping_interval: float = 15.0) -> None:
+        self.token = token
+        self.ping_interval = ping_interval
+        self.sessions: dict[str, _Session] = {}
+        self.peers: dict[str, Any] = {"enabled": False}
+        self.received_turns = 0
+        self.turn_texts: list[str] = []
+        self.turn_metadata: list[dict[str, Any]] = []
+        self.last_turn_id = ""
+        self._ids = 0
+        self._booting = False
+        self._status: int | None = None
+        self._delay = 0.0
+        self._reset_after = False
+        self._reset_before = False
+        self._unreachable = False
+        self._uv: uvicorn.Server | None = None
+        self._task: asyncio.Task[None] | None = None
+        self._port = 0
+        self.app = self._build_app()
+
+    # ------------------------------------------------------------------ lifecycle
+
+    @property
+    def base_url(self) -> str:
+        return f"http://127.0.0.1:{self._port}"
+
+    @staticmethod
+    def _bind(port: int = 0) -> socket.socket:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("127.0.0.1", port))
+        sock.listen(128)
+        sock.setblocking(False)
+        return sock
+
+    async def start(self) -> None:
+        sock = self._bind()
+        self._port = sock.getsockname()[1]
+        config = uvicorn.Config(
+            self.app,
+            log_level="warning",
+            lifespan="off",
+            timeout_graceful_shutdown=1,
+            ws="none",
+        )
+        self._uv = uvicorn.Server(config)
+        self._task = asyncio.create_task(self._uv.serve(sockets=[sock]))
+        while not self._uv.started:
+            if self._task.done():
+                self._task.result()
+            await asyncio.sleep(0.01)
+
+    async def stop(self) -> None:
+        if self._uv is None or self._task is None:
+            return
+        self.drop_streams()
+        self._uv.should_exit = True
+        await asyncio.wait_for(self._task, 10)
+        self._uv = self._task = None
+
+    async def __aenter__(self) -> FakeWrapper:
+        await self.start()
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        await self.stop()
+
+    # ------------------------------------------------------------------ test controls
+
+    def _session(self, session_id: str | None = None) -> _Session:
+        if session_id is not None:
+            return self.sessions[session_id]
+        return next(reversed(self.sessions.values()))
+
+    def emit(self, type: str, data: dict[str, Any] | None = None, session_id: str | None = None):
+        """Append an event to the session log (default: the newest session) and fan it out."""
+        ses = self._session(session_id)
+        env = {
+            "seq": ses.next_seq,
+            "ts": _now(),
+            "session_id": ses.session_id,
+            "type": type,
+            "data": data or {},
+        }
+        ses.next_seq += 1
+        ses.events.append(env)
+        for q in list(ses.subscribers):
+            q.put_nowait(env)
+        return env
+
+    def _set_state(self, ses: _Session, state: str) -> None:
+        ses.state = state
+        since = _now()
+        if state == "ready":
+            ses.idle_since = since
+        self.emit("session_state", {"state": state, "since": since}, ses.session_id)
+
+    async def complete_turn(self, turn_id: str, text: str = "done") -> None:
+        for ses in self.sessions.values():
+            turn = ses.turns.get(turn_id)
+            if turn is None:
+                continue
+            turn.state, turn.final_text, turn.completed_at = "completed", text, _now()
+            ses.turns_completed += 1
+            ses.has_transcript = True
+            ses.current_turn_id = None
+            self.emit("assistant_text", {"text": text}, ses.session_id)
+            # the real wrapper logs the idle transition before turn_completed
+            self._set_state(ses, "ready")
+            self.emit("turn_completed", {"record": turn.record(ses.session_id)}, ses.session_id)
+            await asyncio.sleep(0)
+            return
+        raise KeyError(turn_id)
+
+    def set_context(
+        self,
+        used_tokens: int | None = None,
+        window_tokens: int | None = None,
+        used_percentage: float | None = None,
+        model: str = "claude-sonnet-4-5",
+        session_id: str | None = None,
+    ) -> None:
+        """Set the snapshot context; no arguments clears it (null)."""
+        ses = self._session(session_id)
+        if used_tokens is None and window_tokens is None:
+            ses.context = None
+            return
+        if used_percentage is None and used_tokens is not None and window_tokens:
+            used_percentage = min(100.0, max(0.0, used_tokens / window_tokens * 100))
+        ses.context = {
+            "used_tokens": used_tokens,
+            "window_tokens": window_tokens,
+            "used_percentage": used_percentage,
+            "model": model,
+            "source": "statusline",
+            "updated_at": _now(),
+        }
+
+    def drop_streams(self) -> None:
+        """End every open SSE stream, as a network disconnect would."""
+        for ses in self.sessions.values():
+            for q in list(ses.subscribers):
+                q.put_nowait(_CLOSE)
+
+    def skip_seq(self, n: int, session_id: str | None = None) -> None:
+        """Burn n sequence numbers, as a log rotation that lost those events would."""
+        self._session(session_id).next_seq += n
+
+    def set_booting(self, booting: bool) -> None:
+        self._booting = booting
+
+    def set_turn_status(self, code: int | None) -> None:
+        """Answer every turn submission with this status (None restores normal behaviour)."""
+        self._status = code
+
+    def delay_turn_response(self, seconds: float) -> None:
+        """Record the turn, then answer after `seconds` (a client timeout sees a started turn)."""
+        self._delay = seconds
+
+    def reset_connection_after_receive(self, enabled: bool = True) -> None:
+        """Record the turn, then drop the connection without answering."""
+        self._reset_after = enabled
+
+    def reset_connection_before_receive(self, enabled: bool = True) -> None:
+        """Drop the connection after the request arrived, recording no turn."""
+        self._reset_before = enabled
+
+    async def set_unreachable(self, unreachable: bool) -> None:
+        """Stop listening (connections are refused) or listen again on the same port."""
+        uv = self._uv
+        if uv is None or unreachable == self._unreachable:
+            return
+        self._unreachable = unreachable
+        if unreachable:
+            for server in uv.servers:
+                server.close()
+            for conn in list(uv.server_state.connections):
+                conn.transport.abort()
+            await asyncio.sleep(0.05)  # let pooled client connections notice the reset
+            return
+        factory = functools.partial(
+            uv.config.http_protocol_class,
+            config=uv.config,
+            server_state=uv.server_state,
+            app_state=uv.lifespan.state,
+        )
+        loop = asyncio.get_running_loop()
+        uv.servers = [await loop.create_server(factory, sock=self._bind(self._port))]
+
+    def set_session_state(
+        self, state: str, has_transcript: bool | None = None, session_id: str | None = None
+    ) -> None:
+        ses = self._session(session_id)
+        if has_transcript is not None:
+            ses.has_transcript = has_transcript
+        if state != "busy":
+            ses.current_turn_id = None
+        self._set_state(ses, state)
+
+    # ------------------------------------------------------------------ http
+
+    def _abort(self, request: Request) -> None:
+        assert self._uv is not None
+        peer = tuple(request.scope["client"])
+        for conn in list(self._uv.server_state.connections):
+            if conn.transport.get_extra_info("peername") == peer:
+                conn.transport.abort()
+
+    def _auth(self, request: Request) -> None:
+        if request.headers.get("authorization") != f"Bearer {self.token}":
+            raise _Err(401, "unauthorized", "missing or invalid bearer token")
+
+    def _get(self, session_id: str) -> _Session:
+        ses = self.sessions.get(session_id)
+        if ses is None:
+            raise _Err(404, "not_found", f"unknown session {session_id}")
+        return ses
+
+    def _new_id(self, prefix: str) -> str:
+        self._ids += 1
+        return f"{prefix}{self._ids:012x}"
+
+    def _build_app(self) -> FastAPI:
+        app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+        @app.exception_handler(_Err)
+        async def _err(_r: Request, exc: _Err) -> JSONResponse:
+            headers = {"WWW-Authenticate": "Bearer"} if exc.status == 401 else None
+            body = {"error": {"code": exc.code, "message": exc.message}}
+            return JSONResponse(body, status_code=exc.status, headers=headers)
+
+        @app.exception_handler(RequestValidationError)
+        async def _invalid(_r: Request, exc: RequestValidationError) -> JSONResponse:
+            body = {"error": {"code": "invalid_request", "message": str(exc.errors())[:200]}}
+            return JSONResponse(body, status_code=422)
+
+        @app.get("/healthz")
+        async def healthz() -> dict[str, str]:
+            return {"status": "ok"}
+
+        @app.get("/readyz")
+        async def readyz() -> dict[str, str]:
+            return {"status": "ready"}
+
+        @app.get("/v1/sessions")
+        async def list_sessions(request: Request, state: str | None = None) -> dict[str, Any]:
+            self._auth(request)
+            snaps = [s.snapshot() for s in self.sessions.values() if state in (None, s.state)]
+            return {"sessions": snaps}
+
+        @app.post("/v1/sessions", status_code=201)
+        async def create_session(request: Request) -> dict[str, Any]:
+            self._auth(request)
+            body = await self._json_body(request)
+            live = [s for s in self.sessions.values() if s.state in ("creating", "ready", "busy")]
+            if len(live) >= MAX_SESSIONS:
+                raise _Err(429, "too_many_sessions")
+            sid = self._new_id("ses_")
+            name = body.get("name")
+            ses = _Session(sid, name, f"/workdir/{body.get('workdir') or name or sid}", None)
+            ses.model = body.get("model")
+            self.sessions[sid] = ses
+            self._set_state(ses, "creating")
+            self._set_state(ses, "ready")
+            return ses.snapshot()
+
+        @app.get("/v1/sessions/{session_id}")
+        async def get_session(session_id: str, request: Request) -> dict[str, Any]:
+            self._auth(request)
+            return self._get(session_id).snapshot()
+
+        @app.delete("/v1/sessions/{session_id}")
+        async def delete_session(
+            session_id: str, request: Request, purge: bool = False
+        ) -> dict[str, Any]:
+            self._auth(request)
+            ses = self._get(session_id)
+            if ses.state == "creating":
+                raise _Err(409, "invalid_state", "the session is still creating")
+            if ses.state != "stopped":
+                self._set_state(ses, "stopped")
+            snap = ses.snapshot()
+            self.emit("session_closed", {}, session_id)
+            for q in list(ses.subscribers):
+                q.put_nowait(_CLOSE)
+            if purge:
+                del self.sessions[session_id]
+            return snap
+
+        @app.post("/v1/sessions/{session_id}/resume")
+        async def resume(session_id: str, request: Request) -> dict[str, Any]:
+            self._auth(request)
+            ses = self._get(session_id)
+            if ses.state not in RESUMABLE:
+                raise _Err(409, "not_resumable", f"state is {ses.state}")
+            if not ses.has_transcript:
+                raise _Err(409, "not_resumable", "no transcript (claude never took a turn)")
+            self._set_state(ses, "ready")
+            return ses.snapshot()
+
+        @app.post("/v1/sessions/{session_id}/turns", status_code=202)
+        async def submit_turn(session_id: str, request: Request) -> Any:
+            self._auth(request)
+            ses = self._get(session_id)
+            body = await self._json_body(request)
+            if self._reset_before:
+                self._abort(request)
+                return JSONResponse({}, status_code=500)
+            if self._status is not None:
+                code = self._status
+                raise _Err(code, {409: "busy", 503: "booting"}.get(code, f"http_{code}"))
+            if self._booting or ses.state == "creating":
+                raise _Err(503, "booting", "the session is still booting")
+            if ses.state != "ready" and ses.state != "busy":
+                raise _Err(503, "dead", f"the session is {ses.state}")
+            if ses.state == "busy":
+                raise _Err(409, "busy", "a turn is already running")
+            text, metadata = body.get("text"), body.get("metadata", {})
+            if not isinstance(text, str) or not isinstance(metadata, dict):
+                raise _Err(422, "invalid_request", "text must be a string, metadata an object")
+            turn = _Turn(self._new_id("turn-"), text, metadata, _now())
+            ses.turns[turn.turn_id] = turn
+            ses.current_turn_id = turn.turn_id
+            self.received_turns += 1
+            self.turn_texts.append(text)
+            self.turn_metadata.append(metadata)
+            self.last_turn_id = turn.turn_id
+            self._set_state(ses, "busy")
+            sid = ses.session_id
+            self.emit(
+                "user_message",
+                {"turn_id": turn.turn_id, "origin": "client", "text": text, "files": []},
+                sid,
+            )  # noqa: E501
+            self.emit(
+                "turn_started", {"turn_id": turn.turn_id, "origin": "client", "text": text}, sid
+            )  # noqa: E501
+            if self._reset_after:
+                self._abort(request)
+            if self._delay:
+                await asyncio.sleep(self._delay)
+            return {"turn_id": turn.turn_id, "state": "running"}
+
+        @app.get("/v1/sessions/{session_id}/turns")
+        async def list_turns(session_id: str, request: Request) -> dict[str, Any]:
+            self._auth(request)
+            return {"turns": [t.summary() for t in self._get(session_id).turns.values()]}
+
+        @app.get("/v1/sessions/{session_id}/turns/{turn_id}")
+        async def get_turn(session_id: str, turn_id: str, request: Request) -> dict[str, Any]:
+            self._auth(request)
+            turn = self._get(session_id).turns.get(turn_id)
+            if turn is None:
+                raise _Err(404, "not_found", f"unknown turn {turn_id}")
+            return turn.record(session_id)
+
+        @app.post("/v1/sessions/{session_id}/interrupt")
+        async def interrupt(session_id: str, request: Request) -> dict[str, Any]:
+            self._auth(request)
+            ses = self._get(session_id)
+            turn = ses.turns.get(ses.current_turn_id or "")
+            if turn is not None:
+                turn.state, turn.completed_at = "interrupted", _now()
+                ses.current_turn_id = None
+                self.emit("turn_failed", {"record": turn.record(session_id)}, session_id)
+                self._set_state(ses, "ready")
+            return ses.snapshot()
+
+        @app.post("/v1/sessions/{session_id}/commands", status_code=202)
+        async def commands(session_id: str, request: Request) -> dict[str, Any]:
+            self._auth(request)
+            self._get(session_id)
+            body = await self._json_body(request)
+            name = body.get("name") or body.get("command")
+            if name not in ("compact", "context", "mcp", "reload-plugins", "reload-skills"):
+                raise _Err(422, "invalid_request", f"unknown command {name}")
+            self.emit("command_queued", {"name": name}, session_id)
+            return {"command_id": self._new_id("cmd-"), "state": "queued"}
+
+        @app.get("/v1/peers")
+        async def peers(request: Request) -> dict[str, Any]:
+            self._auth(request)
+            return self.peers
+
+        @app.get("/v1/sessions/{session_id}/history")
+        async def history(
+            session_id: str,
+            request: Request,
+            after_seq: int = 0,
+            limit: int = 100,
+            before_seq: int | None = None,
+            types: str | None = None,
+        ) -> dict[str, Any]:
+            self._auth(request)
+            ses = self._get(session_id)
+            if limit < 1 or after_seq < 0 or (before_seq is not None and before_seq < 0):
+                raise _Err(422, "invalid_request", "bad query values")
+            wanted: set[str] | None = None
+            if types is not None:
+                names = {t.strip() for t in types.split(",") if t.strip()}
+                unknown = sorted(names - set(EVENT_TYPES))
+                if unknown or not names:
+                    raise _Err(400, "invalid_request", f"unknown event types: {unknown}")
+                wanted = names
+            if before_seq is not None and "after_seq" in request.query_params:
+                raise _Err(400, "invalid_request", "before_seq and after_seq are exclusive")
+            size = min(limit, MAX_PAGE)
+            match = [e for e in ses.events if wanted is None or e["type"] in wanted]
+            if before_seq is not None:
+                older = [e for e in match if e["seq"] < before_seq]
+                page, more = older[-size:], len(older) > size
+                next_seq = page[-1]["seq"] if page else before_seq
+                return {
+                    "events": page,
+                    "next_seq": next_seq,
+                    "has_more": any(e["seq"] > next_seq for e in match),
+                    "prev_seq": page[0]["seq"] if page and more else None,
+                    "has_more_before": more,
+                }
+            newer = [e for e in match if e["seq"] > after_seq]
+            page = newer[:size]
+            return {
+                "events": page,
+                "next_seq": page[-1]["seq"] if page else after_seq,
+                "has_more": len(newer) > size,
+            }
+
+        @app.get("/v1/sessions/{session_id}/events")
+        async def events(
+            session_id: str, request: Request, after_seq: int | None = None
+        ) -> StreamingResponse:
+            self._auth(request)
+            ses = self._get(session_id)
+            start = after_seq
+            last_id = request.headers.get("last-event-id")
+            if last_id is not None and last_id.strip():
+                try:
+                    start = max(0, int(last_id))
+                except ValueError as exc:
+                    raise _Err(
+                        400, "invalid_last_event_id", "Last-Event-ID must be an integer"
+                    ) from exc
+            queue: asyncio.Queue[Any] = asyncio.Queue()
+            ses.subscribers.add(queue)
+            replay = (
+                ses.events[-REPLAY:]
+                if start is None
+                else [e for e in ses.events if e["seq"] > start]
+            )
+            return StreamingResponse(
+                self._stream(ses, queue, replay, start or 0),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache"},
+            )
+
+        return app
+
+    @staticmethod
+    async def _json_body(request: Request) -> dict[str, Any]:
+        raw = await request.body()
+        if not raw:
+            return {}
+        try:
+            body = json.loads(raw)
+        except ValueError as exc:
+            raise _Err(422, "invalid_request", "body is not JSON") from exc
+        if not isinstance(body, dict):
+            raise _Err(422, "invalid_request", "body must be an object")
+        return body
+
+    @staticmethod
+    def _frame(env: dict[str, Any], with_id: bool = True) -> bytes:
+        head = f"id: {env['seq']}\n" if with_id else ""
+        data = json.dumps(env, separators=(",", ":"))
+        return f"{head}event: {env['type']}\ndata: {data}\n\n".encode()
+
+    async def _stream(
+        self,
+        ses: _Session,
+        queue: asyncio.Queue[Any],
+        replay: list[dict[str, Any]],
+        sent: int,
+    ) -> AsyncIterator[bytes]:
+        try:
+            for env in replay:
+                sent = max(sent, env["seq"])
+                yield self._frame(env)
+                if env["type"] == "session_closed":
+                    return
+            while True:
+                try:
+                    item = await asyncio.wait_for(queue.get(), self.ping_interval)
+                except TimeoutError:
+                    yield b": ping\n\n"
+                    continue
+                if item is _CLOSE:
+                    return
+                if item["seq"] <= sent:
+                    continue
+                sent = item["seq"]
+                yield self._frame(item)
+                if item["type"] == "session_closed":
+                    return
+        finally:
+            ses.subscribers.discard(queue)
+            with contextlib.suppress(Exception):
+                queue.put_nowait(_CLOSE)
