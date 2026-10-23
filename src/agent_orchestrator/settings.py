@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import urlparse
 
-from pydantic import ValidationError, field_validator, model_validator
+from pydantic import ValidationError, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 PREFIX = "ORCH_"
@@ -53,8 +53,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix=PREFIX, extra="ignore")
 
     database_url: str
-    master_key: str | None = None
     master_key_file: str = ""
+    master_key: str | None = None
     namespace: str = "agents"
     agent_image: str = ""
     check_image: str = ""
@@ -117,92 +117,124 @@ class Settings(BaseSettings):
                 loc = err["loc"]
                 msg = err["msg"].removeprefix("Value error, ")
                 if loc:
-                    problems.setdefault(_var(str(loc[0])), msg)
+                    # "ORCH_X::msg" names a different variable than the failing field
+                    var, sep, rest = msg.partition("::")
+                    if sep and var.startswith(PREFIX):
+                        problems.setdefault(var, rest)
+                    else:
+                        problems.setdefault(_var(str(loc[0])), msg)
                 else:
                     problems.setdefault("ORCH_*", msg)
-            # the aggregate validator carries its own variable names, one per line
-            for name, msg in list(problems.items()):
-                if name == "ORCH_*":
-                    del problems[name]
-                    for line in msg.splitlines():
-                        var, _, rest = line.partition(": ")
-                        problems.setdefault(var, rest)
             raise SettingsError(problems) from None
 
     _split = field_validator("models", "allowed_cidrs", "agent_images", mode="before")(
         lambda cls, v: _csv(v)
     )
 
-    @model_validator(mode="after")
-    def _validate_all(self) -> Settings:
-        problems: dict[str, str] = {}
+    # Checks are field validators (not one mode="after" model validator) so they still run
+    # when an unrelated field fails type or required checks; cross-field checks skip
+    # silently when a dependency already failed (that failure is reported on its own).
 
-        def bad(var: str, msg: str) -> None:
-            problems.setdefault(var, msg)
-
-        bad_cidrs = []
-        for entry in self.allowed_cidrs:
+    @field_validator("allowed_cidrs")
+    @classmethod
+    def _check_cidrs(cls, v: list[str]) -> list[str]:
+        bad = []
+        for entry in v:
             try:
                 ipaddress.ip_network(entry, strict=False)
             except ValueError:
-                bad_cidrs.append(entry)
-        if bad_cidrs:
-            bad("ORCH_ALLOWED_CIDRS", "unparsable CIDR " + ", ".join(repr(c) for c in bad_cidrs))
+                bad.append(entry)
+        if bad:
+            raise _Bad("unparsable CIDR " + ", ".join(repr(c) for c in bad))
+        return v
 
-        if not _TAG_RE.match(self.any_mcp_ref):
-            bad(
-                "ORCH_ANY_MCP_REF",
-                f"{self.any_mcp_ref!r} must be a pinned release tag like v1.2.3, not a branch",
-            )
+    @field_validator("any_mcp_ref")
+    @classmethod
+    def _check_ref(cls, v: str) -> str:
+        if not _TAG_RE.match(v):
+            raise _Bad(f"{v!r} must be a pinned release tag like v1.2.3, not a branch")
+        return v
 
-        key_var = "ORCH_MASTER_KEY"
-        if self.master_key_file:
-            key_var = "ORCH_MASTER_KEY_FILE"
+    @field_validator("master_key_file")
+    @classmethod
+    def _check_key_file(cls, v: str) -> str:
+        if v:
             try:
-                self.master_key = Path(self.master_key_file).read_text()
+                key = Path(v).read_text().strip()
             except OSError as exc:
-                bad(key_var, f"cannot read {self.master_key_file}: {exc}")
-                self.master_key = None
-        if self.master_key is not None:
-            self.master_key = self.master_key.strip()
-            if len(self.master_key.encode()) < MIN_MASTER_KEY_BYTES:
-                bad(key_var, f"master key must be at least {MIN_MASTER_KEY_BYTES} bytes")
+                raise _Bad(f"cannot read {v}: {exc}") from None
+            if len(key.encode()) < MIN_MASTER_KEY_BYTES:
+                raise _Bad(f"master key must be at least {MIN_MASTER_KEY_BYTES} bytes")
+        return v
+
+    @field_validator("master_key")
+    @classmethod
+    def _check_key(cls, v: str | None, info: ValidationInfo) -> str | None:
+        if v is None or info.data.get("master_key_file"):
+            return v  # the file wins and is validated on its own
+        v = v.strip()
+        if len(v.encode()) < MIN_MASTER_KEY_BYTES:
+            raise _Bad(f"master key must be at least {MIN_MASTER_KEY_BYTES} bytes")
+        return v
+
+    @field_validator("dispatching_stale_seconds")
+    @classmethod
+    def _check_stale(cls, v: float, info: ValidationInfo) -> float:
+        send = info.data.get("wrapper_send_timeout_seconds")
+        if send is not None and 2 * send > v:
+            raise _Bad(
+                "ORCH_WRAPPER_SEND_TIMEOUT_SECONDS::must be at most half of ORCH_DISPATCHING_STALE_SECONDS"
+            )
+        return v
+
+    @field_validator("ambiguous_settle_seconds")
+    @classmethod
+    def _check_settle(cls, v: float, info: ValidationInfo) -> float:
+        send = info.data.get("wrapper_send_timeout_seconds")
+        if send is not None and v < 2 * send:
+            raise _Bad("must be at least twice ORCH_WRAPPER_SEND_TIMEOUT_SECONDS")
+        return v
+
+    @field_validator("ambiguous_deadline_seconds")
+    @classmethod
+    def _check_deadline(cls, v: float, info: ValidationInfo) -> float:
+        settle = info.data.get("ambiguous_settle_seconds")
+        if settle is not None and v <= settle:
+            raise _Bad("must exceed ORCH_AMBIGUOUS_SETTLE_SECONDS")
+        return v
+
+    @field_validator("retry_backoff_base_seconds")
+    @classmethod
+    def _check_base(cls, v: float) -> float:
+        if v <= 0:
+            raise _Bad("must be greater than 0")
+        return v
+
+    @field_validator("retry_backoff_max_seconds")
+    @classmethod
+    def _check_max(cls, v: float, info: ValidationInfo) -> float:
+        base = info.data.get("retry_backoff_base_seconds")
+        if base is not None and v < base:
+            raise _Bad("must be at least ORCH_RETRY_BACKOFF_BASE_SECONDS")
+        return v
+
+    @field_validator("discard_hook_url")
+    @classmethod
+    def _check_hook_url(cls, v: str, info: ValidationInfo) -> str:
+        if info.data.get("discard_hook_command") and v:
+            raise _Bad("set at most one of ORCH_DISCARD_HOOK_COMMAND and ORCH_DISCARD_HOOK_URL")
+        if v:
+            parsed = urlparse(v)
+            if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                raise _Bad("must be an http or https URL")
+        return v
+
+    @model_validator(mode="after")
+    def _resolve(self) -> Settings:
+        if self.master_key_file:
+            self.master_key = Path(self.master_key_file).read_text().strip()
         if not self.check_image:
             self.check_image = self.agent_image
-
-        send = self.wrapper_send_timeout_seconds
-        if 2 * send > self.dispatching_stale_seconds:
-            bad(
-                "ORCH_WRAPPER_SEND_TIMEOUT_SECONDS",
-                "must be at most half of ORCH_DISPATCHING_STALE_SECONDS",
-            )
-        if self.ambiguous_settle_seconds < 2 * send:
-            bad(
-                "ORCH_AMBIGUOUS_SETTLE_SECONDS",
-                "must be at least twice ORCH_WRAPPER_SEND_TIMEOUT_SECONDS",
-            )
-        if self.ambiguous_deadline_seconds <= self.ambiguous_settle_seconds:
-            bad("ORCH_AMBIGUOUS_DEADLINE_SECONDS", "must exceed ORCH_AMBIGUOUS_SETTLE_SECONDS")
-        if self.retry_backoff_base_seconds <= 0:
-            bad("ORCH_RETRY_BACKOFF_BASE_SECONDS", "must be greater than 0")
-        if self.retry_backoff_max_seconds < self.retry_backoff_base_seconds:
-            bad(
-                "ORCH_RETRY_BACKOFF_MAX_SECONDS",
-                "must be at least ORCH_RETRY_BACKOFF_BASE_SECONDS",
-            )
-
-        if self.discard_hook_command and self.discard_hook_url:
-            bad(
-                "ORCH_DISCARD_HOOK_URL",
-                "set at most one of ORCH_DISCARD_HOOK_COMMAND and ORCH_DISCARD_HOOK_URL",
-            )
-        if self.discard_hook_url:
-            parsed = urlparse(self.discard_hook_url)
-            if parsed.scheme not in ("http", "https") or not parsed.netloc:
-                bad("ORCH_DISCARD_HOOK_URL", "must be an http or https URL")
-
-        if problems:
-            raise _Bad("\n".join(f"{k}: {v}" for k, v in problems.items()))
         return self
 
     def require_master_key(self) -> str:

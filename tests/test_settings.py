@@ -230,3 +230,14 @@ def test_cross_field_errors_all_reported(monkeypatch):
         assert var in e.value.problems
     assert "nope" in e.value.problems["ORCH_ALLOWED_CIDRS"]
     assert "bad2" in e.value.problems["ORCH_ALLOWED_CIDRS"]
+
+
+def test_error_names_every_bad_variable_across_validators(monkeypatch):
+    monkeypatch.delenv("ORCH_DATABASE_URL")
+    monkeypatch.setenv("ORCH_HTTP_PORT", "abc")
+    monkeypatch.setenv("ORCH_ANY_MCP_REF", "main")
+    monkeypatch.setenv("ORCH_ALLOWED_CIDRS", "nope")
+    with pytest.raises(SettingsError) as e:
+        Settings()
+    for var in ("DATABASE_URL", "HTTP_PORT", "ANY_MCP_REF", "ALLOWED_CIDRS"):
+        assert f"ORCH_{var}" in str(e.value)
