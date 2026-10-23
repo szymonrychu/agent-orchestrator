@@ -313,3 +313,38 @@ async def test_stored_live_session_kept(env, fake):
     (agent,) = await env.agents(c.id)
     assert agent.session_id == sid
     assert list(fake.sessions) == [sid]
+
+
+class ResumeFails:
+    """The real client, except that resume answers with a fixed wrapper error."""
+
+    def __init__(self, inner, status: int) -> None:
+        self.inner, self.status = inner, status
+
+    async def resume_session(self, session_id: str):
+        raise WrapperError(self.status, "resume", "nope")
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+
+async def test_stored_stopped_session_refused_resume_replaced(env, fake):
+    c, sid = await _bootstrapped(env, "stopped", transcript=True)
+    env.client_override = ResumeFails(WrapperClient(fake.base_url, fake.token), 409)
+    await env.rec.reconcile_once()
+
+    (agent,) = await env.agents(c.id)
+    assert agent.session_id not in (None, sid)
+    assert fake.sessions[sid].state == "stopped"
+    assert fake.sessions[agent.session_id].state == "ready"
+
+
+async def test_stored_stopped_session_resume_5xx_deferred_and_kept(env, fake):
+    c, sid = await _bootstrapped(env, "stopped", transcript=True)
+    env.client_override = ResumeFails(WrapperClient(fake.base_url, fake.token), 503)
+    await env.rec.reconcile_once()
+
+    (agent,) = await env.agents(c.id)
+    assert agent.session_id == sid
+    assert list(fake.sessions) == [sid]
+    assert "agent-alpha-0" in (await env.status(c.id))["message"]
