@@ -1,0 +1,33 @@
+# Chart values for the kind e2e (scripts/e2e.sh). Both images are built locally and loaded
+# into the kind node, so nothing is pulled from Harbor and there is no regcred.
+image:
+  repository: agent-orchestrator
+  tag: e2e
+  pullPolicy: Never
+
+agentImage: agent-orchestrator-agent-test:e2e
+
+postgres:
+  url: postgresql://orch:orch-e2e-password@postgres:5432/orch
+
+masterKey:
+  value: e2e-master-key-0123456789abcdef0123456789abcdef
+
+claude:
+  # The test agent image runs the wrapper's fake claude, which never reads the token.
+  token: e2e-dummy-claude-token
+
+env:
+  # kubectl port-forward connects from loopback inside the api pod; every pod-network
+  # caller (agent pods, check Jobs, any other pod) is refused with 403 forbidden.
+  ORCH_ALLOWED_CIDRS: "127.0.0.0/8"
+  ORCH_AGENT_IMAGES: agent-orchestrator-agent-test:e2e
+  ORCH_IMAGE_PULL_SECRET: ""
+  # scripts/e2e.sh probes which RWX StorageClass works and overrides this when it falls
+  # back to the hostPath one.
+  ORCH_PVC_STORAGE_CLASS: e2e-rwx
+  ORCH_PVC_SIZE: 1Gi
+  ORCH_RETRY_BACKOFF_BASE_SECONDS: "0.5"
+  ORCH_RETRY_BACKOFF_MAX_SECONDS: "2"
+  ORCH_RECONCILE_POLL_SECONDS: "3"
+  ORCH_LOG_LEVEL: INFO
