@@ -205,3 +205,12 @@ def test_spec_retry_default_and_discard_hook_url():
 def test_spec_rejects_malformed_pvc_size(bad):
     with pytest.raises(ValidationError):
         ClusterSpec(pvc_size=bad)
+
+
+def test_trailing_newline_rejected():
+    with pytest.raises(ValueError):
+        validate_slug("abc\n")
+    with pytest.raises(ValidationError):
+        ClusterSpec(workdir="wd\n")
+    with pytest.raises(ValidationError):
+        ClusterSpec(env={"FOO\n": "x"})

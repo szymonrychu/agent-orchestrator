@@ -49,7 +49,7 @@ class SpecInvalid(ValueError):
 
 
 def validate_slug(slug: str) -> None:
-    if not isinstance(slug, str) or len(slug) > SLUG_MAX or not _LABEL_RE.match(slug):
+    if not isinstance(slug, str) or len(slug) > SLUG_MAX or not _LABEL_RE.fullmatch(slug):
         raise ValueError(f"slug {slug!r} must be a DNS-1123 label of at most {SLUG_MAX} characters")
     if slug == "orchestrator" or slug.startswith("orchestrator-"):
         raise ValueError(f"slug {slug!r} is reserved (orchestrator, orchestrator-*)")
@@ -114,7 +114,7 @@ class ClusterSpec(BaseModel):
     @field_validator("workdir")
     @classmethod
     def _workdir(cls, v: str) -> str:
-        if not _LABEL_RE.match(v):
+        if not _LABEL_RE.fullmatch(v):
             raise ValueError("workdir must be a DNS-1123 label")
         return v
 
@@ -131,7 +131,7 @@ class ClusterSpec(BaseModel):
         bad = []
         for key in v:
             if (
-                not _ENV_KEY_RE.match(key)
+                not _ENV_KEY_RE.fullmatch(key)
                 or key == "POD_NAME"
                 or key.startswith(_RESERVED_ENV_PREFIXES)
                 or key.endswith(_RESERVED_ENV_SUFFIXES)
