@@ -428,3 +428,117 @@ async def _take(client: WrapperClient, sid: str, after: int, n: int) -> AsyncIte
         count += 1
         if count >= n:
             return
+
+
+async def _tree(leg: Leg) -> str:
+    """A session whose workdir holds a small tree, written through the turn `files` field."""
+    sid = await leg.create("filetree")
+    files = {
+        "src/main.py": "print('hi')\n",
+        "src/pkg/mod.py": "x = 1\n",
+        "README.md": "# demo\n",
+        ".hidden": "dot\n",
+        "blob.bin": "\x00\x01\x02 binary",
+        "notes.txt": "café\n",
+    }
+    await leg.turn(sid, "write files", files=files)
+    return sid
+
+
+async def test_files_list(leg: Leg) -> None:
+    sid = await _tree(leg)
+    resp = await leg.http.get(f"/v1/sessions/{sid}/files")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert set(body) == {"session_id", "root", "path", "entries", "next_offset"}
+    assert body["session_id"] == sid and body["path"] == "" and body["next_offset"] is None
+    assert body["root"].startswith("/")
+    names = [(e["name"], e["type"]) for e in body["entries"]]
+    mine = [".hidden", "README.md", "blob.bin", "notes.txt", "src"]
+    assert [n for n, _ in names if n in mine] == [
+        "src",
+        ".hidden",
+        "README.md",
+        "blob.bin",
+        "notes.txt",
+    ]
+    assert dict(names)["src"] == "dir" and dict(names)["README.md"] == "file"
+    by_name = {e["name"]: e for e in body["entries"]}
+    assert set(by_name["README.md"]) == {"name", "type", "size", "mtime"}
+    assert by_name["README.md"]["size"] == len("# demo\n")
+    assert by_name["src"]["size"] is None
+    assert by_name["README.md"]["mtime"].endswith("Z")
+
+    sub = (await leg.http.get(f"/v1/sessions/{sid}/files", params={"path": "src"})).json()
+    assert sub["path"] == "src"
+    assert [e["name"] for e in sub["entries"]] == ["pkg", "main.py"]
+    # a path is normalised
+    again = (await leg.http.get(f"/v1/sessions/{sid}/files", params={"path": "src/./pkg/"})).json()
+    assert again["path"] == "src/pkg"
+
+
+async def test_files_content(leg: Leg) -> None:
+    sid = await _tree(leg)
+    url = f"/v1/sessions/{sid}/files/content"
+    text = await leg.http.get(url, params={"path": "src/main.py"})
+    assert text.status_code == 200, text.text
+    body = text.json()
+    assert set(body) == {"session_id", "path", "size", "mtime", "mime", "kind", "content"}
+    assert body["kind"] == "text" and body["content"] == "print('hi')\n"
+    assert body["path"] == "src/main.py" and body["size"] == len("print('hi')\n")
+    assert body["mime"] == "text/x-python"
+    unicode_body = (await leg.http.get(url, params={"path": "notes.txt"})).json()
+    assert unicode_body["kind"] == "text" and unicode_body["content"] == "café\n"
+    binary = (await leg.http.get(url, params={"path": "blob.bin"})).json()
+    assert binary["kind"] == "binary" and binary["content"] is None
+    assert binary["size"] == len("\x00\x01\x02 binary")
+
+
+async def test_files_errors(leg: Leg) -> None:
+    sid = await _tree(leg)
+    listing, content = f"/v1/sessions/{sid}/files", f"/v1/sessions/{sid}/files/content"
+
+    async def expect(url: str, params: dict[str, str], status: int, code: str) -> None:
+        resp = await leg.http.get(url, params=params)
+        assert resp.status_code == status, (url, params, resp.text)
+        assert resp.json()["error"]["code"] == code, (url, params, resp.text)
+
+    for url in (listing, content):
+        await expect(url, {"path": "../outside"}, 400, "invalid_path")
+        await expect(url, {"path": "/etc/passwd"}, 400, "invalid_path")
+        await expect(url, {"path": "a\x00b"}, 400, "invalid_path")
+        await expect(url, {"path": "src/../../x"}, 400, "invalid_path")
+        await expect(url, {"path": "missing"}, 404, "not_found")
+    await expect(listing, {"path": "README.md"}, 400, "not_a_directory")
+    await expect(content, {"path": "src"}, 400, "not_a_file")
+    await expect(content, {}, 400, "not_a_file")  # the workdir itself is a directory
+    bad = await leg.http.get(listing, params={"offset": "-1"})
+    assert bad.status_code == 422 and bad.json()["error"]["code"] == "invalid_request"
+    for url in ("/v1/sessions/ses_unknown/files", "/v1/sessions/ses_unknown/files/content"):
+        resp = await leg.http.get(url)
+        assert resp.status_code == 404 and resp.json()["error"]["code"] == "not_found"
+        async with httpx.AsyncClient(base_url=leg.base_url) as anon:
+            assert (await anon.get(url)).status_code == 401
+
+
+async def test_files_paging_and_too_large(leg: Leg) -> None:
+    """Caps are config on the wrapper (2000 entries, 1 MiB); only the fake can lower them."""
+    if leg.fake is None:
+        pytest.skip("the real image keeps the default caps")
+    sid = await _tree(leg)
+    leg.fake.files_max_entries = 2
+    leg.fake.file_preview_max_bytes = 8
+    first = (await leg.http.get(f"/v1/sessions/{sid}/files")).json()
+    assert [e["name"] for e in first["entries"]] == ["src", ".hidden"]
+    assert first["next_offset"] == 2
+    rest = (await leg.http.get(f"/v1/sessions/{sid}/files", params={"offset": 2})).json()
+    assert [e["name"] for e in rest["entries"]] == ["README.md", "blob.bin"]
+    assert rest["next_offset"] == 4
+    last = (await leg.http.get(f"/v1/sessions/{sid}/files", params={"offset": 4})).json()
+    assert [e["name"] for e in last["entries"]] == ["notes.txt"] and last["next_offset"] is None
+
+    url = f"/v1/sessions/{sid}/files/content"
+    small = (await leg.http.get(url, params={"path": ".hidden"})).json()  # 4 bytes
+    assert small["kind"] == "text" and small["content"] == "dot\n"
+    long = (await leg.http.get(url, params={"path": "src/main.py"})).json()  # 12 bytes
+    assert long["kind"] == "too_large" and long["content"] is None and long["size"] == 12

@@ -175,3 +175,30 @@ class CheckView(BaseModel):
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+
+
+class FileEntry(BaseModel):
+    name: str
+    type: Literal["dir", "file", "symlink", "other"]
+    size: int | None
+    mtime: str
+
+
+class FileListing(BaseModel):
+    cluster_id: uuid.UUID
+    agent_id: uuid.UUID
+    root: str
+    path: str
+    entries: list[FileEntry]
+    next_offset: int | None
+
+
+class FileContent(BaseModel):
+    cluster_id: uuid.UUID
+    agent_id: uuid.UUID
+    path: str
+    size: int
+    mtime: str
+    mime: str | None
+    kind: Literal["text", "binary", "too_large"]
+    content: str | None

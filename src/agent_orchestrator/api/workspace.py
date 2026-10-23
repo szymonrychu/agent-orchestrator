@@ -17,12 +17,16 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Annotated, Any
+from urllib.parse import quote
 
 import httpx
 import psycopg
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI, Query, Request
+from pydantic import BaseModel, ValidationError
 
+from agent_orchestrator.api import schemas
+from agent_orchestrator.api.clusters import Cfg, Pool
 from agent_orchestrator.api.errors import ApiError, not_found
 from agent_orchestrator.db import agents as agents_repo
 from agent_orchestrator.db import clusters as clusters_repo
@@ -199,3 +203,78 @@ async def forward(
         ) from None
     log.debug("wrapper answered %s on %s %s", status, method, path)
     return body
+
+
+# ------------------------------------------------------------------------------ file routes
+
+router = APIRouter(prefix="/api/v1")
+
+
+async def _file_call[M: BaseModel](
+    request: Request,
+    pool: Pool,
+    settings: Cfg,
+    cluster_id: uuid.UUID,
+    agent_id: uuid.UUID | None,
+    tail: str,
+    params: dict[str, Any],
+    model: type[M],
+) -> M:
+    """Forward one file read to the agent chosen by `resolve_agent` and add the ids."""
+    async with pool.connection() as conn:
+        target = await resolve_agent(conn, settings, cluster_id=cluster_id, agent_id=agent_id)
+    sid = quote(target.session_id, safe="")
+    body = await forward(request.app, target, "GET", f"/sessions/{sid}/{tail}", params=params)
+    try:
+        return model.model_validate(
+            {**body, "cluster_id": target.cluster_id, "agent_id": target.agent_id}
+        )
+    except (ValidationError, TypeError):
+        raise ApiError(
+            502, "wrapper_error", f"wrapper of {target.pod_name} answered an unexpected body"
+        ) from None
+
+
+@router.get("/clusters/{cluster_id}/files", response_model=schemas.FileListing)
+async def list_files(
+    request: Request,
+    pool: Pool,
+    settings: Cfg,
+    cluster_id: uuid.UUID,
+    path: str = "",
+    offset: Annotated[int, Query(ge=0)] = 0,
+    agent_id: uuid.UUID | None = None,
+) -> schemas.FileListing:
+    """One directory of the cluster workdir, read by the first ready agent (or `agent_id`)."""
+    return await _file_call(
+        request,
+        pool,
+        settings,
+        cluster_id,
+        agent_id,
+        "files",
+        {"path": path, "offset": offset},
+        schemas.FileListing,
+    )
+
+
+@router.get("/clusters/{cluster_id}/files/content", response_model=schemas.FileContent)
+async def file_content(
+    request: Request,
+    pool: Pool,
+    settings: Cfg,
+    cluster_id: uuid.UUID,
+    path: str = "",
+    agent_id: uuid.UUID | None = None,
+) -> schemas.FileContent:
+    """One file of the cluster workdir: text, or kind binary / too_large without content."""
+    return await _file_call(
+        request,
+        pool,
+        settings,
+        cluster_id,
+        agent_id,
+        "files/content",
+        {"path": path},
+        schemas.FileContent,
+    )

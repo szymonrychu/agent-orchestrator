@@ -400,7 +400,7 @@ Versioning: `/api/v1` is additive only. New routes, new optional request fields 
 
 Source allowlist: the api checks the direct socket peer against `ORCH_ALLOWED_CIDRS` (default `192.168.1.0/24`). `Forwarded`, `X-Forwarded-For` and `X-Real-IP` are never read. A caller outside the list gets `403 forbidden`. `/healthz` and `/readyz` are exempt.
 
-Error codes: `bad_request` (400), `forbidden` (403), `forbidden_origin` (403, `Origin` not in `ORCH_ALLOWED_ORIGINS`), `not_found` (404), `conflict` (409, slug exists), `cluster_deleting` (409), `cluster_limit` (409, `ORCH_MAX_CLUSTERS` reached), `not_queued` (409), `not_failed` (409), `agent_gone` (409), `agent_not_ready` (409, no ready agent for a file or terminal proxy), `invalid_request` (422), `target_gone` (422), `internal` (500, 503 on `/readyz`), `wrapper_error` (502, the wrapper answered 5xx), `wrapper_unreachable` (502, the wrapper pod could not be reached), `unavailable` (503, no master key for the proxies).
+Error codes: `bad_request` (400), `forbidden` (403), `forbidden_origin` (403, `Origin` not in `ORCH_ALLOWED_ORIGINS`), `not_found` (404), `conflict` (409, slug exists), `cluster_deleting` (409), `cluster_limit` (409, `ORCH_MAX_CLUSTERS` reached), `not_queued` (409), `not_failed` (409), `agent_gone` (409), `agent_not_ready` (409, no ready agent for a file or terminal proxy), `invalid_path` (400, a file path is absolute, holds a NUL byte or leaves the workdir), `not_a_directory` (400, listing a file), `not_a_file` (400, reading a directory or special file), `invalid_request` (422), `target_gone` (422), `internal` (500, 503 on `/readyz`), `wrapper_error` (502, the wrapper answered 5xx), `wrapper_unreachable` (502, the wrapper pod could not be reached), `unavailable` (503, no master key for the proxies).
 
 ### `GET /api/v1/meta`
 
@@ -481,6 +481,38 @@ Pages stored events. Query `before_id` or `after_id` (mutually exclusive), `limi
 ### `GET /api/v1/clusters/{cluster_id}/events/stream`
 
 SSE stream of the cluster's stored events after a cursor: query `after_id` or the `Last-Event-ID` header; with neither, it starts at the current end. Each frame has `id` = the event id, `event` = the stored event type and `data` = the event JSON. Errors before the stream starts: 400 `bad_request`, 404 `not_found`.
+
+### `GET /api/v1/clusters/{cluster_id}/files`
+
+Lists one directory of the cluster's shared workdir, read through the wrapper of the first ready agent (lowest ordinal) or of `agent_id`. Read-only; dotfiles and `.git` are included. Query: `path` (relative to the workdir, default empty is the workdir root), `offset` (integer >= 0, default 0; pass the previous `next_offset`), `agent_id` (optional; an agent of this cluster, else 404 `not_found`). Response 200:
+
+```json
+{
+  "cluster_id": "5b7e...", "agent_id": "0c1d...",
+  "root": "/workdir/proj", "path": "src",
+  "entries": [
+    {"name": "pkg", "type": "dir", "size": null, "mtime": "2026-10-23T09:01:00.011Z"},
+    {"name": "main.py", "type": "file", "size": 812, "mtime": "2026-10-23T09:02:10.500Z"}
+  ],
+  "next_offset": null
+}
+```
+
+`root` is the absolute real path of the workdir and `path` the normalised relative path. `type` is `dir`, `file`, `symlink` (listed, never followed) or `other`; `size` is bytes for a `file` and null otherwise; `mtime` is UTC ISO-8601. Directories come first, then the rest, each by name; a page holds at most the wrapper's `limits.files_max_entries` entries and `next_offset` is the `offset` of the next page, or null on the last. A workdir that does not exist yet answers 404 `not_found` for the empty path. Errors: 400 `invalid_path`, 400 `not_a_directory`, 404 `not_found` (cluster, agent, path or workdir), 409 `agent_not_ready` (no usable agent), 422 `invalid_request` (bad `offset`), 502 `wrapper_unreachable`, 502 `wrapper_error`, 503 `unavailable` (no master key). The wrapper status and code are passed through unchanged for 4xx.
+
+### `GET /api/v1/clusters/{cluster_id}/files/content`
+
+Reads one file of the cluster workdir through the same agent choice as the listing. Query: `path` (relative to the workdir), `agent_id` (optional). Response 200:
+
+```json
+{
+  "cluster_id": "5b7e...", "agent_id": "0c1d...",
+  "path": "src/main.py", "size": 812, "mtime": "2026-10-23T09:02:10.500Z",
+  "mime": "text/x-python", "kind": "text", "content": "print('hi')\n"
+}
+```
+
+`mime` is guessed from the file name (null when unknown). `kind` is `too_large` when `size` exceeds the wrapper's `limits.file_preview_max_bytes` (default 1 MiB; `content` null), `binary` when the first 8 KiB hold a NUL byte or the file is not valid UTF-8 (`content` null), else `text` with the decoded `content`. The content is relayed as stored and is not passed through the secret redactor. Errors: 400 `invalid_path`, 400 `not_a_file`, 404 `not_found`, 409 `agent_not_ready`, 502 `wrapper_unreachable`, 502 `wrapper_error`, 503 `unavailable`.
 
 ### `GET /api/v1/stream`
 

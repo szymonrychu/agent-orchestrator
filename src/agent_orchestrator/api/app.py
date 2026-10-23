@@ -59,6 +59,7 @@ def create_app(
     app.include_router(clusters.router)
     app.include_router(messages.router)
     app.include_router(streams.router)
+    app.include_router(workspace.router)
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz() -> dict:

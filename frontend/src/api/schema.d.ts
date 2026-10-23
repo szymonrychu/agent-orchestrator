@@ -177,6 +177,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/clusters/{cluster_id}/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Files
+         * @description One directory of the cluster workdir, read by the first ready agent (or `agent_id`).
+         */
+        get: operations["list_files_api_v1_clusters__cluster_id__files_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/clusters/{cluster_id}/files/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * File Content
+         * @description One file of the cluster workdir: text, or kind binary / too_large without content.
+         */
+        get: operations["file_content_api_v1_clusters__cluster_id__files_content_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/clusters/{cluster_id}/messages": {
         parameters: {
             query?: never;
@@ -531,6 +571,69 @@ export interface components {
             has_more_before: boolean;
             /** Next After Id */
             next_after_id: number | null;
+        };
+        /** FileContent */
+        FileContent: {
+            /**
+             * Agent Id
+             * Format: uuid
+             */
+            agent_id: string;
+            /**
+             * Cluster Id
+             * Format: uuid
+             */
+            cluster_id: string;
+            /** Content */
+            content: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "text" | "binary" | "too_large";
+            /** Mime */
+            mime: string | null;
+            /** Mtime */
+            mtime: string;
+            /** Path */
+            path: string;
+            /** Size */
+            size: number;
+        };
+        /** FileEntry */
+        FileEntry: {
+            /** Mtime */
+            mtime: string;
+            /** Name */
+            name: string;
+            /** Size */
+            size: number | null;
+            /**
+             * Type
+             * @enum {string}
+             */
+            type: "dir" | "file" | "symlink" | "other";
+        };
+        /** FileListing */
+        FileListing: {
+            /**
+             * Agent Id
+             * Format: uuid
+             */
+            agent_id: string;
+            /**
+             * Cluster Id
+             * Format: uuid
+             */
+            cluster_id: string;
+            /** Entries */
+            entries: components["schemas"]["FileEntry"][];
+            /** Next Offset */
+            next_offset: number | null;
+            /** Path */
+            path: string;
+            /** Root */
+            root: string;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -1126,6 +1229,75 @@ export interface operations {
                 };
                 content: {
                     "text/event-stream": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_files_api_v1_clusters__cluster_id__files_get: {
+        parameters: {
+            query?: {
+                path?: string;
+                offset?: number;
+                agent_id?: string | null;
+            };
+            header?: never;
+            path: {
+                cluster_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FileListing"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    file_content_api_v1_clusters__cluster_id__files_content_get: {
+        parameters: {
+            query?: {
+                path?: string;
+                agent_id?: string | null;
+            };
+            header?: never;
+            path: {
+                cluster_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FileContent"];
                 };
             };
             /** @description Validation Error */

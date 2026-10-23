@@ -11,10 +11,16 @@ import asyncio
 import contextlib
 import functools
 import json
+import mimetypes
+import os
+import shutil
 import socket
+import stat
+import tempfile
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import uvicorn
@@ -26,12 +32,39 @@ from fastapi.responses import JSONResponse, StreamingResponse
 MAX_SESSIONS = 4
 REPLAY = 100
 MAX_PAGE = 1000
+BINARY_SNIFF_BYTES = 8192
 RESUMABLE = ("stopped", "failed", "dead")
 _CLOSE = object()
 
 
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds")
+
+
+def _iso(timestamp: float) -> str:
+    stamp = datetime.fromtimestamp(timestamp, UTC).isoformat(timespec="milliseconds")
+    return stamp.replace("+00:00", "Z")
+
+
+def _confine(workdir: Path, rel: str) -> Path:
+    """The wrapper's confinement rule: relative, no NUL, real path inside the real workdir."""
+    if "\x00" in rel or os.path.isabs(rel):
+        raise _Err(400, "invalid_path", "path must be relative and free of NUL bytes")
+    root = Path(os.path.realpath(workdir))
+    resolved = Path(os.path.realpath(root / rel))
+    if resolved != root and not resolved.is_relative_to(root):
+        raise _Err(400, "invalid_path", "path escapes the workdir")
+    return resolved
+
+
+def _entry_type(mode: int) -> str:
+    if stat.S_ISDIR(mode):
+        return "dir"
+    if stat.S_ISREG(mode):
+        return "file"
+    if stat.S_ISLNK(mode):
+        return "symlink"
+    return "other"
 
 
 class _Err(Exception):
@@ -135,6 +168,10 @@ class FakeWrapper:
         self._uv: uvicorn.Server | None = None
         self._task: asyncio.Task[None] | None = None
         self._port = 0
+        # file API: every session gets a temp workdir under this root (removed with the fake)
+        self._tmp = tempfile.TemporaryDirectory(prefix="fake-wrapper-")
+        self.files_max_entries = 2000
+        self.file_preview_max_bytes = 1048576
         self.app = self._build_app()
 
     # ------------------------------------------------------------------ lifecycle
@@ -185,6 +222,10 @@ class FakeWrapper:
         await self.stop()
 
     # ------------------------------------------------------------------ test controls
+
+    def workdir(self, session_id: str | None = None) -> Path:
+        """The real directory of a session workdir (default: the newest session)."""
+        return Path(self._session(session_id).workdir)
 
     def _session(self, session_id: str | None = None) -> _Session:
         if session_id is not None:
@@ -380,7 +421,9 @@ class FakeWrapper:
                 raise _Err(429, "too_many_sessions")
             sid = self._new_id("ses_")
             name = body.get("name")
-            ses = _Session(sid, name, f"/workdir/{body.get('workdir') or name or sid}", None)
+            workdir = Path(self._tmp.name, sid).resolve()
+            workdir.mkdir(exist_ok=True)
+            ses = _Session(sid, name, str(workdir), None)
             ses.model = body.get("model")
             self.sessions[sid] = ses
             self._set_state(ses, "creating")
@@ -408,6 +451,7 @@ class FakeWrapper:
                 q.put_nowait(_CLOSE)
             if purge:
                 del self.sessions[session_id]
+                shutil.rmtree(ses.workdir, ignore_errors=True)
             return snap
 
         @app.post("/v1/sessions/{session_id}/resume")
@@ -441,6 +485,7 @@ class FakeWrapper:
             text, metadata = body.get("text"), body.get("metadata", {})
             if not isinstance(text, str) or not isinstance(metadata, dict):
                 raise _Err(422, "invalid_request", "text must be a string, metadata an object")
+            self._write_turn_files(ses, body.get("files"))
             turn = _Turn(self._new_id("turn-"), text, metadata, _now())
             ses.turns[turn.turn_id] = turn
             ses.current_turn_id = turn.turn_id
@@ -502,6 +547,76 @@ class FakeWrapper:
                 raise _Err(422, "invalid_request", f"unknown command {name}")
             self.emit("command_queued", {"name": name}, session_id)
             return {"command_id": self._new_id("cmd-"), "state": "queued"}
+
+        @app.get("/v1/sessions/{session_id}/files")
+        async def list_files(
+            session_id: str, request: Request, path: str = "", offset: int = 0
+        ) -> dict[str, Any]:
+            self._auth(request)
+            ses = self._get(session_id)
+            if offset < 0:
+                raise _Err(422, "invalid_request", "offset must be >= 0")
+            root, resolved = self._locate(ses, path)
+            if not resolved.exists():
+                raise _Err(404, "not_found", "no such file or directory")
+            if not resolved.is_dir():
+                raise _Err(400, "not_a_directory", "path is not a directory")
+            rows = []
+            for entry in os.scandir(resolved):
+                st = entry.stat(follow_symlinks=False)
+                kind = _entry_type(st.st_mode)
+                rows.append(
+                    (
+                        kind != "dir",
+                        os.fsencode(entry.name),
+                        {
+                            "name": entry.name,
+                            "type": kind,
+                            "size": st.st_size if kind == "file" else None,
+                            "mtime": _iso(st.st_mtime),
+                        },
+                    )
+                )
+            rows.sort(key=lambda row: (row[0], row[1]))
+            size = self.files_max_entries
+            more = offset + size < len(rows)
+            return {
+                "session_id": session_id,
+                "root": str(root),
+                "path": "" if resolved == root else resolved.relative_to(root).as_posix(),
+                "entries": [row[2] for row in rows[offset : offset + size]],
+                "next_offset": offset + size if more else None,
+            }
+
+        @app.get("/v1/sessions/{session_id}/files/content")
+        async def file_content(session_id: str, request: Request, path: str = "") -> dict[str, Any]:
+            self._auth(request)
+            ses = self._get(session_id)
+            root, resolved = self._locate(ses, path)
+            if not resolved.exists():
+                raise _Err(404, "not_found", "no such file or directory")
+            st = resolved.stat()
+            if not stat.S_ISREG(st.st_mode):
+                raise _Err(400, "not_a_file", "path is not a regular file")
+            out: dict[str, Any] = {
+                "session_id": session_id,
+                "path": "" if resolved == root else resolved.relative_to(root).as_posix(),
+                "size": st.st_size,
+                "mtime": _iso(st.st_mtime),
+                "mime": mimetypes.guess_type(resolved.name)[0],
+                "kind": "too_large",
+                "content": None,
+            }
+            if st.st_size > self.file_preview_max_bytes:
+                return out
+            data = resolved.read_bytes()
+            try:
+                if b"\x00" in data[:BINARY_SNIFF_BYTES]:
+                    raise UnicodeDecodeError("utf-8", b"", 0, 1, "NUL byte")
+                out["content"], out["kind"] = data.decode("utf-8"), "text"
+            except UnicodeDecodeError:
+                out["kind"] = "binary"
+            return out
 
         @app.get("/v1/peers")
         async def peers(request: Request) -> dict[str, Any]:
@@ -580,6 +695,24 @@ class FakeWrapper:
             )
 
         return app
+
+    @staticmethod
+    def _locate(ses: _Session, rel: str) -> tuple[Path, Path]:
+        """(root, resolved): a vanished workdir is not_found, an escape invalid_path."""
+        if not os.path.isdir(ses.workdir):
+            raise _Err(404, "not_found", "the session workdir does not exist")
+        return Path(os.path.realpath(ses.workdir)), _confine(Path(ses.workdir), rel)
+
+    def _write_turn_files(self, ses: _Session, files: Any) -> None:
+        """The turn `files` field: relative path to text, written into the workdir first."""
+        if files is None:
+            return
+        if not isinstance(files, dict) or not all(isinstance(v, str) for v in files.values()):
+            raise _Err(422, "invalid_request", "files must map paths to text")
+        for rel, content in files.items():
+            target = _confine(Path(ses.workdir), rel)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
 
     @staticmethod
     async def _json_body(request: Request) -> dict[str, Any]:
