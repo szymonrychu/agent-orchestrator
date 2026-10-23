@@ -83,7 +83,7 @@ function FormBody({ mode, cluster, onClose, onSaved }: Omit<ClusterFormProps, 'o
   const modelOptions = withCurrent(meta?.models ?? [], values.model)
   const effortOptions = withCurrent(meta?.efforts ?? [], values.effort)
   const dropdown = (key: 'model' | 'effort', label: string, options: string[], emptyLabel?: string) => (
-    <TextField select size="small" label={label} value={values[key]} onChange={(e) => set(key, e.target.value)} fullWidth>
+    <TextField select size="small" label={label} value={values[key]} onChange={(e) => set(key, e.target.value)} fullWidth slotProps={emptyLabel !== undefined ? { select: { displayEmpty: true, renderValue: (v) => (v === '' ? emptyLabel : String(v)) } } : undefined}>
       {emptyLabel !== undefined && <MenuItem value="">{emptyLabel}</MenuItem>}
       {options.map((o) => (
         <MenuItem key={o} value={o}>{o}</MenuItem>
@@ -98,7 +98,7 @@ function FormBody({ mode, cluster, onClose, onSaved }: Omit<ClusterFormProps, 'o
           {serverError && <Alert severity="error">{serverError}</Alert>}
           {text('slug', 'Slug', { disabled: mode === 'edit' })}
           {text('replicas', 'Replicas')}
-          {modelOptions.length > 0 ? dropdown('model', 'Model', modelOptions) : text('model', 'Model')}
+          {modelOptions.length > 0 ? dropdown('model', 'Model', modelOptions, 'default') : text('model', 'Model')}
           {effortOptions.length > 0 ? dropdown('effort', 'Effort', effortOptions, 'model default') : text('effort', 'Effort')}
           <FormControlLabel control={<Switch checked={values.peers} onChange={(e) => set('peers', e.target.checked)} />} label="Peers" />
           {text('workdir', 'Workdir')}

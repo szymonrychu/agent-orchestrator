@@ -97,7 +97,7 @@ describe('ClusterForm', () => {
     expect(screen.getByRole('combobox', { name: 'Model' }).textContent).toBe('opus')
     expect(screen.getByRole('combobox', { name: 'Effort' }).textContent).toBe('high')
     await userEvent.click(screen.getByRole('combobox', { name: 'Model' }))
-    expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual(['opus', 'sonnet', 'haiku'])
+    expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual(['default', 'opus', 'sonnet', 'haiku'])
     await userEvent.keyboard('{Escape}')
     await userEvent.click(screen.getByRole('combobox', { name: 'Effort' }))
     expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual(['model default', 'low', 'medium', 'high', 'max'])
@@ -117,7 +117,12 @@ describe('ClusterForm', () => {
     wrap(<ClusterForm open mode="edit" cluster={existing({ model: 'legacy-model', effort: null })} onClose={vi.fn()} onSaved={vi.fn()} />)
     await waitFor(() => expect(screen.getByRole('combobox', { name: 'Model' }).textContent).toBe('legacy-model'))
     await userEvent.click(screen.getByRole('combobox', { name: 'Model' }))
-    expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual(['legacy-model', 'opus', 'sonnet', 'haiku'])
+    expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual(['default', 'legacy-model', 'opus', 'sonnet', 'haiku'])
+  })
+
+  test('edit with a null model shows the default option', async () => {
+    wrap(<ClusterForm open mode="edit" cluster={existing({ model: null, effort: null })} onClose={vi.fn()} onSaved={vi.fn()} />)
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Model' }).textContent).toBe('default'))
   })
 
   test('validates slug and env keys', async () => {
