@@ -217,7 +217,7 @@ def render_cluster(
         "spec": {
             "clusterIP": "None",
             "publishNotReadyAddresses": True,
-            "selector": labels,
+            "selector": dict(labels),
             "ports": [
                 {
                     "name": "http",
@@ -250,7 +250,7 @@ def render_cluster(
             "serviceName": names["service"],
             "selector": selector(slug),
             "template": {
-                "metadata": {"labels": labels, "annotations": {HASH_ANNOTATION: config_hash}},
+                "metadata": {"labels": dict(labels), "annotations": {HASH_ANNOTATION: config_hash}},
                 "spec": pod_spec,
             },
         },

@@ -69,7 +69,7 @@
   spec:
     clusterIP: None
     publishNotReadyAddresses: true
-    selector: &id001
+    selector:
       agents.szymonrichert.pl/cluster: solo
       app.kubernetes.io/managed-by: agent-orchestrator
     ports:
@@ -94,7 +94,9 @@
         app.kubernetes.io/managed-by: agent-orchestrator
     template:
       metadata:
-        labels: *id001
+        labels:
+          agents.szymonrichert.pl/cluster: solo
+          app.kubernetes.io/managed-by: agent-orchestrator
         annotations:
           agents.szymonrichert.pl/config-hash: 9650bfd3b55c3a9e7617211c0a6735686685fe3d174eb8731532a16aee4b6e82
       spec:

@@ -72,7 +72,7 @@
   spec:
     clusterIP: None
     publishNotReadyAddresses: true
-    selector: &id001
+    selector:
       agents.szymonrichert.pl/cluster: alpha
       app.kubernetes.io/managed-by: agent-orchestrator
     ports:
@@ -97,7 +97,9 @@
         app.kubernetes.io/managed-by: agent-orchestrator
     template:
       metadata:
-        labels: *id001
+        labels:
+          agents.szymonrichert.pl/cluster: alpha
+          app.kubernetes.io/managed-by: agent-orchestrator
         annotations:
           agents.szymonrichert.pl/config-hash: 786a308e37509eabfb36351515d306e3d482f053202db3a888f137621654353a
       spec:
