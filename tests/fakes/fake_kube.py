@@ -11,6 +11,9 @@
 - `seed` places objects (the orchestrator's own, unlabelled ones, or foreign ones) without
   recording them; `seed_orchestrator_objects` seeds what the chart puts in the same namespace.
 - `fail(kind, name)` injects an error for one object.
+- Creating a Job simulates its controller: one Running pod `<job>-<suffix>` with the pod template
+  labels; `finish_job` ends it (succeeded, failed with an exit code, or deadline exceeded) and
+  gives the pod its log; deleting a Job removes its pods.
 """
 
 from __future__ import annotations
@@ -134,6 +137,43 @@ class FakeKube:
         if ready is not None:
             _set_ready(pod, ready)
 
+    def finish_job(
+        self,
+        name: str,
+        *,
+        exit_code: int = 0,
+        log: str = "",
+        deadline_exceeded: bool = False,
+    ) -> None:
+        """End a Job like its controller: Complete (exit 0), Failed, or DeadlineExceeded."""
+        job = self.objects[("Job", self.namespace, name)]
+        pod = next(p for p in self._job_pods(name))
+        pod["log"] = log
+        if deadline_exceeded:
+            pod["status"]["phase"] = "Failed"
+            job["status"] = {
+                "failed": 1,
+                "conditions": [{"type": "Failed", "status": "True", "reason": "DeadlineExceeded"}],
+            }
+            return
+        ok = exit_code == 0
+        pod["status"]["phase"] = "Succeeded" if ok else "Failed"
+        pod["status"]["containerStatuses"] = [
+            {"name": "check", "state": {"terminated": {"exitCode": exit_code}}}
+        ]
+        if ok:
+            job["status"] = {
+                "succeeded": 1,
+                "conditions": [{"type": "Complete", "status": "True"}],
+            }
+        else:
+            job["status"] = {
+                "failed": 1,
+                "conditions": [
+                    {"type": "Failed", "status": "True", "reason": "BackoffLimitExceeded"}
+                ],
+            }
+
     def has(self, kind: str, name: str, namespace: str | None = None) -> bool:
         return (kind, namespace or self.namespace, name) in self.objects
 
@@ -217,6 +257,9 @@ class FakeKube:
         if kind == "StatefulSet":
             for pod in self._pods_of(name):
                 self.objects.pop(("Pod", namespace, pod["metadata"]["name"]), None)
+        if kind == "Job":
+            for pod in self._job_pods(name):
+                self.objects.pop(("Pod", namespace, pod["metadata"]["name"]), None)
         return True
 
     async def list_pods(self, namespace: str, selector: Mapping[str, str]) -> list[dict[str, Any]]:
@@ -245,6 +288,14 @@ class FakeKube:
         stored["metadata"]["uid"] = str(uuid.uuid4())
         stored.setdefault("status", {})
         self.objects[key] = stored
+        template = stored["spec"]["template"]
+        pod = _pod(
+            f"{meta['name']}-x7k2p", dict(template["metadata"].get("labels", {})), ready=False
+        )
+        pod["metadata"]["namespace"] = meta["namespace"]
+        pod["metadata"]["annotations"] = {"fake/job": meta["name"]}
+        pod["status"]["phase"] = "Running"
+        self.objects[("Pod", meta["namespace"], pod["metadata"]["name"])] = pod
         return copy.deepcopy(stored)
 
     async def get_job(self, namespace: str, name: str) -> dict[str, Any] | None:
@@ -284,6 +335,15 @@ class FakeKube:
             if k == "Pod"
             and ns == self.namespace
             and o["metadata"].get("annotations", {}).get("fake/statefulset") == sts_name
+        ]
+
+    def _job_pods(self, job_name: str) -> list[dict[str, Any]]:
+        return [
+            o
+            for (k, ns, _n), o in self.objects.items()
+            if k == "Pod"
+            and ns == self.namespace
+            and o["metadata"].get("annotations", {}).get("fake/job") == job_name
         ]
 
     def _sync_pods(self, sts: dict[str, Any]) -> None:

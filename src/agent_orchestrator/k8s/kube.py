@@ -17,6 +17,7 @@ from typing import Any, Protocol
 
 import httpx2
 from lightkube import ApiError, AsyncClient, codecs
+from lightkube.core.client import CascadeType
 from lightkube.core.exceptions import LoadResourceError
 from lightkube.resources.apps_v1 import StatefulSet
 from lightkube.resources.batch_v1 import Job
@@ -164,7 +165,9 @@ class LightkubeApi:
         res = _resource(kind)
         try:
             with _mapped():
-                await self.client.delete(res, name, namespace=namespace)
+                # a Job deleted without a propagation policy would orphan its pods
+                cascade = CascadeType.BACKGROUND if kind == "Job" else None
+                await self.client.delete(res, name, namespace=namespace, cascade=cascade)
         except NotFound:
             return False
         return True

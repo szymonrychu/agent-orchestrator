@@ -616,6 +616,15 @@ async def claim_check(conn: psycopg.AsyncConnection) -> Check | None:
         return Check(**row)
 
 
+async def list_running_checks(conn: psycopg.AsyncConnection) -> list[Check]:
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "SELECT id, cluster_id, command, status, job_name, created_at, started_at"
+            " FROM checks WHERE status = 'running' ORDER BY id"
+        )
+        return [Check(**r) for r in await cur.fetchall()]
+
+
 async def set_check_job(conn: psycopg.AsyncConnection, id: int, job_name: str) -> bool:
     async with conn.transaction():
         cur = await conn.execute(

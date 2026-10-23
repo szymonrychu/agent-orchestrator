@@ -32,6 +32,7 @@ from agent_orchestrator.db.pool import listen, notify
 from agent_orchestrator.k8s.kube import FIELD_MANAGER, KubeApi, Obj, is_owned, pod_ready
 from agent_orchestrator.k8s.labels import cluster_labels, object_names, prefix
 from agent_orchestrator.k8s.render import pod_url, render_cluster
+from agent_orchestrator.reconciler.checks import CheckRunner
 from agent_orchestrator.reconciler.sessions import SessionBootstrapper
 from agent_orchestrator.settings import Settings
 from agent_orchestrator.tokens import tokens_for
@@ -42,6 +43,9 @@ CHANNELS = ("cluster_changed",)
 GUARDED_KINDS = frozenset({"StatefulSet", "Service", "ConfigMap", "PersistentVolumeClaim"})
 # Deletion order: the StatefulSet first so its pods stop using the config and the volume.
 PRUNE_ORDER = ("StatefulSet", "Service", "ConfigMap", "PersistentVolumeClaim")
+# A discard also deletes the check Jobs, ahead of the PVC they mount. A converge never prunes
+# them: they are created per check, not rendered.
+DISCARD_ORDER = ("Job", *PRUNE_ORDER)
 
 WrapperFactory = Callable[[str, str], Any]
 """(base_url, auth_token) -> wrapper client; used by session bootstrap."""
@@ -59,6 +63,7 @@ class Reconciler:
         self.kube = kube
         self.settings = settings
         self.wrapper_factory = wrapper_factory
+        self.checks = CheckRunner(pool, kube, settings)
         self.bootstrapper = (
             SessionBootstrapper(pool, wrapper_factory) if wrapper_factory is not None else None
         )
@@ -104,6 +109,7 @@ class Reconciler:
     async def reconcile_once(self) -> None:
         await self._run_restarts()
         await self._run_rebootstraps()
+        await self.checks.run_once()
         async with self.pool.connection() as conn:
             rows = await clusters.list_clusters(conn)
         for cluster in rows:
@@ -189,9 +195,11 @@ class Reconciler:
                 found.append(f"foreign_object {kind}/{name}")
         return found
 
-    async def _prune(self, slug: str, desired: set[tuple[str, str]]) -> None:
+    async def _prune(
+        self, slug: str, desired: set[tuple[str, str]], order: tuple[str, ...] = PRUNE_ORDER
+    ) -> None:
         ns, selector = self.settings.namespace, cluster_labels(slug)
-        for kind in PRUNE_ORDER:
+        for kind in order:
             for obj in await self.kube.list_objects(kind, ns, selector):
                 name = obj["metadata"]["name"]
                 if (kind, name) not in desired and is_owned(obj, slug):
@@ -238,6 +246,8 @@ class Reconciler:
     # ------------------------------------------------------------------ a deleting cluster
 
     async def _discard(self, cluster: Cluster) -> None:
+        async with self.pool.connection() as conn:
+            await queue.cancel_checks(conn, cluster.id)
         if not await self.pre_discard(cluster):
             await self._write_status(
                 cluster,
@@ -246,7 +256,7 @@ class Reconciler:
             )
             return
         ns, slug = self.settings.namespace, cluster.slug
-        await self._prune(slug, set())
+        await self._prune(slug, set(), DISCARD_ORDER)
         await self.kube.delete("Secret", ns, object_names(slug)["secret"])  # absent is fine
 
         remaining = await self._remaining(slug)
@@ -265,7 +275,7 @@ class Reconciler:
     async def _remaining(self, slug: str) -> list[str]:
         ns, selector = self.settings.namespace, cluster_labels(slug)
         left = []
-        for kind in PRUNE_ORDER:
+        for kind in DISCARD_ORDER:
             for obj in await self.kube.list_objects(kind, ns, selector):
                 if is_owned(obj, slug):
                     left.append(f"{kind}/{obj['metadata']['name']}")
