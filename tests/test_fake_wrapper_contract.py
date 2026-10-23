@@ -318,8 +318,10 @@ async def test_fake_status_delay_and_reset_controls(fake: FakeWrapper) -> None:
             403: ConfigError,
             413: Rejected,
             422: Rejected,
-            500: Unavailable,
+            500: Ambiguous,
+            502: Ambiguous,
             503: Unavailable,
+            504: Unavailable,
         }
         for code, kind in expected.items():
             fake.set_turn_status(code)
