@@ -137,6 +137,9 @@ class WrapperClient:
             return Gone(reason)
         if status in (401, 403):
             return ConfigError(reason)
+        if status in (500, 502):
+            # the wrapper may have recorded the turn before failing: never resend blindly
+            return Ambiguous(reason)
         if status >= 500:
             return Unavailable(reason)
         return Rejected(reason)

@@ -249,7 +249,7 @@ async def test_every_non_accept_status_releases_agent(pool, dsn):
         404: ("queued", "session_gone"),
         401: ("failed", "config_error"),
         422: ("failed", "rejected"),
-        500: ("queued", "unavailable"),
+        503: ("queued", "unavailable"),
     }
     for code, (status, error) in expect.items():
         env = await make_env(pool, dsn)
@@ -289,6 +289,22 @@ async def test_ambiguous_send_moves_to_verifying_without_resend(env):
     assert env.fake.received_turns == 1
     assert (await env.message(m["id"]))["status"] == "verifying"
     assert (await env.agent_row(agent["id"]))["last_dispatched_at"] is not None
+
+
+async def test_wrapper_500_goes_through_verifier(env):
+    agent = await env.agent()
+    m = await env.msg()
+    env.fake.fail_turn_after_receive(500)  # the turn is recorded, then the wrapper answers 500
+    d = env.dispatcher()
+    await d.drain()
+    await d.drain()
+    await d.aclose()
+    row = await env.message(m["id"])
+    assert row["ambiguous_at"] is not None  # it went through verifying
+    assert (row["status"], row["turn_id"]) == ("sent", env.fake.last_turn_id)
+    assert row["attempts"] == 0
+    assert env.fake.received_turns == 1
+    assert (await env.agent_row(agent["id"]))["last_dispatched_at"] == row["dispatched_at"]
 
 
 async def test_slow_send_heartbeats_and_times_out(env):

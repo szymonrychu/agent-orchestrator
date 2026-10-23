@@ -114,6 +114,18 @@ async def test_submit_turn_maps_202_409_503(resp):
     assert isinstance(await client(boom).submit_turn("ses_1", "hi"), Unavailable)
 
 
+async def test_submit_5xx_mapping():
+    expect = {500: Ambiguous, 502: Ambiguous, 503: Unavailable, 504: Unavailable}
+    for status, cls in expect.items():
+        c = client(lambda r, s=status: httpx.Response(s, text="x"))
+        assert type(await c.submit_turn("s", "x")) is cls, status
+
+    def boom(r):
+        raise httpx.ConnectError("refused")
+
+    assert type(await client(boom).submit_turn("s", "x")) is Unavailable
+
+
 async def test_submit_turn_maps_every_status():
     expect = {
         404: Gone,
@@ -125,8 +137,8 @@ async def test_submit_turn_maps_every_status():
         400: Rejected,
         418: Rejected,
         429: Rejected,
-        500: Unavailable,
-        502: Unavailable,
+        500: Ambiguous,
+        502: Ambiguous,
         504: Unavailable,
         599: Unavailable,
         409: Busy,

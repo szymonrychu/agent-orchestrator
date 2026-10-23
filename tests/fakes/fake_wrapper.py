@@ -127,6 +127,7 @@ class FakeWrapper:
         self._ids = 0
         self._booting = False
         self._status: int | None = None
+        self._status_after: int | None = None
         self._delay = 0.0
         self._reset_after = False
         self._reset_before = False
@@ -274,6 +275,10 @@ class FakeWrapper:
     def delay_turn_response(self, seconds: float) -> None:
         """Record the turn, then answer after `seconds` (a client timeout sees a started turn)."""
         self._delay = seconds
+
+    def fail_turn_after_receive(self, code: int | None) -> None:
+        """Record the turn, then answer the submission with this status (None restores)."""
+        self._status_after = code
 
     def reset_connection_after_receive(self, enabled: bool = True) -> None:
         """Record the turn, then drop the connection without answering."""
@@ -455,6 +460,9 @@ class FakeWrapper:
             )  # noqa: E501
             if self._reset_after:
                 self._abort(request)
+            if self._status_after is not None:
+                code = self._status_after
+                raise _Err(code, f"http_{code}")
             if self._delay:
                 await asyncio.sleep(self._delay)
             return {"turn_id": turn.turn_id, "state": "running"}
