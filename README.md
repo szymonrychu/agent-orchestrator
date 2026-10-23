@@ -102,3 +102,41 @@ The master key and the Claude token each need a value or an `existingSecret`; wi
 ### Settings ConfigMap
 
 `<fullname>-settings` carries `ORCH_NAMESPACE` (the release namespace), `ORCH_AGENT_IMAGE` (`agentImage`, required) and `ORCH_CLAUDE_SECRET_NAME` (`claude.existingSecret` or `<fullname>-claude`). Every entry of `env` is added verbatim; each key must start with `ORCH_` or the render fails naming it. No secret value is ever written to the ConfigMap; the database URL and master key reach the containers through `secretKeyRef`.
+
+### RBAC
+
+`rbac.create` (default `true`) renders a namespaced Role `<fullname>-reconciler` in the release namespace and a RoleBinding to the ServiceAccount `<fullname>-reconciler` only. No ClusterRole or ClusterRoleBinding is ever rendered. The Role grants exactly:
+
+| Resource | Verbs |
+|---|---|
+| `apps` statefulsets; services, configmaps, persistentvolumeclaims | get, list, watch, create, patch, delete |
+| secrets | create, patch, delete (never get, list or watch) |
+| pods | get, list, watch, delete |
+| `batch` jobs | get, list, watch, create, delete |
+| pods/log | get |
+
+There is no `pods/exec` and no wildcard. With `rbac.create=false` neither the Role nor the RoleBinding renders.
+
+### Ingress
+
+`ingress.enabled` is `false` by default. When enabled, `ingress.className` (empty by default), `ingress.annotations` (`{}` by default), `ingress.hosts[].paths[]` and `ingress.tls` come from values and route to the api Service port. The chart ships no homelab defaults; set them in your own values.
+
+Example only, a LAN-restricted ingress:
+
+```yaml
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/whitelist-source-range: "192.168.0.0/16"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: orchestrator.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: orchestrator-tls
+      hosts:
+        - orchestrator.example.com
+```
