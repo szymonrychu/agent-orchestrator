@@ -1,0 +1,49 @@
+[tools]
+python = "3.12"
+uv = "latest"
+helm = "4.2.4"
+kind = "0.33.0"
+kubectl = "1.37.0"
+
+[env]
+UV_PYTHON_DOWNLOADS = "never"
+
+[tasks.install]
+description = "Install dependencies into the venv"
+run = "uv sync"
+
+[tasks.test]
+description = "Run the test suite"
+run = "uv run pytest"
+
+[tasks.lint]
+description = "Lint and check formatting"
+run = "uv run ruff check . && uv run ruff format --check ."
+
+[tasks.fmt]
+description = "Format and autofix"
+run = "uv run ruff format . && uv run ruff check --fix ."
+
+[tasks."test:integration"]
+description = "Run tests that need a real wrapper image (builds the test agent image when ORCH_TEST_WRAPPER_IMAGE is unset)"
+run = """
+if [ -z "${ORCH_TEST_WRAPPER_IMAGE:-}" ]; then
+  export ORCH_TEST_WRAPPER_IMAGE=agent-orchestrator-agent-test:e2e
+  mkdir -p "${TMPDIR:-/tmp}/orch-agent-ctx/e2e"
+  cp e2e/agent-test.scenario.json "${TMPDIR:-/tmp}/orch-agent-ctx/e2e/"
+  docker build -f e2e/agent-test.Dockerfile -t "$ORCH_TEST_WRAPPER_IMAGE" "${TMPDIR:-/tmp}/orch-agent-ctx"
+fi
+uv run pytest -m integration
+"""
+
+[tasks."test:e2e"]
+description = "kind e2e: build and load the images, install the chart, helm test, run tests/e2e"
+run = "scripts/e2e.sh"
+
+[tasks."test:chart"]
+description = "Run the Helm chart render tests"
+run = "uv run pytest tests/test_chart_*.py -q"
+
+[tasks."lint:chart"]
+description = "helm lint the chart with the CI values"
+run = "helm lint chart/agent-orchestrator -f chart/agent-orchestrator/ci/lint-values.yaml"

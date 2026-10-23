@@ -1,0 +1,6 @@
+{
+  "boot": {"bypass_dialog": true, "min_seconds": 0.1},
+  "turns": [
+    {"match": "slow", "steps": [{"text": "Working slowly."}, {"sleep": 4}, {"text": "Slow work done."}]}
+  ]
+}
