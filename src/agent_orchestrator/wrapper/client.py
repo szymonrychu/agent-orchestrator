@@ -151,11 +151,12 @@ class WrapperClient:
 
     # control
 
-    async def interrupt(self, session_id: str) -> None:
-        await self._request("POST", f"/sessions/{session_id}/interrupt")
+    async def interrupt(self, session_id: str) -> dict[str, Any]:
+        return (await self._request("POST", f"/sessions/{session_id}/interrupt")).json()
 
-    async def command(self, session_id: str, name: str) -> None:
-        await self._request("POST", f"/sessions/{session_id}/commands", json={"name": name})
+    async def command(self, session_id: str, name: str) -> dict[str, Any]:
+        resp = await self._request("POST", f"/sessions/{session_id}/commands", json={"name": name})
+        return resp.json()
 
     async def peers(self) -> PeersView:
         return PeersView.model_validate((await self._request("GET", "/peers")).json())
