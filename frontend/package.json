@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "test": "vitest run",
-    "lint": "eslint src --max-warnings 0"
+    "lint": "eslint src --max-warnings 0",
+    "gen:api": "openapi-typescript ../openapi.json -o src/api/schema.d.ts",
+    "check:api": "openapi-typescript ../openapi.json -o \"${TMPDIR:-/tmp}/orch-schema.check.d.ts\" && diff -q \"${TMPDIR:-/tmp}/orch-schema.check.d.ts\" src/api/schema.d.ts"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",
