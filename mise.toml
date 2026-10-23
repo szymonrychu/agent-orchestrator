@@ -1,0 +1,30 @@
+[tools]
+python = "3.12"
+uv = "latest"
+
+[env]
+UV_PYTHON_DOWNLOADS = "never"
+
+[tasks.install]
+description = "Install dependencies into the venv"
+run = "uv sync"
+
+[tasks.test]
+description = "Run the test suite"
+run = "uv run pytest"
+
+[tasks.lint]
+description = "Lint and check formatting"
+run = "uv run ruff check . && uv run ruff format --check ."
+
+[tasks.fmt]
+description = "Format and autofix"
+run = "uv run ruff format . && uv run ruff check --fix ."
+
+[tasks."test:integration"]
+description = "Run tests that need a real wrapper image"
+run = "uv run pytest -m integration"
+
+[tasks."test:e2e"]
+description = "Run the kind end-to-end tests"
+run = "uv run pytest -m e2e tests/e2e"

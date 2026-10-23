@@ -1,0 +1,55 @@
+[project]
+name = "agent-orchestrator"
+version = "0.1.0"
+description = "Web UI and headless API that define, run, message and discard clusters of claude-code-wrapper pods"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.160.0",
+    "uvicorn[standard]",
+    "psycopg[binary,pool]==3.3.6",
+    "httpx",
+    "lightkube==1.0.1",
+    "pydantic",
+    "pydantic-settings",
+    "pyyaml",
+    "any-mcp @ git+https://github.com/szymonrychu/any-mcp@2b9cc653173a95aa74c73568db0c383ba2cd9618",
+]
+
+[project.scripts]
+orch = "agent_orchestrator.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "testcontainers[postgres]",
+    "ruff",
+    "claude-code-wrapper @ git+https://github.com/szymonrychu/claude-code-wrapper@ca2ddf39f134533e9767f6f1c1793f2472043eea",
+]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_orchestrator"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "tests"]
+asyncio_mode = "auto"
+markers = [
+    "integration: needs a real wrapper image",
+    "e2e: needs kind",
+]
+addopts = "-q -m 'not integration and not e2e'"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
