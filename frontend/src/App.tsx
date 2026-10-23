@@ -1,7 +1,8 @@
 import Typography from '@mui/material/Typography'
 import { Shell } from './layout/Shell'
 import { Ribbon } from './ribbon/Ribbon'
-import { useClusters } from './ribbon/useClusters'
+import { ChatView } from './chat/ChatView'
+import { sortedAgents, useClusters } from './ribbon/useClusters'
 
 export const APP_NAME = 'Agent Orchestrator';
 
@@ -24,9 +25,7 @@ export default function App() {
       )}
     >
       {selected ? (
-        <Typography variant="h5" component="h2">
-          {selected.cluster.slug}
-        </Typography>
+        <ChatView cluster={selected.cluster} agents={sortedAgents(selected)} />
       ) : (
         <Typography color="text.secondary">Select a cluster</Typography>
       )}
