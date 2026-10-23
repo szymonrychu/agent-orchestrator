@@ -399,10 +399,7 @@ def test_shutdown_below_grace_and_resources():
     pod = sts_of(objs)["spec"]["template"]["spec"]
     assert pod["terminationGracePeriodSeconds"] == 90
     assert config_of(objs)["limits"]["shutdown_timeout_seconds"] < 90
-    assert pod["containers"][0]["resources"] == {
-        "requests": {"cpu": "500m", "memory": "1Gi"},
-        "limits": {"cpu": "1", "memory": "8Gi"},
-    }
+    assert pod["containers"][0]["resources"] == {"limits": {"cpu": "1"}}
     assert pod["securityContext"] == {"runAsUser": 1000, "fsGroup": 1000}
 
 
@@ -412,15 +409,9 @@ def test_render_is_pure():
     assert render.render_cluster(cluster, make_settings(), TOKENS) == copy.deepcopy(a)
 
 
-def test_default_resources_applied_per_key():
+def test_render_keeps_spec_resources_unchanged():
     c = container_of(render.render_cluster(make_cluster(), make_settings(), TOKENS))
-    assert c["resources"] == {
-        "requests": {"cpu": "500m", "memory": "1Gi"},
-        "limits": {"cpu": "4", "memory": "8Gi"},
-    }
+    assert "resources" not in c
     spec = {"resources": {"requests": {"cpu": "2"}, "limits": {"memory": "2Gi"}}}
     c = container_of(render.render_cluster(make_cluster(**spec), make_settings(), TOKENS))
-    assert c["resources"] == {
-        "requests": {"cpu": "2", "memory": "1Gi"},
-        "limits": {"cpu": "4", "memory": "2Gi"},
-    }
+    assert c["resources"] == {"requests": {"cpu": "2"}, "limits": {"memory": "2Gi"}}

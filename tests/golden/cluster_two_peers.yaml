@@ -173,9 +173,7 @@
           resources:
             requests:
               cpu: 500m
-              memory: 1Gi
             limits:
-              cpu: '4'
               memory: 2Gi
         volumes:
         - name: workspace

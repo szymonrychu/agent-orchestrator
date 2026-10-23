@@ -417,15 +417,67 @@ async def test_spec_rejects_unknown_model_and_effort(pool, dsn):
         ).status_code == 201
 
 
-async def test_spec_rejects_merged_requests_above_limits(pool, dsn):
+async def test_spec_rejects_explicit_request_above_limit(pool, dsn):
     app = create_app(make_settings(dsn), pool)
     async with client_for(app) as c:
-        for res in (
-            {"requests": {"cpu": "8"}},
-            {"limits": {"memory": "512Mi"}},
-        ):
-            r = await c.post("/api/v1/clusters", json={"slug": "bad", "spec": {"resources": res}})
-            assert_error(r, 422, "invalid_request")
+        res = {"requests": {"cpu": "8"}, "limits": {"cpu": "2"}}
+        r = await c.post("/api/v1/clusters", json={"slug": "bad", "spec": {"resources": res}})
+        assert_error(r, 422, "invalid_request")
         ok = {"requests": {"cpu": "2"}, "limits": {"memory": "2Gi"}}
         r = await c.post("/api/v1/clusters", json={"slug": "ok", "spec": {"resources": ok}})
         assert r.status_code == 201
+
+
+async def test_write_fills_default_resources_per_key(pool, dsn):
+    app = create_app(make_settings(dsn), pool)
+    async with client_for(app) as c:
+        r = await c.post("/api/v1/clusters", json={"slug": "a", "spec": {}})
+        assert r.json()["spec"]["resources"] == {
+            "requests": {"cpu": "500m", "memory": "1Gi"},
+            "limits": {"cpu": "4", "memory": "8Gi"},
+        }
+        spec = {"resources": {"requests": {"cpu": "2"}, "limits": {"memory": "2Gi"}}}
+        r = await c.post("/api/v1/clusters", json={"slug": "b", "spec": spec})
+        assert r.json()["spec"]["resources"] == {
+            "requests": {"cpu": "2", "memory": "1Gi"},
+            "limits": {"cpu": "4", "memory": "2Gi"},
+        }
+        # guard: default limit 4 < explicit request 8 stays empty; default request 1Gi > limit
+        spec = {"resources": {"requests": {"cpu": "8"}, "limits": {"memory": "512Mi"}}}
+        r = await c.post("/api/v1/clusters", json={"slug": "g", "spec": spec})
+        assert r.json()["spec"]["resources"] == {
+            "requests": {"cpu": "8"},
+            "limits": {"memory": "512Mi"},
+        }
+        cid = r.json()["id"]
+        r = await c.patch(f"/api/v1/clusters/{cid}", json={"spec": {"replicas": 2}})
+        assert r.json()["spec"]["resources"] == {
+            "requests": {"cpu": "500m", "memory": "1Gi"},
+            "limits": {"cpu": "4", "memory": "8Gi"},
+        }
+
+
+async def test_patch_keeps_stored_legacy_model_and_effort(pool, dsn):
+    app = create_app(make_settings(dsn), pool)
+    async with client_for(app) as c:
+        cluster = await insert_cluster(pool, spec={"model": "legacy-1", "effort": "turbo"})
+        url = f"/api/v1/clusters/{cluster['id']}"
+        same = {"model": "legacy-1", "effort": "turbo", "replicas": 2}
+        assert (await c.patch(url, json={"spec": same})).status_code == 200
+        for bad in ({"model": "gpt-9", "effort": "turbo"}, {"model": "legacy-1", "effort": "x"}):
+            assert_error(await c.patch(url, json={"spec": bad}), 422, "invalid_request")
+        assert (
+            await c.post("/api/v1/clusters", json={"slug": "n", "spec": same})
+        ).status_code == 422
+
+
+async def test_patch_high_request_without_limit(pool, dsn):
+    app = create_app(make_settings(dsn), pool)
+    async with client_for(app) as c:
+        cluster = await insert_cluster(pool, spec={"resources": {"requests": {"cpu": "8"}}})
+        r = await c.patch(
+            f"/api/v1/clusters/{cluster['id']}",
+            json={"spec": {"resources": {"requests": {"cpu": "8"}}, "replicas": 2}},
+        )
+        assert r.status_code == 200, r.text
+        assert "cpu" not in r.json()["spec"]["resources"]["limits"]

@@ -168,11 +168,10 @@ def _container(cluster: Cluster, settings: Settings, names: dict[str, str]) -> d
             {"name": "config", "mountPath": "/etc/ccw"},
         ],
     }
-    explicit = spec.resources.model_dump() if spec.resources is not None else {}
-    container["resources"] = {
-        section: {**defaults, **explicit.get(section, {})}
-        for section, defaults in settings.default_resources().items()
-    }
+    if spec.resources is not None:
+        resources = {k: v for k, v in spec.resources.model_dump().items() if v}
+        if resources:
+            container["resources"] = resources
     return container
 
 

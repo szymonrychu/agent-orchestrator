@@ -163,13 +163,6 @@
             mountPath: /opt/any-mcp
           - name: config
             mountPath: /etc/ccw
-          resources:
-            requests:
-              cpu: 500m
-              memory: 1Gi
-            limits:
-              cpu: '4'
-              memory: 8Gi
         volumes:
         - name: workspace
           persistentVolumeClaim:

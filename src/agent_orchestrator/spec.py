@@ -154,7 +154,36 @@ class ClusterSpec(BaseModel):
         return v
 
 
-def validate_spec(spec: ClusterSpec, settings: Settings) -> None:
+def fill_resource_defaults(spec: ClusterSpec, settings: Settings) -> ClusterSpec:
+    """Fill each empty resources key from the settings defaults; explicit values win per key.
+
+    A default limit is skipped when below the explicit request of the same resource, and a
+    default request is skipped when above the explicit limit.
+    """
+    current = spec.resources or Resources()
+    requests, limits = dict(current.requests), dict(current.limits)
+    defaults = settings.default_resources()
+    for key in ("cpu", "memory"):
+        if key not in limits:
+            default = defaults["limits"][key]
+            if key not in requests or _not_above(requests[key], default):
+                limits[key] = default
+        if key not in requests:
+            default = defaults["requests"][key]
+            if key not in limits or _not_above(default, limits[key]):
+                requests[key] = default
+    return spec.model_copy(update={"resources": Resources(requests=requests, limits=limits)})
+
+
+def _not_above(low: str, high: str) -> bool:
+    try:
+        return parse_quantity(low) <= parse_quantity(high)
+    except ValueError:
+        return True
+
+
+def validate_spec(spec: ClusterSpec, settings: Settings, stored: ClusterSpec | None = None) -> None:
+    """Validate a spec; a model or effort equal to the stored one is not re-checked."""
     from any_mcp.config import AnyMcpConfig
     from pydantic import ValidationError
 
@@ -165,27 +194,26 @@ def validate_spec(spec: ClusterSpec, settings: Settings) -> None:
         parsed = urlparse(spec.discard_hook_url)
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
             errors.append("discard_hook_url must be an http or https URL")
-    if spec.model is not None and spec.model not in settings.models:
+    if (
+        spec.model is not None
+        and spec.model not in settings.models
+        and (stored is None or spec.model != stored.model)
+    ):
         errors.append(f"model {spec.model!r} is not one of: {', '.join(settings.models)}")
-    if spec.effort and spec.effort not in settings.efforts:
+    if (
+        spec.effort
+        and spec.effort not in settings.efforts
+        and (stored is None or spec.effort != stored.effort)
+    ):
         errors.append(f"effort {spec.effort!r} is not one of: {', '.join(settings.efforts)}")
     if spec.resources is not None:
-        merged = {
-            section: {**defaults, **getattr(spec.resources, section)}
-            for section, defaults in settings.default_resources().items()
-        }
         for key in ("cpu", "memory"):
-            try:
-                over = parse_quantity(merged["requests"][key]) > parse_quantity(
-                    merged["limits"][key]
-                )
-            except ValueError:
-                continue  # an unparsable quantity is reported by the Resources model
-            if over:
-                errors.append(
-                    f"resources: {key} request {merged['requests'][key]} exceeds "
-                    f"limit {merged['limits'][key]} (unset keys use the cluster defaults)"
-                )
+            request = spec.resources.requests.get(key)
+            limit = spec.resources.limits.get(key)
+            if request is None or limit is None:
+                continue
+            if parse_quantity(request) > parse_quantity(limit):
+                errors.append(f"resources: {key} request {request} exceeds limit {limit}")
     if spec.replicas > settings.max_replicas:
         errors.append(f"replicas {spec.replicas} exceeds the maximum {settings.max_replicas}")
     if spec.pvc_size is not None:

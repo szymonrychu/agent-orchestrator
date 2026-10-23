@@ -13,7 +13,13 @@ from agent_orchestrator.api.errors import ApiError, not_found
 from agent_orchestrator.db import clusters as repo
 from agent_orchestrator.db import views
 from agent_orchestrator.settings import Settings
-from agent_orchestrator.spec import ClusterSpec, SpecInvalid, validate_slug, validate_spec
+from agent_orchestrator.spec import (
+    ClusterSpec,
+    SpecInvalid,
+    fill_resource_defaults,
+    validate_slug,
+    validate_spec,
+)
 
 
 def get_settings(request: Request) -> Settings:
@@ -73,11 +79,15 @@ async def _one_view(conn, cluster: repo.Cluster, settings: Settings) -> schemas.
     return _view(cluster, aggs.get(cluster.id), settings)
 
 
-def _check_spec(spec: ClusterSpec, settings: Settings) -> None:
+def _check_spec(
+    spec: ClusterSpec, settings: Settings, stored: ClusterSpec | None = None
+) -> ClusterSpec:
+    """Validate the spec and return it with empty resource keys filled from the defaults."""
     try:
-        validate_spec(spec, settings)
+        validate_spec(spec, settings, stored)
     except SpecInvalid as exc:
         raise ApiError(422, "invalid_request", "; ".join(exc.errors)) from None
+    return fill_resource_defaults(spec, settings)
 
 
 @router.get("/meta", response_model=schemas.Meta)
@@ -128,7 +138,7 @@ async def create_cluster(
         validate_slug(body.slug)
     except ValueError as exc:
         raise ApiError(422, "invalid_request", str(exc)) from None
-    _check_spec(body.spec, settings)
+    spec = _check_spec(body.spec, settings)
     async with pool.connection() as conn:
         async with conn.transaction():
             await conn.execute("SELECT pg_advisory_xact_lock(%s)", (_CREATE_LOCK,))
@@ -137,7 +147,7 @@ async def create_cluster(
                     409, "cluster_limit", f"at most {settings.max_clusters} clusters are allowed"
                 )
             try:
-                cluster = await repo.create(conn, body.slug, body.spec)
+                cluster = await repo.create(conn, body.slug, spec)
             except repo.ClusterExists:
                 raise ApiError(409, "conflict", f"cluster {body.slug!r} already exists") from None
         return await _one_view(conn, cluster, settings)
@@ -163,10 +173,13 @@ async def patch_cluster(
     pool: Pool,
     settings: Cfg,
 ) -> schemas.ClusterView:
-    _check_spec(body.spec, settings)
     async with pool.connection() as conn:
+        stored = await repo.get(conn, cluster_id)
+        if stored is None:
+            raise not_found("cluster")
+        spec = _check_spec(body.spec, settings, stored.spec)
         try:
-            cluster = await repo.update_spec(conn, cluster_id, body.spec)
+            cluster = await repo.update_spec(conn, cluster_id, spec)
         except repo.ClusterNotFound:
             raise not_found("cluster") from None
         except repo.ClusterDeleting:
