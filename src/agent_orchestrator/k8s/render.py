@@ -41,7 +41,8 @@ def workdir_mount(spec: ClusterSpec) -> dict[str, str]:
     return {"name": WORKSPACE_VOLUME, "mountPath": WORKDIR_ROOT, "subPath": "workdir"}
 
 
-def _pod_url(slug: str, pod: str, settings: Settings) -> str:
+def pod_url(slug: str, pod: str, settings: Settings) -> str:
+    """The per-pod DNS base URL of one wrapper: <pod>.agent-<slug>.<namespace>.svc.<domain>."""
     return (
         f"http://{pod}.{prefix(slug)}.{settings.namespace}.svc.{settings.cluster_domain}"
         f":{settings.wrapper_port}"
@@ -110,7 +111,7 @@ def _ccw_config(cluster: Cluster, settings: Settings) -> dict[str, Any]:
             "advertise_url": "${CCW_PEER_URL}",
             "token": "${CCW_PEER_TOKEN}",
             "static": [
-                _pod_url(slug, f"{prefix(slug)}-{i}", settings) for i in range(spec.replicas)
+                pod_url(slug, f"{prefix(slug)}-{i}", settings) for i in range(spec.replicas)
             ],
         }
     return cfg
@@ -133,7 +134,7 @@ def _container(cluster: Cluster, settings: Settings, names: dict[str, str]) -> d
     port = settings.wrapper_port
     env: list[dict[str, Any]] = [
         {"name": "POD_NAME", "valueFrom": {"fieldRef": {"fieldPath": "metadata.name"}}},
-        {"name": "CCW_PEER_URL", "value": _pod_url(slug, "$(POD_NAME)", settings)},
+        {"name": "CCW_PEER_URL", "value": pod_url(slug, "$(POD_NAME)", settings)},
         {"name": "CCW_AUTH_TOKEN", **_secret_ref(names["secret"], "CCW_AUTH_TOKEN")},
         {"name": "CCW_PEER_TOKEN", **_secret_ref(names["secret"], "CCW_PEER_TOKEN")},
         {

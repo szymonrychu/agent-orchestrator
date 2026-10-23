@@ -157,6 +157,41 @@ The chart is published to `oci://harbor.szymonrichert.pl/charts/agent-orchestrat
 - To release: bump `version` in Chart.yaml, merge to `main`, wait for CI, then `git tag vX.Y.Z` on that commit and push the tag.
 - Publishing a version that already exists fails with `chart version <v> already published; bump chart/agent-orchestrator/Chart.yaml version`.
 - The Harbor robot (`HARBOR_USERNAME`, `HARBOR_PASSWORD`) needs push on both the `containers` and `charts` projects.
+## Kubernetes permissions
+
+Only the reconciler talks to Kubernetes. Everything it touches lives in one namespace: the release namespace, `ORCH_NAMESPACE` (default `agents`), which it shares with the orchestrator's own Deployments, Service, settings ConfigMap, Secrets and, with the CNPG feature, the database. It needs a namespaced Role there (D9), rendered by the chart as `templates/role.yaml`:
+
+| Resource | Verbs | Used for |
+|---|---|---|
+| `apps` statefulsets | get, list, watch, create, patch, delete | the agents of a cluster |
+| services, configmaps, persistentvolumeclaims | get, list, watch, create, patch, delete | headless Service, ccw config and onStart script, the RWX workspace |
+| secrets | create, patch, delete | the cluster Secret `agent-<slug>-ccw` |
+| pods | get, list, watch, delete | observing agents, the restart command |
+| `batch` jobs | get, list, watch, create, delete | checks |
+| pods/log | get | check log tails |
+
+Secrets are limited to create, patch and delete: there is no get, list or watch on secrets, so the reconciler can never read the master key, the Claude token, the database credentials or any other Secret in the namespace. The Role is bound only to the reconciler's ServiceAccount; the api, dispatcher and ingester run with `automountServiceAccountToken: false`. The Role never grants `pods/exec`, and there is no ClusterRole and no wildcard.
+
+Applies are server-side applies with field manager `agent-orchestrator` and `force`, so the reconciler owns the fields it renders.
+
+### One shared namespace, kept safe (D26)
+
+Clusters are told apart by labels, not namespaces. Every object of cluster `<slug>` carries both `app.kubernetes.io/managed-by=agent-orchestrator` and `agents.szymonrichert.pl/cluster=<slug>`. These guards keep the reconciler off everything else in the namespace:
+
+- Reserved names. Every cluster object is named with the prefix `agent-<slug>` (`agent-<slug>`, `agent-<slug>-workspace`, `agent-<slug>-ccw`, `agent-<slug>-config`). The slugs `orchestrator` and `orchestrator-*` are rejected, so no cluster name can be one of the chart's own `agent-orchestrator-*` names.
+- Label guard on apply. Before applying a StatefulSet, Service, ConfigMap or PVC the reconciler reads it. When it exists without both labels it is foreign: nothing of that cluster is applied, and the cluster status records `phase: error` with `foreign_object <kind>/<name>` until the object is removed or renamed.
+- Label guard on prune. Every list carries the cluster selector, and only objects carrying both labels are ever deleted. A restart deletes a pod only when it is listed under its cluster's selector.
+- Secrets deleted by name. Secrets are never listed or read. The cluster Secret is applied with the other objects and, when the cluster is discarded, deleted by its deterministic name `agent-<slug>-ccw`; a Secret that is already gone is fine.
+
+### Reconcile loop
+
+The reconciler is level-triggered: every `ORCH_RECONCILE_POLL_SECONDS` (10 s), and at once on NOTIFY `cluster_changed`, it converges every cluster row:
+
+1. Render the PVC, Secret, ConfigMap, headless Service and StatefulSet, check the label guard, apply them, and prune labelled objects that are no longer desired.
+2. List the cluster's pods and upsert one `agents` row per ordinal, with the per-pod URL `http://<pod>.agent-<slug>.<namespace>.svc.<cluster domain>:<ORCH_WRAPPER_PORT>` and its readiness. An agent whose pod vanished with an ordinal at or above `replicas` is marked gone; one below `replicas` is kept, unready, while its pod is recreated.
+3. Write `status {phase, ready, replicas, message}` (`phase` is `pending`, `ready`, `degraded`, `deleting` or `error`) and `observed_generation`, only when something changed.
+
+A deleting cluster first passes the pre-discard gate, then loses every labelled object including its PVC, and its Secret by name. Once no labelled object or pod is left, its row is deleted, which cascades its agents, messages, events, turns, commands and checks. An error in one cluster is written into its status message and never stops the others. Restart commands are claimed in the same pass: the agent's pod is deleted and the StatefulSet recreates it.
 
 ## Architecture
 
@@ -192,10 +227,10 @@ NOTIFY payloads are wake-up hints that carry ids only. Every loop also polls, be
 
 | Channel | Payload | Sent by | Heard by |
 |---|---|---|---|
-| `cluster_changed` | `{cluster_id}` | api (clusters repository) | reconciler, status stream |
+| `cluster_changed` | `{cluster_id}` | api (clusters repository); reconciler on status writes and purge | reconciler, status stream |
 | `agent_free` | `{cluster_id, agent_id}` | ingester | dispatcher |
 | `events` | `{cluster_id, max_id}` | ingester | events stream |
-| `status` | `{cluster_id}` | ingester, dispatcher | status stream |
+| `status` | `{cluster_id}` | ingester, dispatcher, reconciler | status stream |
 
 Polling fallbacks: dispatcher `ORCH_DISPATCH_POLL_SECONDS` (2 s), reconciler `ORCH_RECONCILE_POLL_SECONDS` (10 s), ingester stream refresh `ORCH_INGEST_REFRESH_SECONDS` (5 s); the api SSE streams re-read on a 5 s poll when no NOTIFY arrives.
 
