@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from agent_orchestrator.spec import ClusterSpec
 
@@ -88,3 +88,79 @@ class Meta(BaseModel):
     models: list[str]
     caps: MetaCaps
     discard_hook: Literal["none", "command", "url"]
+
+
+MessageStatus = Literal["queued", "dispatching", "verifying", "sent", "failed", "cancelled"]
+
+
+class PostMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1)
+    target_agent_id: uuid.UUID | None = None
+
+
+class MessageAccepted(BaseModel):
+    message_id: int
+    status: Literal["queued"] = "queued"
+
+
+class TurnView(BaseModel):
+    status: str | None
+    started_at: datetime
+    completed_at: datetime | None
+    final_text: str | None
+
+
+class MessageView(BaseModel):
+    id: int
+    cluster_id: uuid.UUID
+    text: str
+    status: MessageStatus
+    target_agent_id: uuid.UUID | None
+    agent_id: uuid.UUID | None
+    turn_id: str | None
+    attempts: int
+    max_attempts: int
+    next_attempt_at: datetime | None
+    error: str | None
+    created_at: datetime
+    dispatched_at: datetime | None
+    turn: TurnView | None
+
+
+class CommandAccepted(BaseModel):
+    command_id: int
+
+
+class CommandView(BaseModel):
+    id: int
+    agent_id: uuid.UUID
+    kind: str
+    status: str
+    result: Any | None
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+
+
+class PostCheck(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    command: str = Field(min_length=1)
+
+
+class CheckAccepted(BaseModel):
+    check_id: int
+
+
+class CheckView(BaseModel):
+    id: int
+    cluster_id: uuid.UUID
+    command: str
+    status: str
+    exit_code: int | None
+    log_tail: str | None
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None

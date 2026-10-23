@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from psycopg_pool import AsyncConnectionPool
 
 from agent_orchestrator import __version__
-from agent_orchestrator.api import clusters, errors
+from agent_orchestrator.api import clusters, errors, messages
 from agent_orchestrator.api.allowlist import SourceAllowlist
 from agent_orchestrator.api.errors import error_response
 from agent_orchestrator.db.pool import open_pool
@@ -42,6 +42,7 @@ def create_app(settings: Settings, pool: AsyncConnectionPool | None = None) -> F
     app.state.pool = pool
     errors.install(app)
     app.include_router(clusters.router)
+    app.include_router(messages.router)
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz() -> dict:

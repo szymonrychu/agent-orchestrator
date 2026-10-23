@@ -76,3 +76,82 @@ async def agent_rows(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID) -> li
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(_AGENTS, (cluster_id,))
         return await cur.fetchall()
+
+
+# ---------------------------------------------------------------- messages, commands, checks
+
+MESSAGE_STATUSES = ("queued", "dispatching", "verifying", "sent", "failed", "cancelled")
+
+_MESSAGE_SELECT = """
+SELECT m.id, m.cluster_id, m.target_agent_id, m.agent_id, m.text, m.status, m.turn_id,
+       m.attempts, m.not_before, m.error, m.created_at, m.dispatched_at,
+       coalesce((c.spec->>'max_attempts')::int, %(default_attempts)s) AS max_attempts,
+       t.status AS turn_status, t.started_at AS turn_started_at,
+       t.completed_at AS turn_completed_at, t.final_text AS turn_final_text,
+       (t.turn_id IS NOT NULL) AS has_turn
+FROM messages m
+JOIN clusters c ON c.id = m.cluster_id
+LEFT JOIN turns t ON t.turn_id = m.turn_id
+"""
+
+
+async def _rows(conn: psycopg.AsyncConnection, query: str, params: Any) -> list[dict]:
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(query, params)
+        return await cur.fetchall()
+
+
+async def get_message(
+    conn: psycopg.AsyncConnection, id: int, default_attempts: int
+) -> dict[str, Any] | None:
+    rows = await _rows(
+        conn,
+        _MESSAGE_SELECT + " WHERE m.id = %(id)s",
+        {"id": id, "default_attempts": default_attempts},
+    )
+    return rows[0] if rows else None
+
+
+async def list_messages(
+    conn: psycopg.AsyncConnection,
+    cluster_id: uuid.UUID,
+    statuses: list[str] | None,
+    limit: int,
+    default_attempts: int,
+) -> list[dict[str, Any]]:
+    return await _rows(
+        conn,
+        _MESSAGE_SELECT
+        + " WHERE m.cluster_id = %(cid)s AND (%(st)s::text[] IS NULL OR m.status = ANY(%(st)s))"
+        " ORDER BY m.id DESC LIMIT %(limit)s",
+        {"cid": cluster_id, "st": statuses, "limit": limit, "default_attempts": default_attempts},
+    )
+
+
+async def get_agent_ref(conn: psycopg.AsyncConnection, agent_id: uuid.UUID) -> dict | None:
+    rows = await _rows(
+        conn,
+        "SELECT id, cluster_id, gone_at FROM agents WHERE id = %s",
+        (agent_id,),
+    )
+    return rows[0] if rows else None
+
+
+async def get_command(conn: psycopg.AsyncConnection, id: int) -> dict | None:
+    rows = await _rows(
+        conn,
+        "SELECT id, agent_id, kind, status, result, created_at, started_at, finished_at"
+        " FROM commands WHERE id = %s",
+        (id,),
+    )
+    return rows[0] if rows else None
+
+
+async def get_check(conn: psycopg.AsyncConnection, id: int) -> dict | None:
+    rows = await _rows(
+        conn,
+        "SELECT id, cluster_id, command, status, exit_code, log_tail, created_at, started_at,"
+        " finished_at FROM checks WHERE id = %s",
+        (id,),
+    )
+    return rows[0] if rows else None
