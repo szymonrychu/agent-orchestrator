@@ -10,7 +10,7 @@ Tasks run through mise:
 - `mise run lint` - ruff check and format check
 - `mise run fmt` - format and autofix
 - `mise run test` - unit tests
-- `mise run test:integration` - tests that need a real wrapper image
+- `mise run test:integration` - tests that need a real wrapper image. When `ORCH_TEST_WRAPPER_IMAGE` is unset the task builds `e2e/agent-test.Dockerfile` as `agent-orchestrator-agent-test:e2e` (the tag `scripts/e2e.sh` uses), exports it, and runs the suite; set the variable to use another image
 - `mise run test:e2e` - kind end-to-end tests
 
 ## Configuration

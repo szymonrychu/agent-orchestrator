@@ -25,8 +25,16 @@ description = "Format and autofix"
 run = "uv run ruff format . && uv run ruff check --fix ."
 
 [tasks."test:integration"]
-description = "Run tests that need a real wrapper image"
-run = "uv run pytest -m integration"
+description = "Run tests that need a real wrapper image (builds the test agent image when ORCH_TEST_WRAPPER_IMAGE is unset)"
+run = """
+if [ -z "${ORCH_TEST_WRAPPER_IMAGE:-}" ]; then
+  export ORCH_TEST_WRAPPER_IMAGE=agent-orchestrator-agent-test:e2e
+  mkdir -p "${TMPDIR:-/tmp}/orch-agent-ctx/e2e"
+  cp e2e/agent-test.scenario.json "${TMPDIR:-/tmp}/orch-agent-ctx/e2e/"
+  docker build -f e2e/agent-test.Dockerfile -t "$ORCH_TEST_WRAPPER_IMAGE" "${TMPDIR:-/tmp}/orch-agent-ctx"
+fi
+uv run pytest -m integration
+"""
 
 [tasks."test:e2e"]
 description = "kind e2e: build and load the images, install the chart, helm test, run tests/e2e"

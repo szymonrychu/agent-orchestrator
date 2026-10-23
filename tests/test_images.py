@@ -55,7 +55,28 @@ def test_no_derived_agent_image():
     assert not [f for f in files if f.startswith("agent-image/")]
     ci = (ROOT / ".github/workflows/ci.yaml").read_text()
     assert "agent-image" not in ci
-    assert "claude-code-wrapper" not in ci
+    # CI builds and pushes no agent image; the e2e job may still pull the wrapper image.
+    assert "containers/agent-orchestrator-agent" not in ci
+    imports = [
+        s["run"]
+        for j in _ci()["jobs"].values()
+        for s in j["steps"]
+        if "regctl image import" in s.get("run", "")
+    ]
+    assert len(imports) == 1 and "agent-orchestrator-agent" not in imports[0]
+    # No production Dockerfile derives from the wrapper image. The only derived image is the
+    # test-only e2e/agent-test.Dockerfile, which is never pushed.
+    derived = []
+    for f in files:
+        if f.rsplit("/", 1)[-1].lower().endswith("dockerfile"):
+            text = (ROOT / f).read_text()
+            froms = re.findall(r"^FROM\s+(\S+)", text, re.M | re.I)
+            args = dict(re.findall(r"^ARG\s+(\w+)=(\S+)", text, re.M))
+            for ref in froms:
+                ref = re.sub(r"\$\{(\w+)\}", lambda m: args.get(m.group(1), ""), ref)
+                if "claude-code-wrapper" in ref:
+                    derived.append(f)
+    assert derived == ["e2e/agent-test.Dockerfile"]
 
 
 def test_ccw_dev_dependency_matches_agent_image_sha():
