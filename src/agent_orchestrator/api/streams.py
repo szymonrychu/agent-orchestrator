@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime
@@ -126,6 +127,16 @@ def _matches(payload: dict, cluster_id: uuid.UUID) -> bool:
     return payload.get("cluster_id") == str(cluster_id)
 
 
+async def _wait_for_cluster(sub: Subscription, cluster_id: uuid.UUID, poll: float) -> bool:
+    """Wait for a NOTIFY about this cluster or for the poll interval; other clusters are ignored."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + poll
+    while (remaining := deadline - loop.time()) > 0:
+        if await sub.wait(remaining) and any(_matches(p, cluster_id) for _, p in sub.drain()):
+            return True
+    return False
+
+
 @router.get("/clusters/{cluster_id}/events/stream", response_class=EventSourceResponse)
 async def stream_events(
     start: Annotated[tuple[uuid.UUID, int], Depends(resume_cursor)],
@@ -149,8 +160,8 @@ async def stream_events(
                 if len(page.events) < _STREAM_PAGE:
                     break
             try:
-                if await sub.wait(poll):
-                    sub.drain()
+                if not await _wait_for_cluster(sub, cluster_id, poll):
+                    continue
             except SubscriptionDropped:
                 return
     finally:

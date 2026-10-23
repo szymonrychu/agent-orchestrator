@@ -318,3 +318,30 @@ async def test_disconnect_unsubscribes(srv, pool):
             break
         await asyncio.sleep(0.1)
     assert listener.subscriber_count() == 0
+
+
+async def test_events_stream_ignores_other_clusters_notify(pool, dsn, monkeypatch):
+    from agent_orchestrator.api import streams
+
+    calls = 0
+    real_page = ev.page
+
+    async def counting(*a, **kw):
+        nonlocal calls
+        calls += 1
+        return await real_page(*a, **kw)
+
+    monkeypatch.setattr(streams.ev, "page", counting)
+    cl, ag = await _seed(pool, 1)
+    app = create_app(make_settings(dsn, allowed_cidrs="127.0.0.0/8"), pool, stream_poll_seconds=30)
+    async with serve(app) as s, open_sse(s, f"/api/v1/clusters/{cl['id']}/events/stream"):
+        await asyncio.sleep(0.5)
+        base = calls
+        async with pool.connection() as conn:
+            await notify(conn, "events", {"cluster_id": "not-this-one", "max_id": 1})
+        await asyncio.sleep(0.5)
+        assert calls == base
+        async with pool.connection() as conn:
+            await notify(conn, "events", {"cluster_id": str(cl["id"]), "max_id": 1})
+        await asyncio.sleep(0.5)
+        assert calls > base
