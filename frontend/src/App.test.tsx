@@ -19,6 +19,13 @@ vi.mock('./api/stream', () => ({
   },
 }))
 
+/** jsdom has no layout: the workspace's panel library needs observers and a box. */
+class NoopObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
 function setViewport(width: number) {
   window.matchMedia = ((query: string) => {
     const min = /min-width:\s*([\d.]+)px/.exec(query)
@@ -61,6 +68,8 @@ const tabs = () => screen.getAllByRole('tab')
 const selectedTab = () => tabs().find((t) => t.getAttribute('aria-selected') === 'true')
 
 beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', NoopObserver)
+  localStorage.clear()
   setViewport(1400)
   stream.opts = null
   api.listClusters.mockResolvedValue([cluster('c2', 'beta', { state: 'waiting', ready: 1, replicas: 1, context_pct_max: 10 }), cluster('c1', 'alpha')])
@@ -69,6 +78,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   cleanup()
+  vi.unstubAllGlobals()
   vi.clearAllMocks()
 })
 
@@ -86,6 +96,29 @@ describe('App', () => {
     expect(screen.queryByTestId('ribbon-aside')).toBeNull()
     expect(screen.queryByTestId('ribbon-drawer')).toBeNull()
     expect(screen.queryByTestId('cluster-row-alpha')).toBeNull()
+  })
+
+  test('only_active_cluster_workspace_mounted', async () => {
+    mount()
+    await waitFor(() => expect(tabs()).toHaveLength(2))
+    const workspaces = () => screen.queryAllByTestId('workspace').map((w) => w.getAttribute('data-cluster'))
+    expect(workspaces()).toEqual(['c1'])
+    const main = screen.getByRole('main')
+    expect(within(main).getByRole('button', { name: 'Minimize Files' })).toBeTruthy()
+    expect(within(main).getByRole('button', { name: 'Minimize Chat' })).toBeTruthy()
+    expect(within(main).getByRole('button', { name: 'Minimize Terminal' })).toBeTruthy()
+    expect(within(main).getByRole('heading', { name: 'alpha' })).toBeTruthy()
+    fireEvent.click(tabs()[1])
+    expect(workspaces()).toEqual(['c2'])
+    expect(within(main).queryByRole('heading', { name: 'alpha' })).toBeNull()
+    expect(within(main).getByRole('heading', { name: 'beta' })).toBeTruthy()
+    // The layout of the tab left behind is remembered for when it is shown again.
+    fireEvent.click(within(main).getByRole('button', { name: 'Minimize Files' }))
+    fireEvent.click(tabs()[0])
+    expect(workspaces()).toEqual(['c1'])
+    expect(within(main).getByRole('button', { name: 'Minimize Files' })).toBeTruthy()
+    fireEvent.click(tabs()[1])
+    expect(within(main).getByRole('button', { name: 'Restore Files' })).toBeTruthy()
   })
 
   test('top_bar_on_phone_layout', async () => {

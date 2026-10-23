@@ -6,6 +6,7 @@ import { ClusterForm } from './clusters/ClusterForm'
 import { DiscardClusterDialog } from './clusters/DiscardClusterDialog'
 import type { ClusterView } from './api/client'
 import { TopBar } from './layout/TopBar'
+import { Workspace } from './layout/Workspace'
 import { sortedAgents, useClusters } from './ribbon/useClusters'
 import { TOKENS } from './theme'
 
@@ -21,14 +22,21 @@ export default function App() {
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100dvh' }}>
       <TopBar clusters={clusters} selectedId={selectedId} onSelect={select} onNew={() => setCreating(true)} onDiscard={setDiscarding} settingsCategories={[]} />
-      <Box component="main" aria-label={APP_NAME} sx={{ flexGrow: 1, minWidth: 0, minHeight: 0, overflow: 'auto', p: 2 }}>
+      <Box component="main" aria-label={APP_NAME} sx={{ display: 'flex', flexDirection: 'column', flexGrow: 1, minWidth: 0, minHeight: 0, overflow: 'hidden', p: 2 }}>
         {state.error && (
           <Box role="alert" sx={{ fontSize: TOKENS.fontSizes.sm, color: 'error.main' }}>
             {state.error}
           </Box>
         )}
         {selected ? (
-          <ChatView cluster={selected.cluster} agents={sortedAgents(selected)} />
+          <Box sx={{ flexGrow: 1, minHeight: 0 }}>
+            <Workspace
+              clusterId={selected.cluster.id}
+              files={<Typography color="text.secondary">Filesystem tree</Typography>}
+              chat={<ChatView cluster={selected.cluster} agents={sortedAgents(selected)} />}
+              terminal={<Typography color="text.secondary">Terminals</Typography>}
+            />
+          </Box>
         ) : (
           state.loaded && !state.error && <Typography color="text.secondary">No clusters yet</Typography>
         )}
