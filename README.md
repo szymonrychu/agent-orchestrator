@@ -52,6 +52,7 @@ Every process reads `ORCH_*` variables (the contract `agent-orchestrator-setting
 | `ORCH_SHUTDOWN_GRACE_SECONDS` | `20` | all | graceful shutdown wait |
 | `ORCH_LOG_LEVEL` | `INFO` | all | log level |
 | `ORCH_ALLOWED_CIDRS` | `192.168.1.0/24` | api | comma-separated direct-peer source allowlist (health routes exempt) |
+| `ORCH_ALLOWED_ORIGINS` | empty | api | comma-separated browser origins (`scheme://host[:port]`, lower-cased, no path, no trailing slash) allowed to open a WebSocket or call the terminal POST and DELETE routes; empty refuses every request that carries an `Origin`. Dev example: `http://localhost:5173` |
 | `ORCH_AGENT_IMAGES` | empty | api | comma-separated extra ClusterSpec.image allowlist (agent_image is always allowed) |
 | `ORCH_MAX_REPLICAS` | `16` | api | cap on replicas per cluster |
 | `ORCH_MAX_PVC_SIZE` | `100Gi` | api | cap on PVC size |
@@ -174,6 +175,15 @@ ingress:
       hosts:
         - orchestrator.example.com
 ```
+
+WebSocket routes (the terminal) need long idle timeouts at the ingress. ingress-nginx closes an idle proxied connection after 60 s by default, so raise `nginx.ingress.kubernetes.io/proxy-read-timeout` and `nginx.ingress.kubernetes.io/proxy-send-timeout` to `"3600"` (as agents-helmfile already does) through `ingress.annotations`. The UI pings every 20 s, well inside that window, so a quiet terminal stays open.
+
+```yaml
+ingress:
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+```
 ## Security
 
 The api trusts only the direct socket peer (`ORCH_ALLOWED_CIDRS`, see API). Behind an ingress that peer is the ingress controller, but not its node LAN IP. ingress-nginx runs hostNetwork, yet on a flannel cluster its proxied connection reaches the api pod from the node's pod-network gateway address: from another node via `flannel.1` as `10.244.N.0`, from the same node via `cni0` as `10.244.N.1`. A LAN client therefore gets `403` if `ORCH_ALLOWED_CIDRS` lists only the LAN CIDR. Set `ORCH_ALLOWED_CIDRS` to each node's podCIDR `.0/31` (covers `.0` and `.1`; agent pods get `.2` and up, so they stay outside), derived from `kubectl get nodes -o jsonpath='{range .items[*]}{.spec.podCIDR}{"\n"}{end}'`, for example `10.244.0.0/31,10.244.1.0/31`. Update the list whenever nodes are added or removed. The allowlist is blind to who the original client was.
@@ -187,6 +197,16 @@ ingress:
   denySourceRanges: ["192.168.1.10/32", "192.168.1.11/32"]  # cluster node IPs
   allowSourceRanges: ["192.168.1.0/24"]                      # the LAN
 ```
+
+### Origin allowlist
+
+Browsers apply no CORS to WebSocket upgrades, so any web page opened on a LAN machine could otherwise open a terminal shell against the api. The api therefore checks the `Origin` header of every WebSocket upgrade against `ORCH_ALLOWED_ORIGINS`, beside the source allowlist (which is unchanged):
+
+- no `Origin` header (a non-browser client): allowed, the source allowlist still applies;
+- `Origin: null` or an origin not in the list: the upgrade is closed with code 1008 before it is accepted;
+- an empty list refuses every upgrade that carries an `Origin`, so the setting is mandatory for any deployment that serves the UI: list the UI origin exactly as the browser sends it (`scheme://host[:port]`), for example the ingress origin `https://orchestrator.example.com`.
+
+The POST and DELETE terminal routes apply the same rule and answer `403 forbidden_origin`. For local UI development list the dev server: `ORCH_ALLOWED_ORIGINS=http://localhost:5173`. An entry with a path, a trailing slash, userinfo or a scheme other than http or https fails settings validation naming `ORCH_ALLOWED_ORIGINS`.
 
 ## Releasing
 
@@ -380,7 +400,7 @@ Versioning: `/api/v1` is additive only. New routes, new optional request fields 
 
 Source allowlist: the api checks the direct socket peer against `ORCH_ALLOWED_CIDRS` (default `192.168.1.0/24`). `Forwarded`, `X-Forwarded-For` and `X-Real-IP` are never read. A caller outside the list gets `403 forbidden`. `/healthz` and `/readyz` are exempt.
 
-Error codes: `bad_request` (400), `forbidden` (403), `not_found` (404), `conflict` (409, slug exists), `cluster_deleting` (409), `cluster_limit` (409, `ORCH_MAX_CLUSTERS` reached), `not_queued` (409), `not_failed` (409), `agent_gone` (409), `invalid_request` (422), `target_gone` (422), `internal` (500, 503 on `/readyz`).
+Error codes: `bad_request` (400), `forbidden` (403), `forbidden_origin` (403, `Origin` not in `ORCH_ALLOWED_ORIGINS`), `not_found` (404), `conflict` (409, slug exists), `cluster_deleting` (409), `cluster_limit` (409, `ORCH_MAX_CLUSTERS` reached), `not_queued` (409), `not_failed` (409), `agent_gone` (409), `invalid_request` (422), `target_gone` (422), `internal` (500, 503 on `/readyz`).
 
 ### `GET /api/v1/meta`
 

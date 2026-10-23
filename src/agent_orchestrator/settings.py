@@ -52,6 +52,27 @@ class _Bad(ValueError):
     """Validation failure that already names its variable(s)."""
 
 
+def normalise_origin(value: str) -> str | None:
+    """Canonical `scheme://host[:port]` (lower-cased), or None when value is not a bare origin.
+
+    Rejects a path, query, fragment, userinfo, a missing host and any scheme but http(s), so the
+    literal `null` Origin of sandboxed pages never matches.
+    """
+    value = value.strip().lower()
+    try:
+        parsed = urlparse(value)
+        port = parsed.port
+    except ValueError:
+        return None
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return None
+    if parsed.username is not None or parsed.password is not None:
+        return None
+    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+    origin = f"{parsed.scheme}://{host}" + (f":{port}" if port is not None else "")
+    return origin if value == origin else None
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix=PREFIX, extra="ignore")
 
@@ -97,6 +118,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     allowed_cidrs: CsvList = ["192.168.1.0/24"]
+    allowed_origins: CsvList = []
     agent_images: CsvList = []
     max_replicas: int = 16
     max_pvc_size: str = "100Gi"
@@ -142,9 +164,9 @@ class Settings(BaseSettings):
                     problems.setdefault("ORCH_*", msg)
             raise SettingsError(problems) from None
 
-    _split = field_validator("models", "efforts", "allowed_cidrs", "agent_images", mode="before")(
-        lambda cls, v: _csv(v)
-    )
+    _split = field_validator(
+        "models", "efforts", "allowed_cidrs", "allowed_origins", "agent_images", mode="before"
+    )(lambda cls, v: _csv(v))
 
     # Checks are field validators (not one mode="after" model validator) so they still run
     # when an unrelated field fails type or required checks; cross-field checks skip
@@ -162,6 +184,18 @@ class Settings(BaseSettings):
         if bad:
             raise _Bad("unparsable CIDR " + ", ".join(repr(c) for c in bad))
         return v
+
+    @field_validator("allowed_origins")
+    @classmethod
+    def _check_origins(cls, v: list[str]) -> list[str]:
+        out = [normalise_origin(entry) for entry in v]
+        bad = [entry for entry, norm in zip(v, out, strict=True) if norm is None]
+        if bad:
+            raise _Bad(
+                "not an origin (scheme://host[:port], no path or trailing slash): "
+                + ", ".join(repr(o) for o in bad)
+            )
+        return [o for o in out if o is not None]
 
     @field_validator(
         "default_cpu_request",

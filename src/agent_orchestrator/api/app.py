@@ -15,6 +15,7 @@ from agent_orchestrator.api import clusters, errors, messages, streams
 from agent_orchestrator.api.allowlist import SourceAllowlist
 from agent_orchestrator.api.errors import error_response
 from agent_orchestrator.api.listener import Listener
+from agent_orchestrator.api.origin import OriginAllowlist
 from agent_orchestrator.api.spa import SpaStaticFiles
 from agent_orchestrator.db.pool import open_pool
 from agent_orchestrator.settings import Settings
@@ -73,5 +74,6 @@ def create_app(
     if settings.static_dir and Path(settings.static_dir).is_dir():
         app.mount("/", SpaStaticFiles(directory=settings.static_dir, html=True), name="spa")
 
+    app.add_middleware(OriginAllowlist, origins=settings.allowed_origins)
     app.add_middleware(SourceAllowlist, networks=settings.allowed_networks())
     return app
