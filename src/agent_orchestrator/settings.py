@@ -183,7 +183,8 @@ class Settings(BaseSettings):
         send = info.data.get("wrapper_send_timeout_seconds")
         if send is not None and 2 * send > v:
             raise _Bad(
-                "ORCH_WRAPPER_SEND_TIMEOUT_SECONDS::must be at most half of ORCH_DISPATCHING_STALE_SECONDS"
+                "ORCH_WRAPPER_SEND_TIMEOUT_SECONDS::must be at most half of "
+                "ORCH_DISPATCHING_STALE_SECONDS"
             )
         return v
 
