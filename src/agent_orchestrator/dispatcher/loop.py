@@ -105,7 +105,8 @@ class Dispatcher:
         await self.verify_pending()
 
     async def verify_pending(self) -> None:
-        """Hook for the ambiguous-send verifier; a no-op until it replaces this."""
+        """Called once per wake after the stale sweep; override to verify pending sends."""
+        return None
 
     async def _drain_messages(self) -> None:
         slots = asyncio.Semaphore(MAX_IN_FLIGHT)
@@ -133,7 +134,7 @@ class Dispatcher:
         try:
             await self._send(claim)
         except Exception:
-            # The row stays dispatching; the stale rule hands it to the verifier (D24).
+            # The row stays dispatching; verify_stale_dispatching moves it to verifying (D24).
             log.exception("send of message %s failed unexpectedly", claim.message_id)
         finally:
             slots.release()
