@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -14,6 +15,7 @@ from agent_orchestrator.api import clusters, errors, messages, streams
 from agent_orchestrator.api.allowlist import SourceAllowlist
 from agent_orchestrator.api.errors import error_response
 from agent_orchestrator.api.listener import Listener
+from agent_orchestrator.api.spa import SpaStaticFiles
 from agent_orchestrator.db.pool import open_pool
 from agent_orchestrator.settings import Settings
 
@@ -67,6 +69,9 @@ def create_app(
         except Exception as exc:
             return error_response(503, "internal", f"database unavailable: {type(exc).__name__}")
         return JSONResponse({"status": "ready"})
+
+    if settings.static_dir and Path(settings.static_dir).is_dir():
+        app.mount("/", SpaStaticFiles(directory=settings.static_dir, html=True), name="spa")
 
     app.add_middleware(SourceAllowlist, networks=settings.allowed_networks())
     return app
