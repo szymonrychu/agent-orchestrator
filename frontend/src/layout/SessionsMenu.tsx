@@ -10,7 +10,7 @@ import { StateMark } from '../ribbon/stateMark'
 import type { ClusterEntry } from '../ribbon/useClusters'
 import { TOKENS } from '../theme'
 
-/** One entry of the Settings section; other epics add theirs (for example Presets). */
+/** One entry of the Settings section, rendered as a list item that calls onOpen. */
 export interface SettingsCategory {
   id: string
   label: string
