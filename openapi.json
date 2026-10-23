@@ -1075,6 +1075,18 @@
               }
             ],
             "title": "Status"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Usage"
           }
         },
         "required": [

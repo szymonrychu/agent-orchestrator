@@ -93,7 +93,12 @@ async def test_get_message_with_turn(http, pool):
     ag = await insert_agent(pool, cl["id"])
     done = datetime.now(UTC)
     t = await insert_turn(
-        pool, ag["id"], status="completed", final_text="answer", completed_at=done
+        pool,
+        ag["id"],
+        status="completed",
+        final_text="answer",
+        completed_at=done,
+        usage={"input_tokens": 7, "output_tokens": 3},
     )
     m = await insert_message(pool, cl["id"], status="sent", agent_id=ag["id"], turn_id=t["turn_id"])
     got = (await http.get(f"/api/v1/messages/{m['id']}")).json()
@@ -101,6 +106,7 @@ async def test_get_message_with_turn(http, pool):
     assert got["agent_id"] == str(ag["id"])
     assert got["turn"]["status"] == "completed"
     assert got["turn"]["final_text"] == "answer"
+    assert got["turn"]["usage"] == {"input_tokens": 7, "output_tokens": 3}
     assert got["turn"]["started_at"] is not None
     assert got["turn"]["completed_at"] is not None
     assert_error(await http.get("/api/v1/messages/999999"), 404, "not_found")

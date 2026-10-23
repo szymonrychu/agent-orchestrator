@@ -388,7 +388,7 @@ Body `{"text": "<non-empty>", "target_agent_id": "<uuid, optional>"}`. Queues a 
 
 ### `GET /api/v1/clusters/{cluster_id}/messages`
 
-Query `status` (comma-separated, from `queued`, `dispatching`, `verifying`, `sent`, `failed`, `cancelled`) and `limit` (1-500, default 100). Response 200: list of message views (`id`, `cluster_id`, `text`, `status`, `target_agent_id`, `agent_id`, `turn_id`, `attempts`, `max_attempts`, `next_attempt_at`, `error`, `created_at`, `dispatched_at`, `turn`). Errors: 404 `not_found`, 422 `invalid_request`.
+Query `status` (comma-separated, from `queued`, `dispatching`, `verifying`, `sent`, `failed`, `cancelled`) and `limit` (1-500, default 100). Response 200: list of message views (`id`, `cluster_id`, `text`, `status`, `target_agent_id`, `agent_id`, `turn_id`, `attempts`, `max_attempts`, `next_attempt_at`, `error`, `created_at`, `dispatched_at`, `turn`: `status`, `started_at`, `completed_at`, `final_text`, `usage`). Errors: 404 `not_found`, 422 `invalid_request`.
 
 ### `GET /api/v1/messages/{message_id}`
 
@@ -449,3 +449,13 @@ The `/clusters/{cluster_id}/events/stream` frames are named by the stored wrappe
 | `agent_status` | `/stream` | `{"cluster_id", "agent": <agent view>}` when an agent changed |
 | `message_status` | `/stream` | `{"cluster_id", "queued", "failed", "messages": [<changed message views>]}` |
 | `cluster_removed` | `/stream` | `{"cluster_id"}` when a discard completed |
+
+## Bench
+
+`orch bench SPEC --api URL --out FILE [--keep]` runs the experiment: does round-robin with several peered agents finish faster, fail less and verify more often? It talks only to the public `/api/v1` through httpx. See `examples/bench.yaml` (arms 1/off, 3/off and 3/on).
+
+Spec keys: `arms: [{name, replicas, peers}]`, `cluster` (a cluster spec base, for example `model`, `effort`), `tasks: [{name, prompt, verify}]`, `repeats`, `timeout_seconds` and optional `chaos: {after_seconds}`. A bad spec exits 2 and names the field. Prompts are sent verbatim.
+
+For each arm it creates cluster `bench-<arm>-<run>` (a DNS-1123 slug of at most 40 characters), waits for every replica to be ready with a session, then for each task and repeat posts the message and follows `GET /api/v1/stream` until the turn completes or fails (polling `GET /messages/{id}` when the stream is unavailable). With `chaos`, after `after_seconds` it restarts one random busy agent via `POST /agents/{id}/restart`. It then runs the task's `verify` command as a check and waits for it.
+
+Each (arm, task, repeat) appends one JSONL record to `--out`: `arm`, `task`, `repeat`, `cluster_id`, `message_id`, `wall_seconds` (queued to completed), `turn_status`, `failed_turns` (retries plus a final failure), `input_tokens` and `output_tokens` (from the turn `usage`), `verify_passed` and `exit_code`. The summary table has per arm the runs, mean and p50 wall seconds (completed runs), failures, mean tokens and verify pass rate. The bench clusters are discarded at the end (which deletes their history too) unless `--keep`.

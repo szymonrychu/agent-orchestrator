@@ -110,6 +110,7 @@ class TurnView(BaseModel):
     started_at: datetime
     completed_at: datetime | None
     final_text: str | None
+    usage: dict[str, Any] | None = None
 
 
 class MessageView(BaseModel):

@@ -88,6 +88,7 @@ SELECT m.id, m.cluster_id, m.target_agent_id, m.agent_id, m.text, m.status, m.tu
        coalesce((c.spec->>'max_attempts')::int, %(default_attempts)s) AS max_attempts,
        t.status AS turn_status, t.started_at AS turn_started_at,
        t.completed_at AS turn_completed_at, t.final_text AS turn_final_text,
+       t.usage AS turn_usage,
        (t.turn_id IS NOT NULL) AS has_turn
 FROM messages m
 JOIN clusters c ON c.id = m.cluster_id

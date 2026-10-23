@@ -10,20 +10,33 @@ from agent_orchestrator import __version__
 
 CommandFunc = Callable[[argparse.Namespace], int | None]
 
-_COMMANDS: dict[str, tuple[CommandFunc, str]] = {}
+ConfigureFunc = Callable[[argparse.ArgumentParser], None]
+
+_COMMANDS: dict[str, tuple[CommandFunc, str, ConfigureFunc | None]] = {}
 
 
-def register(name: str, func: CommandFunc, help: str) -> None:  # noqa: A002
-    """Register a subcommand; func receives the parsed args and returns the exit code."""
-    _COMMANDS[name] = (func, help)
+def register(
+    name: str,
+    func: CommandFunc,
+    help: str,  # noqa: A002
+    configure: ConfigureFunc | None = None,
+) -> None:
+    """Register a subcommand; func receives the parsed args and returns the exit code.
+
+    `configure` adds the subcommand's own arguments to its parser.
+    """
+    _COMMANDS[name] = (func, help, configure)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="orch", description="agent-orchestrator")
     parser.add_argument("--version", action="version", version=f"orch {__version__}")
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
-    for name, (func, help_text) in _COMMANDS.items():
-        sub.add_parser(name, help=help_text).set_defaults(func=func)
+    for name, (func, help_text, configure) in _COMMANDS.items():
+        cmd = sub.add_parser(name, help=help_text)
+        cmd.set_defaults(func=func)
+        if configure is not None:
+            configure(cmd)
     return parser
 
 
@@ -161,11 +174,44 @@ def _cmd_reconciler(_args: argparse.Namespace) -> int:
     return _run(build, "reconciler")
 
 
+def _configure_bench(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("spec", help="bench spec YAML")
+    parser.add_argument("--api", required=True, help="orchestrator base URL")
+    parser.add_argument("--out", required=True, help="JSONL results file")
+    parser.add_argument("--keep", action="store_true", help="do not discard the bench clusters")
+
+
+def _cmd_bench(args: argparse.Namespace) -> int:
+    from agent_orchestrator.bench.report import format_table, summarize
+    from agent_orchestrator.bench.runner import BenchError, run_bench
+    from agent_orchestrator.bench.spec import BenchSpecError, load_spec
+
+    try:
+        spec = load_spec(args.spec)
+    except BenchSpecError as exc:
+        for err in exc.errors:
+            print(f"bench spec error: {err}", file=sys.stderr)
+        raise SystemExit(2) from None
+    try:
+        records = run_bench(spec, args.api, args.out, keep=args.keep)
+    except BenchError as exc:
+        print(f"bench failed: {exc}", file=sys.stderr)
+        return 1
+    print(format_table(summarize(records)))
+    return 0
+
+
 register("migrate", _cmd_migrate, "apply database migrations and exit")
 register("api", _cmd_api, "serve the HTTP API and UI")
 register("dispatcher", _cmd_dispatcher, "dispatch queued messages to agents")
 register("ingester", _cmd_ingester, "store every wrapper event (singleton)")
 register("reconciler", _cmd_reconciler, "reconcile cluster objects in Kubernetes (singleton)")
+register(
+    "bench",
+    _cmd_bench,
+    "run the experiment arms against the API (talks only to /api/v1)",
+    _configure_bench,
+)
 
 
 if __name__ == "__main__":

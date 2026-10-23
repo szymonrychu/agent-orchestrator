@@ -26,6 +26,7 @@ def _message_view(r: dict) -> schemas.MessageView:
             started_at=r["turn_started_at"],
             completed_at=r["turn_completed_at"],
             final_text=r["turn_final_text"],
+            usage=r["turn_usage"],
         )
         if r["has_turn"]
         else None

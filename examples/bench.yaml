@@ -1,0 +1,17 @@
+# orch bench examples/bench.yaml --api http://orchestrator.example --out bench.jsonl
+# Does round-robin with several peered agents finish faster, fail less and verify more often?
+arms:
+  - {name: single, replicas: 1, peers: off}
+  - {name: rr3, replicas: 3, peers: off}
+  - {name: rr3-peers, replicas: 3, peers: on}
+cluster:
+  model: sonnet
+  effort: medium
+tasks:
+  - name: fizzbuzz
+    prompt: "Write fizzbuzz.py in the workdir that prints FizzBuzz for 1..100, one per line."
+    verify: "python3 fizzbuzz.py | sed -n '15p' | grep -qx FizzBuzz"
+repeats: 3
+timeout_seconds: 900
+chaos:
+  after_seconds: 120
