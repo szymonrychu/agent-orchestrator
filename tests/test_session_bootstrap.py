@@ -270,3 +270,46 @@ async def test_bootstraps_run_concurrently_bounded_at_eight(env, fake):
     await env.rec.reconcile_once()
     assert 2 <= peak <= 8
     assert len(await env.agents(c.id)) == 12
+
+
+async def _bootstrapped(env, state: str, transcript: bool):
+    c = await env.cluster("alpha")
+    await env.rec.reconcile_once()
+    (agent,) = await env.agents(c.id)
+    sid = agent.session_id
+    assert sid is not None
+    if state != "ready":
+        env.fake.set_session_state(state, has_transcript=transcript, session_id=sid)
+    if transcript:
+        env.fake.sessions[sid].turns_completed = 1
+    return c, sid
+
+
+async def test_stored_stopped_session_is_resumed(env, fake):
+    c, sid = await _bootstrapped(env, "stopped", transcript=True)
+    assert fake.sessions[sid].state == "stopped"
+    await env.rec.reconcile_once()
+
+    (agent,) = await env.agents(c.id)
+    assert agent.session_id == sid
+    assert fake.sessions[sid].state == "ready"
+    assert list(fake.sessions) == [sid]
+
+
+async def test_stored_failed_session_without_transcript_replaced(env, fake):
+    c, sid = await _bootstrapped(env, "failed", transcript=False)
+    await env.rec.reconcile_once()
+
+    (agent,) = await env.agents(c.id)
+    assert agent.session_id not in (None, sid)
+    assert fake.sessions[sid].state == "failed"
+    assert fake.sessions[agent.session_id].state == "ready"
+
+
+async def test_stored_live_session_kept(env, fake):
+    c, sid = await _bootstrapped(env, "busy", transcript=False)
+    await env.rec.reconcile_once()
+
+    (agent,) = await env.agents(c.id)
+    assert agent.session_id == sid
+    assert list(fake.sessions) == [sid]

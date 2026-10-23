@@ -7,9 +7,10 @@ can answer 429. The order is therefore adopt first:
    falls through
 3. otherwise a new session is created in the one rendered workdir (`render.workdir_path`)
 
-A stored session the wrapper no longer lists is cleared and the agent bootstraps again. Errors
-never raise out of `bootstrap`: they come back as a message for the cluster status and the next
-tick bootstraps it again.
+A stored session is kept only while adoptable, resumed when stopped or failed with a transcript,
+and otherwise cleared (also when the wrapper no longer lists it) so the agent bootstraps again.
+Errors never raise out of `bootstrap`: they come back as a message for the cluster status and
+the next tick bootstraps it again.
 """
 
 from __future__ import annotations
@@ -87,12 +88,33 @@ class SessionBootstrapper:
     async def _bootstrap(self, client: Any, agent: Agent, spec: ClusterSpec) -> str | None:
         listed = await client.list_sessions()
         if agent.session_id is not None:
-            if any(s.session_id == agent.session_id for s in listed):
+            stored = next((s for s in listed if s.session_id == agent.session_id), None)
+            if stored is not None and stored.state in ADOPTABLE:
                 return None
+            if (
+                stored is not None
+                and stored.state in RESUMABLE
+                and stored.has_transcript is not False
+            ):
+                try:
+                    resumed = await client.resume_session(stored.session_id)
+                except WrapperError as exc:
+                    if exc.status >= 500 or exc.status == 429:
+                        raise
+                    log.info("resume of stored %s refused: %s", stored.session_id, exc)
+                else:
+                    async with self.pool.connection() as conn:
+                        await agents_repo.set_session(
+                            conn, agent.id, resumed.session_id, resumed.created_at
+                        )
+                    return None
             async with self.pool.connection() as conn:
                 await agents_repo.clear_session(conn, agent.id)
             log.info(
-                "session %s of %s is gone, bootstrapping again", agent.session_id, agent.pod_name
+                "session %s of %s is %s, bootstrapping again",
+                agent.session_id,
+                agent.pod_name,
+                stored.state if stored else "gone",
             )
         snap = await self._pick(client, listed, spec)
         async with self.pool.connection() as conn:
