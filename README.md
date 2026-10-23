@@ -67,6 +67,25 @@ Every process reads `ORCH_*` variables (the contract `agent-orchestrator-setting
 | `ORCH_ANY_MCP_REF` | `v0.1.0` | api, reconciler | any-mcp pinned release tag vX.Y.Z (never a branch) |
 | `ORCH_ON_START_TIMEOUT_SECONDS` | `600` | api, reconciler | onStart hook timeout |
 
+## Commands
+
+One image, one `orch` entrypoint. Every command reads `ORCH_*` settings (see Configuration), logs JSON lines on stdout at `ORCH_LOG_LEVEL`, and exits 0 on SIGTERM or SIGINT after finishing its current iteration and closing streams and the pool within `ORCH_SHUTDOWN_GRACE_SECONDS`.
+
+| Command | Runs | Settings it needs | Replicas |
+|---|---|---|---|
+| `orch migrate` | applies pending SQL migrations and exits 0 (a Postgres advisory lock serialises concurrent runs) | `ORCH_DATABASE_URL` | any, one-shot (chart initContainer or hook Job) |
+| `orch api` | uvicorn serving `/api/v1`, the UI and `/healthz`, `/readyz` on `ORCH_HTTP_HOST:ORCH_HTTP_PORT`; proxy headers are off so the direct peer is what `ORCH_ALLOWED_CIDRS` sees | `ORCH_DATABASE_URL`, `ORCH_ALLOWED_CIDRS`, `ORCH_STATIC_DIR` (optional) | any number; no Kubernetes client |
+| `orch dispatcher` | the round-robin dispatcher loop | `ORCH_DATABASE_URL`, `ORCH_MASTER_KEY` or `ORCH_MASTER_KEY_FILE`, `ORCH_DISPATCH_POLL_SECONDS`, the wrapper and retry settings | any number (SKIP LOCKED queues) |
+| `orch ingester` | stores every wrapper event, inside `advisory_singleton(dsn, "ingester")` | `ORCH_DATABASE_URL`, `ORCH_MASTER_KEY` or `ORCH_MASTER_KEY_FILE`, `ORCH_INGEST_REFRESH_SECONDS` | 1 active; extra replicas wait as hot standbys |
+| `orch reconciler` | the Kubernetes reconciler with `LightkubeApi`, inside `advisory_singleton(dsn, "reconciler")` | `ORCH_DATABASE_URL`, `ORCH_MASTER_KEY` or `ORCH_MASTER_KEY_FILE`, `ORCH_AGENT_IMAGE`, `ORCH_NAMESPACE`, `ORCH_RECONCILE_POLL_SECONDS`, in-cluster credentials | 1 active; extra replicas wait as hot standbys |
+
+### Singleton failover
+
+`ingester` and `reconciler` each hold a session-level `pg_advisory_lock` (key: a stable 64-bit hash of the name) on a dedicated connection and block until they acquire it, so a second replica waits as a hot standby and takes over when the holder's session ends.
+
+- The lock connection is opened with libpq keepalives (`keepalives=1`, `keepalives_idle`, `keepalives_interval`, `keepalives_count`, all about a third of `ORCH_LOCK_TCP_USER_TIMEOUT_SECONDS`) and `tcp_user_timeout` set to `ORCH_LOCK_TCP_USER_TIMEOUT_SECONDS` times 1000, so a half-open connection (a blackholed node) is detected by the kernel instead of hanging.
+- Every `ORCH_LOCK_HEARTBEAT_SECONDS` a heartbeat checks on the lock connection that this backend still holds the advisory lock. A failed, timed-out or negative heartbeat, or a dropped connection, stops the loops and the process exits 3, so Kubernetes restarts it rather than letting it run without the lock. A holder behind a dead link therefore exits within `ORCH_LOCK_TCP_USER_TIMEOUT_SECONDS` plus one heartbeat.
+
 ## Images
 
 CI (`.github/workflows/ci.yaml`, job `images`) builds the orchestrator image from the root `Dockerfile` on every push and pull request and smoke-tests it with `docker run --rm <image> --help`. Only a push to `main` logs in to Harbor (secrets `HARBOR_USERNAME`, `HARBOR_PASSWORD`) and pushes it with `regctl`.
