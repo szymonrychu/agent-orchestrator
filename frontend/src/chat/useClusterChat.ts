@@ -51,6 +51,13 @@ export function useClusterChat(clusterId: string, ordinals: Readonly<Record<stri
   const busyOlder = useRef(false)
   const moreBefore = useRef(false)
 
+  // Keep the paging cursor in step with the window: a live trim moves the oldest loaded id forward.
+  useEffect(() => {
+    if (loaded.loading || loaded.chat.items.length === 0) return
+    oldestId.current = loaded.chat.items[0].eventId
+    moreBefore.current = loaded.hasMoreBefore
+  }, [loaded])
+
   useEffect(() => {
     ordinalsRef.current = ordinals
   }, [ordinals])
@@ -83,7 +90,12 @@ export function useClusterChat(clusterId: string, ordinals: Readonly<Record<stri
           onEvent: (data) => {
             if (!current() || data === null || typeof data !== 'object') return
             const row = data as EventRow
-            setLoaded((s) => ({ ...s, chat: trimWindow(applyEvents(s.chat, [row])) }))
+            setLoaded((s) => {
+              const applied = applyEvents(s.chat, [row])
+              const chat = trimWindow(applied)
+              // Trimmed front items are older history again: page from the new oldest id.
+              return chat === applied ? { ...s, chat } : { ...s, chat, hasMoreBefore: true }
+            })
           },
         })
       })
