@@ -4,6 +4,7 @@ import Typography from '@mui/material/Typography'
 import { ChatView } from './chat/ChatView'
 import { ClusterForm } from './clusters/ClusterForm'
 import { DiscardClusterDialog } from './clusters/DiscardClusterDialog'
+import { FilesPanel } from './files/FilesPanel'
 import type { ClusterView } from './api/client'
 import { TopBar } from './layout/TopBar'
 import { Workspace } from './layout/Workspace'
@@ -32,7 +33,7 @@ export default function App() {
           <Box sx={{ flexGrow: 1, minHeight: 0 }}>
             <Workspace
               clusterId={selected.cluster.id}
-              files={<Typography color="text.secondary">Filesystem tree</Typography>}
+              files={<FilesPanel clusterId={selected.cluster.id} />}
               chat={<ChatView cluster={selected.cluster} agents={sortedAgents(selected)} />}
               terminal={<Typography color="text.secondary">Terminals</Typography>}
             />
