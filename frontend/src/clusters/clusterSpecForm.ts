@@ -38,9 +38,11 @@ export const MAX_SLUG = 40
 export function blankValues(meta: Meta | null): FormValues {
   const d = meta?.defaults
   return {
-    slug: '', replicas: d ? String(d.replicas) : '', model: d?.model ?? '', effort: d?.effort ?? '', peers: true, workdir: 'workdir',
-    pvcSize: d?.pvc_size ?? '', env: [], anyMcp: '', maxAttempts: d ? String(d.max_attempts) : '', autoCompact: d ? String(d.auto_compact_pct) : '',
-    cpuRequest: '', cpuLimit: '', memRequest: '', memLimit: '', hookUrl: '', image: '',
+    slug: '', replicas: d ? String(d.replicas) : '', model: d?.model ?? '', effort: d?.effort ?? '', peers: true, workdir: d?.workdir ?? 'workdir',
+    pvcSize: d?.pvc_size ?? '', env: [], anyMcp: d && Object.keys(d.any_mcp_config).length > 0 ? JSON.stringify(d.any_mcp_config, null, 2) : '',
+    maxAttempts: d ? String(d.max_attempts) : '', autoCompact: d ? String(d.auto_compact_pct) : '',
+    cpuRequest: d?.resources.requests.cpu ?? '', cpuLimit: d?.resources.limits.cpu ?? '',
+    memRequest: d?.resources.requests.memory ?? '', memLimit: d?.resources.limits.memory ?? '', hookUrl: '', image: '',
   }
 }
 
