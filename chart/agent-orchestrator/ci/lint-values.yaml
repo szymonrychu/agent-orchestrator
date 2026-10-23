@@ -1,0 +1,8 @@
+# Minimal values that make the full chart render; used by helm lint and CI.
+agentImage: harbor.szymonrichert.pl/containers/claude-code-wrapper:dev
+postgres:
+  url: postgresql://orchestrator:orchestrator@postgres:5432/orchestrator
+masterKey:
+  value: lint-master-key
+claude:
+  token: lint-claude-token
