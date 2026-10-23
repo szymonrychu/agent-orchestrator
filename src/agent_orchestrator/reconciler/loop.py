@@ -345,7 +345,7 @@ class Reconciler:
             return "done", {"cleared": True, "bootstrapped": False}
         token = tokens_for(self.settings, cluster.id).auth
         problem = await self.bootstrapper.bootstrap(agent, cluster.spec, token)
-        if problem:  # the session stays cleared: the next tick retries (D6)
+        if problem:  # the session stays cleared; the next reconcile tick bootstraps it again (D6)
             return "done", {"cleared": True, "bootstrapped": False, "message": problem}
         return "done", {"cleared": True, "bootstrapped": True}
 

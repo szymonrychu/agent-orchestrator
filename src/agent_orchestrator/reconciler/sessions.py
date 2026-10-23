@@ -9,7 +9,7 @@ can answer 429. The order is therefore adopt first:
 
 A stored session the wrapper no longer lists is cleared and the agent bootstraps again. Errors
 never raise out of `bootstrap`: they come back as a message for the cluster status and the next
-tick retries.
+tick bootstraps it again.
 """
 
 from __future__ import annotations
