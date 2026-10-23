@@ -73,7 +73,7 @@ def test_no_derived_agent_image():
             froms = re.findall(r"^FROM\s+(\S+)", text, re.M | re.I)
             args = dict(re.findall(r"^ARG\s+(\w+)=(\S+)", text, re.M))
             for ref in froms:
-                ref = re.sub(r"\$\{(\w+)\}", lambda m: args.get(m.group(1), ""), ref)
+                ref = re.sub(r"\$\{(\w+)\}", lambda m, a=args: a.get(m.group(1), ""), ref)
                 if "claude-code-wrapper" in ref:
                     derived.append(f)
     assert derived == ["e2e/agent-test.Dockerfile"]
