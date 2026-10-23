@@ -4,10 +4,7 @@ from __future__ import annotations
 
 import json
 import shlex
-from pathlib import Path
 from typing import Any
-
-import yaml
 
 from agent_orchestrator.settings import Settings
 from agent_orchestrator.spec import ClusterSpec
@@ -20,10 +17,7 @@ CONFIG_PATH = f"{ROOT}/etc/any-mcp.yaml"
 def any_mcp_config(spec: ClusterSpec, settings: Settings) -> dict[str, Any]:
     if spec.any_mcp_config is not None:
         return spec.any_mcp_config
-    if settings.any_mcp_config_file:
-        loaded = yaml.safe_load(Path(settings.any_mcp_config_file).read_text())
-        return loaded or {}
-    return {}
+    return settings.default_any_mcp_config()
 
 
 def render_on_start(spec: ClusterSpec, settings: Settings) -> str:

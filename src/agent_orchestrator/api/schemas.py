@@ -65,9 +65,18 @@ class AgentView(BaseModel):
     gone: bool
 
 
+class MetaResources(BaseModel):
+    requests: dict[str, str]
+    limits: dict[str, str]
+
+
 class MetaDefaults(BaseModel):
     model: str
     effort: str
+    workdir: str
+    resources: MetaResources
+    any_mcp_config: dict[str, Any]
+    discard_hook: Literal["none", "command", "url"]
     replicas: int
     auto_compact_pct: int
     pvc_size: str
@@ -86,6 +95,7 @@ class Meta(BaseModel):
     agent_image: str
     agent_images: list[str]
     models: list[str]
+    efforts: list[str]
     caps: MetaCaps
     discard_hook: Literal["none", "command", "url"]
 

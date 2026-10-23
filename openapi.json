@@ -872,6 +872,13 @@
             "title": "Discard Hook",
             "type": "string"
           },
+          "efforts": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Efforts",
+            "type": "array"
+          },
           "models": {
             "items": {
               "type": "string"
@@ -885,6 +892,7 @@
           "agent_image",
           "agent_images",
           "models",
+          "efforts",
           "caps",
           "discard_hook"
         ],
@@ -916,9 +924,23 @@
       },
       "MetaDefaults": {
         "properties": {
+          "any_mcp_config": {
+            "additionalProperties": true,
+            "title": "Any Mcp Config",
+            "type": "object"
+          },
           "auto_compact_pct": {
             "title": "Auto Compact Pct",
             "type": "integer"
+          },
+          "discard_hook": {
+            "enum": [
+              "none",
+              "command",
+              "url"
+            ],
+            "title": "Discard Hook",
+            "type": "string"
           },
           "effort": {
             "title": "Effort",
@@ -940,14 +962,25 @@
             "title": "Replicas",
             "type": "integer"
           },
+          "resources": {
+            "$ref": "#/components/schemas/MetaResources"
+          },
           "storage_class": {
             "title": "Storage Class",
+            "type": "string"
+          },
+          "workdir": {
+            "title": "Workdir",
             "type": "string"
           }
         },
         "required": [
           "model",
           "effort",
+          "workdir",
+          "resources",
+          "any_mcp_config",
+          "discard_hook",
           "replicas",
           "auto_compact_pct",
           "pvc_size",
@@ -955,6 +988,30 @@
           "max_attempts"
         ],
         "title": "MetaDefaults",
+        "type": "object"
+      },
+      "MetaResources": {
+        "properties": {
+          "limits": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Limits",
+            "type": "object"
+          },
+          "requests": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Requests",
+            "type": "object"
+          }
+        },
+        "required": [
+          "requests",
+          "limits"
+        ],
+        "title": "MetaResources",
         "type": "object"
       },
       "PatchCluster": {

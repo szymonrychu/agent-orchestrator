@@ -27,9 +27,9 @@ def test_defaults():
     assert s.namespace == "agents"
     assert s.agent_image == ""
     assert s.check_image == ""
-    assert s.default_model == ""
+    assert s.default_model == "claude-opus-5-5"
     assert s.default_effort == ""
-    assert s.models == []
+    assert s.models[0] == "claude-opus-5-5"
     assert s.default_replicas == 1
     assert s.default_auto_compact_pct == 95
     assert s.pvc_storage_class == "rook-ceph-rwx"
@@ -241,3 +241,45 @@ def test_error_names_every_bad_variable_across_validators(monkeypatch):
         Settings()
     for var in ("DATABASE_URL", "HTTP_PORT", "ANY_MCP_REF", "ALLOWED_CIDRS"):
         assert f"ORCH_{var}" in str(e.value)
+
+
+def test_form_defaults_and_overrides(monkeypatch):
+    s = Settings()
+    assert s.models == [
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+        "claude-haiku-5-5",
+        "claude-fable-5-1",
+    ]
+    assert s.default_model == "claude-opus-5-5"
+    assert s.efforts == ["low", "medium", "high", "xhigh", "max"]
+    assert s.default_effort == ""
+    assert (s.default_cpu_request, s.default_cpu_limit) == ("500m", "4")
+    assert (s.default_memory_request, s.default_memory_limit) == ("1Gi", "8Gi")
+
+    monkeypatch.setenv("ORCH_MODELS", "a,b")
+    monkeypatch.setenv("ORCH_DEFAULT_MODEL", "b")
+    monkeypatch.setenv("ORCH_EFFORTS", "low,high")
+    monkeypatch.setenv("ORCH_DEFAULT_EFFORT", "high")
+    monkeypatch.setenv("ORCH_DEFAULT_CPU_REQUEST", "250m")
+    monkeypatch.setenv("ORCH_DEFAULT_CPU_LIMIT", "2")
+    monkeypatch.setenv("ORCH_DEFAULT_MEMORY_REQUEST", "512Mi")
+    monkeypatch.setenv("ORCH_DEFAULT_MEMORY_LIMIT", "4Gi")
+    s = Settings()
+    assert (s.models, s.default_model, s.efforts, s.default_effort) == (
+        ["a", "b"],
+        "b",
+        ["low", "high"],
+        "high",
+    )
+    assert (s.default_cpu_request, s.default_cpu_limit) == ("250m", "2")
+    assert (s.default_memory_request, s.default_memory_limit) == ("512Mi", "4Gi")
+
+
+def test_form_defaults_validated(monkeypatch):
+    monkeypatch.setenv("ORCH_DEFAULT_CPU_REQUEST", "lots")
+    monkeypatch.setenv("ORCH_DEFAULT_MEMORY_LIMIT", "0")
+    with pytest.raises(SettingsError) as exc:
+        Settings()
+    assert "ORCH_DEFAULT_CPU_REQUEST" in exc.value.problems
+    assert "ORCH_DEFAULT_MEMORY_LIMIT" in exc.value.problems

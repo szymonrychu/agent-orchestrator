@@ -165,6 +165,10 @@ def validate_spec(spec: ClusterSpec, settings: Settings) -> None:
         parsed = urlparse(spec.discard_hook_url)
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
             errors.append("discard_hook_url must be an http or https URL")
+    if spec.model is not None and spec.model not in settings.models:
+        errors.append(f"model {spec.model!r} is not one of: {', '.join(settings.models)}")
+    if spec.effort and spec.effort not in settings.efforts:
+        errors.append(f"effort {spec.effort!r} is not one of: {', '.join(settings.efforts)}")
     if spec.replicas > settings.max_replicas:
         errors.append(f"replicas {spec.replicas} exceeds the maximum {settings.max_replicas}")
     if spec.pvc_size is not None:

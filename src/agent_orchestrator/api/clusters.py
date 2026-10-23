@@ -87,6 +87,10 @@ async def meta(settings: Cfg) -> schemas.Meta:
         defaults=schemas.MetaDefaults(
             model=settings.default_model,
             effort=settings.default_effort,
+            workdir=ClusterSpec.model_fields["workdir"].default,
+            resources=schemas.MetaResources(**settings.default_resources()),
+            any_mcp_config=settings.default_any_mcp_config(),
+            discard_hook=hook.kind if hook else "none",
             replicas=settings.default_replicas,
             auto_compact_pct=settings.default_auto_compact_pct,
             pvc_size=settings.pvc_size,
@@ -96,6 +100,7 @@ async def meta(settings: Cfg) -> schemas.Meta:
         agent_image=settings.agent_image,
         agent_images=sorted(settings.image_allowlist()),
         models=list(settings.models),
+        efforts=list(settings.efforts),
         caps=schemas.MetaCaps(
             max_replicas=settings.max_replicas,
             max_pvc_size=settings.max_pvc_size,

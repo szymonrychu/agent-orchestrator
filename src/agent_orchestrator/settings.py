@@ -6,11 +6,14 @@ import ipaddress
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 
+import yaml
 from pydantic import ValidationError, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+from agent_orchestrator.spec import parse_quantity
 
 PREFIX = "ORCH_"
 MIN_MASTER_KEY_BYTES = 32
@@ -59,9 +62,19 @@ class Settings(BaseSettings):
     agent_image: str = ""
     check_image: str = ""
 
-    default_model: str = ""
+    default_model: str = "claude-opus-5-5"
     default_effort: str = ""
-    models: CsvList = []
+    models: CsvList = [
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+        "claude-haiku-5-5",
+        "claude-fable-5-1",
+    ]
+    efforts: CsvList = ["low", "medium", "high", "xhigh", "max"]
+    default_cpu_request: str = "500m"
+    default_cpu_limit: str = "4"
+    default_memory_request: str = "1Gi"
+    default_memory_limit: str = "8Gi"
     default_replicas: int = 1
     default_auto_compact_pct: int = 95
 
@@ -129,7 +142,7 @@ class Settings(BaseSettings):
                     problems.setdefault("ORCH_*", msg)
             raise SettingsError(problems) from None
 
-    _split = field_validator("models", "allowed_cidrs", "agent_images", mode="before")(
+    _split = field_validator("models", "efforts", "allowed_cidrs", "agent_images", mode="before")(
         lambda cls, v: _csv(v)
     )
 
@@ -148,6 +161,22 @@ class Settings(BaseSettings):
                 bad.append(entry)
         if bad:
             raise _Bad("unparsable CIDR " + ", ".join(repr(c) for c in bad))
+        return v
+
+    @field_validator(
+        "default_cpu_request",
+        "default_cpu_limit",
+        "default_memory_request",
+        "default_memory_limit",
+    )
+    @classmethod
+    def _check_quantity(cls, v: str) -> str:
+        try:
+            positive = parse_quantity(v) > 0
+        except ValueError as exc:
+            raise _Bad(str(exc)) from None
+        if not positive:
+            raise _Bad(f"{v!r} must be a positive quantity")
         return v
 
     @field_validator("any_mcp_ref")
@@ -263,6 +292,18 @@ class Settings(BaseSettings):
         if self.agent_image:
             extra.add(self.agent_image)
         return frozenset(extra)
+
+    def default_any_mcp_config(self) -> dict[str, Any]:
+        """The any-mcp config clusters get when their spec carries none."""
+        if self.any_mcp_config_file:
+            return yaml.safe_load(Path(self.any_mcp_config_file).read_text()) or {}
+        return {}
+
+    def default_resources(self) -> dict[str, dict[str, str]]:
+        return {
+            "requests": {"cpu": self.default_cpu_request, "memory": self.default_memory_request},
+            "limits": {"cpu": self.default_cpu_limit, "memory": self.default_memory_limit},
+        }
 
     def discard_hook(self) -> DiscardHook | None:
         if self.discard_hook_command:
