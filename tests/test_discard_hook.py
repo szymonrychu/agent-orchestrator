@@ -470,3 +470,13 @@ async def test_export_contains_in_flight_events(pool, dsn, tmp_path):
     exported = (env.tmp / "out.jsonl").read_text()
     assert "late_in_flight" in exported
     assert await env.get(c.id) is None
+
+
+async def test_stuck_pods_do_not_block_discard_past_timeout(pool, dsn, tmp_path, caplog):
+    env, c, _ = await _quiescing_env(pool, dsn, tmp_path, discard_quiesce_timeout_seconds=0)
+    assert env.kube.names("Pod")  # the pods never go away
+    with caplog.at_level("WARNING"):
+        await env.rec.reconcile_once()
+    assert "still running" in caplog.text and "exporting anyway" in caplog.text
+    assert env.calls() == 1
+    assert await env.get(c.id) is None
