@@ -5,7 +5,9 @@ chart with e2e/values-kind.yaml, runs `helm test`, port-forwards the api Service
 ORCH_E2E_API_URL and then runs this module. The tests share one agent cluster and run in
 file order: the round-robin fixture sends the messages the event-stream test reads, and the
 discard fixture runs last, so the shared-namespace test compares against a baseline taken
-before the cluster existed. Every fixture is lazy, so a single test can also run alone.
+before the cluster existed. Every fixture is lazy, so a single test can also run alone:
+`uv run pytest tests/e2e/test_e2e_kind.py::<name>` brings the same environment up itself
+(tests/e2e/conftest.py runs scripts/e2e.sh in hold mode and deletes the cluster afterwards).
 
 The test (never the orchestrator) uses kubectl exec to look inside agent pods.
 """
@@ -176,7 +178,9 @@ def kind_context() -> None:
 
 @pytest.fixture(scope="module")
 def api() -> Iterator[httpx.Client]:
-    with httpx.Client(base_url=f"{API_URL}/api/v1", timeout=30) as client:
+    # read at fixture time: tests/e2e/conftest.py may have brought the environment up
+    base = os.environ.get("ORCH_E2E_API_URL", API_URL)
+    with httpx.Client(base_url=f"{base}/api/v1", timeout=30) as client:
         yield client
 
 

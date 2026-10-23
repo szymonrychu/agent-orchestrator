@@ -10,6 +10,11 @@
 #   E2E_AGENT_BASE_IMAGE   claude-code-wrapper image the test agent image builds on; default:
 #                          the BASE_IMAGE of e2e/agent-test.Dockerfile when it pulls for this
 #                          machine's platform, else built from the wrapper repo at WRAPPER_SHA
+#   E2E_HOLD_FILE          bring the environment up, then instead of running pytest write its
+#                          variables (KUBECONFIG, ORCH_E2E_*) to this file and hold it until
+#                          the file is removed; tests/e2e/conftest.py uses this when a test is
+#                          run on its own (pytest tests/e2e/test_e2e_kind.py::<name>)
+#   E2E_HOLD_PID           with E2E_HOLD_FILE: stop holding once this process has exited
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -57,6 +62,8 @@ cleanup() {
   exit "$rc"
 }
 trap cleanup EXIT
+# a signal exits through cleanup too, so the kind cluster never outlives the run
+trap 'exit 143' TERM INT HUP
 
 dockerfile_arg() {
   sed -n "s/^ARG $1=//p" e2e/agent-test.Dockerfile | head -1
@@ -269,7 +276,30 @@ for _ in $(seq 1 60); do
 done
 curl -fsS "http://127.0.0.1:$PORT/api/v1/meta" >/dev/null
 
+E2E_ENV=(
+  "ORCH_E2E_API_URL=http://127.0.0.1:$PORT"
+  "ORCH_E2E_NAMESPACE=$NS"
+  "ORCH_E2E_RELEASE=$RELEASE"
+  "ORCH_E2E_KUBE_CONTEXT=kind-$CLUSTER"
+)
+
+if [ -n "${E2E_HOLD_FILE:-}" ]; then
+  log "environment up; holding it until $E2E_HOLD_FILE is removed"
+  { echo "KUBECONFIG=$KUBECONFIG"; printf '%s\n' "${E2E_ENV[@]}"; } >"$E2E_HOLD_FILE.tmp"
+  mv "$E2E_HOLD_FILE.tmp" "$E2E_HOLD_FILE"
+  while [ -e "$E2E_HOLD_FILE" ]; do
+    if [ -n "${E2E_HOLD_PID:-}" ] && ! kill -0 "$E2E_HOLD_PID" 2>/dev/null; then
+      echo "holder $E2E_HOLD_PID exited; tearing down" >&2
+      break
+    fi
+    if ! kill -0 "$PF_PID" 2>/dev/null; then
+      echo "the api port-forward exited" >&2
+      exit 1
+    fi
+    sleep 1
+  done
+  exit 0
+fi
+
 log "pytest -m e2e tests/e2e"
-ORCH_E2E_API_URL="http://127.0.0.1:$PORT" ORCH_E2E_NAMESPACE="$NS" ORCH_E2E_RELEASE="$RELEASE" \
-  ORCH_E2E_KUBE_CONTEXT="kind-$CLUSTER" \
-  uv run pytest -m e2e tests/e2e -p no:cacheprovider -v
+env "${E2E_ENV[@]}" uv run pytest -m e2e tests/e2e -p no:cacheprovider -v
