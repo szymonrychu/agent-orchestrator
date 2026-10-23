@@ -455,14 +455,21 @@ async def test_at_most_eight_sends_in_flight(env):
     for i in range(10):
         await env.msg(text=f"m{i}")
     d = env.dispatcher()
-    state = {"now": 0, "peak": 0}
+    state = {"now": 0, "peak": 0, "timeouts": 0}
+    reached = asyncio.Event()
     real = d._send
 
     async def counting(claim):
         state["now"] += 1
         state["peak"] = max(state["peak"], state["now"])
+        if state["now"] >= 8:
+            reached.set()
         try:
-            await asyncio.sleep(0.2)
+            # hold every send until 8 are in flight (deterministic, no sleep overlap)
+            try:
+                await asyncio.wait_for(reached.wait(), 10)
+            except TimeoutError:
+                state["timeouts"] += 1
             await real(claim)
         finally:
             state["now"] -= 1
@@ -472,5 +479,6 @@ async def test_at_most_eight_sends_in_flight(env):
     await d.aclose()
     for f in fakes:
         await f.stop()
+    assert state["timeouts"] == 0, "cap never reached 8 concurrent sends"
     assert state["peak"] == 8
     assert env.fake.received_turns + sum(f.received_turns for f in fakes) == 10
