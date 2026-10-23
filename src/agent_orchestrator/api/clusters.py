@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
 from psycopg_pool import AsyncConnectionPool
@@ -14,10 +15,6 @@ from agent_orchestrator.db import views
 from agent_orchestrator.settings import Settings
 from agent_orchestrator.spec import ClusterSpec, SpecInvalid, validate_slug, validate_spec
 
-router = APIRouter(prefix="/api/v1")
-
-_CREATE_LOCK = 0x4F524348  # serialises cluster creation so max_clusters cannot be overshot
-
 
 def get_settings(request: Request) -> Settings:
     return request.app.state.settings
@@ -25,6 +22,14 @@ def get_settings(request: Request) -> Settings:
 
 def get_pool(request: Request) -> AsyncConnectionPool:
     return request.app.state.pool
+
+
+Pool = Annotated[AsyncConnectionPool, Depends(get_pool)]
+Cfg = Annotated[Settings, Depends(get_settings)]
+
+router = APIRouter(prefix="/api/v1")
+
+_CREATE_LOCK = 0x4F524348  # serialises cluster creation so max_clusters cannot be overshot
 
 
 def _view(cluster: repo.Cluster, agg: dict | None, settings: Settings) -> schemas.ClusterView:
@@ -54,7 +59,7 @@ def _check_spec(spec: ClusterSpec, settings: Settings) -> None:
 
 
 @router.get("/meta", response_model=schemas.Meta)
-async def meta(settings: Settings = Depends(get_settings)) -> schemas.Meta:
+async def meta(settings: Cfg) -> schemas.Meta:
     hook = settings.discard_hook()
     return schemas.Meta(
         defaults=schemas.MetaDefaults(
@@ -79,9 +84,7 @@ async def meta(settings: Settings = Depends(get_settings)) -> schemas.Meta:
 
 
 @router.get("/clusters", response_model=list[schemas.ClusterView])
-async def list_clusters(
-    pool: AsyncConnectionPool = Depends(get_pool), settings: Settings = Depends(get_settings)
-) -> list[schemas.ClusterView]:
+async def list_clusters(pool: Pool, settings: Cfg) -> list[schemas.ClusterView]:
     async with pool.connection() as conn:
         found = await repo.list_clusters(conn)
         aggs = await views.cluster_aggregates(conn)
@@ -91,8 +94,8 @@ async def list_clusters(
 @router.post("/clusters", status_code=201, response_model=schemas.ClusterView)
 async def create_cluster(
     body: schemas.CreateCluster,
-    pool: AsyncConnectionPool = Depends(get_pool),
-    settings: Settings = Depends(get_settings),
+    pool: Pool,
+    settings: Cfg,
 ) -> schemas.ClusterView:
     try:
         validate_slug(body.slug)
@@ -116,8 +119,8 @@ async def create_cluster(
 @router.get("/clusters/{cluster_id}", response_model=schemas.ClusterView)
 async def get_cluster(
     cluster_id: uuid.UUID,
-    pool: AsyncConnectionPool = Depends(get_pool),
-    settings: Settings = Depends(get_settings),
+    pool: Pool,
+    settings: Cfg,
 ) -> schemas.ClusterView:
     async with pool.connection() as conn:
         cluster = await repo.get(conn, cluster_id)
@@ -130,8 +133,8 @@ async def get_cluster(
 async def patch_cluster(
     cluster_id: uuid.UUID,
     body: schemas.PatchCluster,
-    pool: AsyncConnectionPool = Depends(get_pool),
-    settings: Settings = Depends(get_settings),
+    pool: Pool,
+    settings: Cfg,
 ) -> schemas.ClusterView:
     _check_spec(body.spec, settings)
     async with pool.connection() as conn:
@@ -148,8 +151,8 @@ async def patch_cluster(
 async def discard_cluster(
     cluster_id: uuid.UUID,
     request: Request,
-    pool: AsyncConnectionPool = Depends(get_pool),
-    settings: Settings = Depends(get_settings),
+    pool: Pool,
+    settings: Cfg,
 ) -> schemas.ClusterView:
     if request.query_params:
         raise ApiError(
@@ -164,9 +167,7 @@ async def discard_cluster(
 
 
 @router.get("/clusters/{cluster_id}/agents", response_model=list[schemas.AgentView])
-async def list_agents(
-    cluster_id: uuid.UUID, pool: AsyncConnectionPool = Depends(get_pool)
-) -> list[schemas.AgentView]:
+async def list_agents(cluster_id: uuid.UUID, pool: Pool) -> list[schemas.AgentView]:
     async with pool.connection() as conn:
         if await repo.get(conn, cluster_id) is None:
             raise not_found("cluster")

@@ -9,12 +9,12 @@ from pathlib import Path
 import httpx
 import pytest
 import pytest_asyncio
+from factories import insert_agent, insert_cluster, insert_message, set_agent_status
 
 import agent_orchestrator.api as api_pkg
 from agent_orchestrator.api.app import create_app
 from agent_orchestrator.db import clusters as repo
 from agent_orchestrator.settings import Settings
-from factories import insert_agent, insert_cluster, insert_message, set_agent_status
 
 PEER = ("10.1.2.3", 5555)
 
