@@ -52,3 +52,9 @@ def test_frozen():
     assert isinstance(derive_tokens(KEY, CID), ClusterTokens)
     with pytest.raises(dataclasses.FrozenInstanceError):
         derive_tokens(KEY, CID).auth = "x"  # type: ignore[misc]
+
+
+def test_known_answer_vectors():
+    t = derive_tokens(KEY, CID)
+    assert t.auth == "f623e2ff1b6e6ee8981aaf0e5775fa00af60213c589bb49d6b402fea88d98c22"
+    assert t.peer == "b573a7ba5c992f583b3fb96e62056ec7471a47c1c42b4d9b91c2fa5bea452fc1"
