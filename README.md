@@ -148,6 +148,8 @@ There is no `pods/exec` and no wildcard. With `rbac.create=false` neither the Ro
 
 `ingress.enabled` is `false` by default. When enabled, `ingress.className` (empty by default), `ingress.annotations` (`{}` by default), `ingress.hosts[].paths[]` and `ingress.tls` come from values and route to the api Service port. The chart ships no homelab defaults; set them in your own values.
 
+`ingress.denySourceRanges` and `ingress.allowSourceRanges` (both empty by default) render the `nginx.ingress.kubernetes.io/denylist-source-range` and `nginx.ingress.kubernetes.io/whitelist-source-range` annotations (comma-joined) only when non-empty. See [Security](#security) for what to put in them.
+
 Example only, a LAN-restricted ingress:
 
 ```yaml
@@ -167,6 +169,20 @@ ingress:
       hosts:
         - orchestrator.example.com
 ```
+## Security
+
+The api trusts only the direct socket peer (`ORCH_ALLOWED_CIDRS`, see API). Behind an ingress that peer is always the ingress controller, which runs on a cluster node, so legitimate traffic always arrives at the api from a node IP and the node CIDRs must stay in `ORCH_ALLOWED_CIDRS`. That makes the allowlist blind to who the original client was.
+
+The boundary this opens: an agent pod can call the ingress hostname. flannel `ipMasq` SNATs pod-to-LAN traffic to the node IP, a hostNetwork ingress-nginx admits it under a LAN `whitelist-source-range`, and proxies it to the api from a node IP that the allowlist accepts. A pod is then indistinguishable from a LAN client.
+
+Close it at the ingress: set `ingress.denySourceRanges` to the cluster node IPs (pods egress SNATed as node IPs, so denying them denies pods) and `ingress.allowSourceRanges` to the LAN CIDR. A process running on a node itself is denied too. Example:
+
+```yaml
+ingress:
+  denySourceRanges: ["192.168.1.10/32", "192.168.1.11/32"]  # cluster node IPs
+  allowSourceRanges: ["192.168.1.0/24"]                      # the LAN
+```
+
 ## Releasing
 
 The chart is published to `oci://harbor.szymonrichert.pl/charts/agent-orchestrator` with immutable versions; Harbor rejects a repeated version and CI fails first with a clear message. `scripts/chart-version.sh` picks the version from `version` in `chart/agent-orchestrator/Chart.yaml`:

@@ -129,3 +129,33 @@ def test_values_have_no_homelab_defaults() -> None:
         assert not any(word in line.split("#", 1)[0] for line in lines), word
     parsed = yaml.safe_load("\n".join(lines))
     assert not re.search(r"nginx", yaml.safe_dump(parsed["ingress"]))
+
+
+def test_ingress_source_ranges_render() -> None:
+    values = yaml.safe_load((CHART / "values.yaml").read_text())
+    assert values["ingress"]["denySourceRanges"] == []
+    assert values["ingress"]["allowSourceRanges"] == []
+    base = {"enabled": True, "annotations": {"example.com/keep": "1"}}
+    (ing,) = _by_kind("Ingress", {"ingress": base})
+    assert ing["metadata"]["annotations"] == {"example.com/keep": "1"}
+    (ing,) = _by_kind(
+        "Ingress",
+        {
+            "ingress": {
+                **base,
+                "denySourceRanges": ["10.0.0.1/32", "10.0.0.2/32"],
+                "allowSourceRanges": ["192.0.2.0/24"],
+            }
+        },
+    )
+    assert ing["metadata"]["annotations"] == {
+        "example.com/keep": "1",
+        "nginx.ingress.kubernetes.io/denylist-source-range": "10.0.0.1/32,10.0.0.2/32",
+        "nginx.ingress.kubernetes.io/whitelist-source-range": "192.0.2.0/24",
+    }
+    (ing,) = _by_kind(
+        "Ingress", {"ingress": {"enabled": True, "denySourceRanges": ["10.0.0.1/32"]}}
+    )
+    assert ing["metadata"]["annotations"] == {
+        "nginx.ingress.kubernetes.io/denylist-source-range": "10.0.0.1/32"
+    }
