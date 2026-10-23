@@ -600,6 +600,8 @@ export interface components {
              * @enum {string}
              */
             discard_hook: "none" | "command" | "url";
+            /** Efforts */
+            efforts: string[];
             /** Models */
             models: string[];
         };
@@ -614,8 +616,17 @@ export interface components {
         };
         /** MetaDefaults */
         MetaDefaults: {
+            /** Any Mcp Config */
+            any_mcp_config: {
+                [key: string]: unknown;
+            };
             /** Auto Compact Pct */
             auto_compact_pct: number;
+            /**
+             * Discard Hook
+             * @enum {string}
+             */
+            discard_hook: "none" | "command" | "url";
             /** Effort */
             effort: string;
             /** Max Attempts */
@@ -626,8 +637,22 @@ export interface components {
             pvc_size: string;
             /** Replicas */
             replicas: number;
+            resources: components["schemas"]["MetaResources"];
             /** Storage Class */
             storage_class: string;
+            /** Workdir */
+            workdir: string;
+        };
+        /** MetaResources */
+        MetaResources: {
+            /** Limits */
+            limits: {
+                [key: string]: string;
+            };
+            /** Requests */
+            requests: {
+                [key: string]: string;
+            };
         };
         /** PatchCluster */
         PatchCluster: {

@@ -79,8 +79,17 @@ function FormBody({ mode, cluster, onClose, onSaved }: Omit<ClusterFormProps, 'o
     }
   }
 
-  const models = meta?.models ?? []
-  const modelOptions = models.length > 0 && values.model && !models.includes(values.model) ? [values.model, ...models] : models
+  const withCurrent = (list: string[], current: string) => (current && !list.includes(current) ? [current, ...list] : list)
+  const modelOptions = withCurrent(meta?.models ?? [], values.model)
+  const effortOptions = withCurrent(meta?.efforts ?? [], values.effort)
+  const dropdown = (key: 'model' | 'effort', label: string, options: string[], emptyLabel?: string) => (
+    <TextField select size="small" label={label} value={values[key]} onChange={(e) => set(key, e.target.value)} fullWidth slotProps={emptyLabel !== undefined ? { select: { displayEmpty: true, renderValue: (v) => (v === '' ? emptyLabel : String(v)) } } : undefined}>
+      {emptyLabel !== undefined && <MenuItem value="">{emptyLabel}</MenuItem>}
+      {options.map((o) => (
+        <MenuItem key={o} value={o}>{o}</MenuItem>
+      ))}
+    </TextField>
+  )
   return (
     <>
       <DialogTitle>{mode === 'create' ? 'New cluster' : `Edit ${cluster?.slug ?? ''}`}</DialogTitle>
@@ -89,16 +98,8 @@ function FormBody({ mode, cluster, onClose, onSaved }: Omit<ClusterFormProps, 'o
           {serverError && <Alert severity="error">{serverError}</Alert>}
           {text('slug', 'Slug', { disabled: mode === 'edit' })}
           {text('replicas', 'Replicas')}
-          {modelOptions.length > 0 ? (
-            <TextField select size="small" label="Model" value={values.model} onChange={(e) => set('model', e.target.value)} fullWidth>
-              {modelOptions.map((m) => (
-                <MenuItem key={m} value={m}>{m}</MenuItem>
-              ))}
-            </TextField>
-          ) : (
-            text('model', 'Model')
-          )}
-          {text('effort', 'Effort')}
+          {modelOptions.length > 0 ? dropdown('model', 'Model', modelOptions, 'default') : text('model', 'Model')}
+          {effortOptions.length > 0 ? dropdown('effort', 'Effort', effortOptions, 'model default') : text('effort', 'Effort')}
           <FormControlLabel control={<Switch checked={values.peers} onChange={(e) => set('peers', e.target.checked)} />} label="Peers" />
           {text('workdir', 'Workdir')}
           {text('pvcSize', 'PVC size', { disabled: mode === 'edit' })}

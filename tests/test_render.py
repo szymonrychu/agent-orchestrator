@@ -32,6 +32,7 @@ def make_settings(**over) -> Settings:
         "master_key": "m" * 32,
         "agent_image": IMAGE,
         "default_model": "sonnet",
+        "models": ["sonnet", "claude-opus-5-5"],
     }
     base.update(over)
     return Settings(**base)
@@ -406,3 +407,11 @@ def test_render_is_pure():
     cluster = make_cluster(replicas=2)
     a = render.render_cluster(cluster, make_settings(), TOKENS)
     assert render.render_cluster(cluster, make_settings(), TOKENS) == copy.deepcopy(a)
+
+
+def test_render_keeps_spec_resources_unchanged():
+    c = container_of(render.render_cluster(make_cluster(), make_settings(), TOKENS))
+    assert "resources" not in c
+    spec = {"resources": {"requests": {"cpu": "2"}, "limits": {"memory": "2Gi"}}}
+    c = container_of(render.render_cluster(make_cluster(**spec), make_settings(), TOKENS))
+    assert c["resources"] == {"requests": {"cpu": "2"}, "limits": {"memory": "2Gi"}}

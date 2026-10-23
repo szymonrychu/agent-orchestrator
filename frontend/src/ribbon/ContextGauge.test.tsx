@@ -50,7 +50,12 @@ describe('ContextGauge', () => {
   test('draws auto compact tick and warns past it', () => {
     setup({ value: 50, autoCompactPct: 80 })
     const tick = screen.getByTestId('context-gauge-tick')
-    expect(tick.style.transform).toBe('rotate(288deg)')
+    // radial mark on the ring: spans the ring stroke (y 0..4 of the 44 box), rotated about the centre (22,22)
+    expect(tick.tagName.toLowerCase()).toBe('line')
+    expect(tick.getAttribute('transform')).toBe('rotate(288 22 22)')
+    expect([tick.getAttribute('x1'), tick.getAttribute('x2')]).toEqual(['22', '22'])
+    expect([tick.getAttribute('y1'), tick.getAttribute('y2')]).toEqual(['0', '4'])
+    expect(tick.closest('svg')!.getAttribute('viewBox')).toBe('0 0 44 44')
     expect(hex(getComputedStyle(screen.getByRole('progressbar')).color)).not.toBe(TOKENS.warning)
     cleanup()
     setup({ value: 80, autoCompactPct: 80 })

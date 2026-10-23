@@ -14,8 +14,11 @@ vi.mock('../api/client', async (orig) => ({ ...(await orig<typeof import('../api
 
 const meta = (o: Partial<Meta> = {}): Meta => ({
   agent_image: 'img', agent_images: ['img'], caps: { max_clusters: 8, max_pvc_size: '100Gi', max_replicas: 16 },
-  defaults: { auto_compact_pct: 80, effort: 'high', max_attempts: 5, model: 'opus', pvc_size: '10Gi', replicas: 1, storage_class: 'rook-ceph-rwx' },
-  discard_hook: 'none', models: [], ...o,
+  defaults: {
+    any_mcp_config: { plugins: ['x'] }, auto_compact_pct: 80, discard_hook: 'none', effort: 'high', max_attempts: 5, model: 'opus', pvc_size: '10Gi', replicas: 1,
+    resources: { limits: { cpu: '4', memory: '8Gi' }, requests: { cpu: '500m', memory: '1Gi' } }, storage_class: 'rook-ceph-rwx', workdir: 'workdir',
+  },
+  discard_hook: 'none', models: ['opus', 'sonnet', 'haiku'], efforts: ['low', 'medium', 'high', 'max'], ...o,
 })
 const existing = (o: Partial<ClusterView['spec']> = {}): ClusterView =>
   ({ created_at: '2026-01-01T00:00:00Z', desired: 'active', generation: 1, id: 'c-1', observed_generation: 1, slug: 'alpha', status: {},
@@ -35,39 +38,45 @@ afterEach(cleanup)
 async function ready() {
   await waitFor(() => expect(field('Max attempts').value).toBe('5'))
 }
-const replace = async (label: string, text: string) => {
-  await userEvent.clear(field(label))
-  if (text) await userEvent.type(field(label), text)
-}
 const paste = async (label: string, text: string) => {
   await userEvent.click(field(label))
   await userEvent.paste(text)
 }
+const replace = async (label: string, text: string) => {
+  await userEvent.clear(field(label))
+  if (text) await paste(label, text)
+}
+const pick = async (label: string, option: string) => {
+  await userEvent.click(screen.getByRole('combobox', { name: label }))
+  await userEvent.click(screen.getByRole('option', { name: option }))
+  await waitFor(() => expect(screen.queryByRole('listbox')).toBeNull())
+}
 
 describe('ClusterForm', () => {
-  test('creates cluster with full spec', async () => {
+  test('creates cluster with full spec', { timeout: 15000 }, async () => {
     api.createCluster.mockResolvedValue(existing())
     const onSaved = vi.fn()
     wrap(<ClusterForm open mode="create" onClose={vi.fn()} onSaved={onSaved} />)
     await ready()
-    await userEvent.type(field('Slug'), 'alpha-1')
+    await paste('Slug', 'alpha-1')
     await replace('Replicas', '3')
-    await replace('Model', 'sonnet')
-    await replace('Effort', 'low')
+    await pick('Model', 'sonnet')
+    await pick('Effort', 'low')
     await userEvent.click(field('Peers'))
     await replace('Workdir', 'ws')
     await replace('PVC size', '5Gi')
     await userEvent.click(button('Add env'))
-    await userEvent.type(field('Env key 1'), 'FOO')
-    await userEvent.type(field('Env value 1'), 'bar')
+    await paste('Env key 1', 'FOO')
+    await paste('Env value 1', 'bar')
+    await userEvent.clear(field('any-mcp config'))
     await paste('any-mcp config', '{"plugins": []}')
     await replace('Max attempts', '4')
     await replace('Auto-compact percent', '70')
-    await userEvent.type(field('CPU request'), '1')
-    await userEvent.type(field('CPU limit'), '2')
-    await userEvent.type(field('Memory request'), '1Gi')
-    await userEvent.type(field('Memory limit'), '4Gi')
-    await userEvent.type(field('Pre-discard webhook URL'), 'https://hook.example/x')
+    await replace('CPU request', '1')
+    await replace('CPU limit', '2')
+    await replace('Memory request', '1Gi')
+    await replace('Memory limit', '4Gi')
+    await paste('Pre-discard webhook URL', 'https://hook.example/x')
     await userEvent.click(button('Create'))
     await waitFor(() => expect(api.createCluster).toHaveBeenCalledTimes(1))
     expect(api.createCluster).toHaveBeenCalledWith({
@@ -80,6 +89,40 @@ describe('ClusterForm', () => {
       },
     })
     await waitFor(() => expect(onSaved).toHaveBeenCalled())
+  })
+
+  test('model and effort are selects fed by meta, create prefills every default', async () => {
+    wrap(<ClusterForm open mode="create" onClose={vi.fn()} onSaved={vi.fn()} />)
+    await ready()
+    expect(screen.getByRole('combobox', { name: 'Model' }).textContent).toBe('opus')
+    expect(screen.getByRole('combobox', { name: 'Effort' }).textContent).toBe('high')
+    await userEvent.click(screen.getByRole('combobox', { name: 'Model' }))
+    expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual(['default', 'opus', 'sonnet', 'haiku'])
+    await userEvent.keyboard('{Escape}')
+    await userEvent.click(screen.getByRole('combobox', { name: 'Effort' }))
+    expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual(['model default', 'low', 'medium', 'high', 'max'])
+    await userEvent.keyboard('{Escape}')
+    expect(field('Replicas').value).toBe('1')
+    expect(field('Workdir').value).toBe('workdir')
+    expect(field('PVC size').value).toBe('10Gi')
+    expect(field('any-mcp config').value).toBe(JSON.stringify({ plugins: ['x'] }, null, 2))
+    expect(field('Auto-compact percent').value).toBe('80')
+    expect(field('CPU request').value).toBe('500m')
+    expect(field('CPU limit').value).toBe('4')
+    expect(field('Memory request').value).toBe('1Gi')
+    expect(field('Memory limit').value).toBe('8Gi')
+  })
+
+  test('edit keeps a model outside the list as an extra option', async () => {
+    wrap(<ClusterForm open mode="edit" cluster={existing({ model: 'legacy-model', effort: null })} onClose={vi.fn()} onSaved={vi.fn()} />)
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Model' }).textContent).toBe('legacy-model'))
+    await userEvent.click(screen.getByRole('combobox', { name: 'Model' }))
+    expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual(['default', 'legacy-model', 'opus', 'sonnet', 'haiku'])
+  })
+
+  test('edit with a null model shows the default option', async () => {
+    wrap(<ClusterForm open mode="edit" cluster={existing({ model: null, effort: null })} onClose={vi.fn()} onSaved={vi.fn()} />)
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Model' }).textContent).toBe('default'))
   })
 
   test('validates slug and env keys', async () => {

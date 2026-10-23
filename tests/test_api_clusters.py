@@ -249,6 +249,13 @@ async def test_meta_defaults(pool, dsn):
     assert meta["defaults"] == {
         "model": "m1",
         "effort": "high",
+        "workdir": "workdir",
+        "resources": {
+            "requests": {"cpu": "500m", "memory": "1Gi"},
+            "limits": {"cpu": "4", "memory": "8Gi"},
+        },
+        "any_mcp_config": {},
+        "discard_hook": "url",
         "replicas": 1,
         "auto_compact_pct": 95,
         "pvc_size": "20Gi",
@@ -372,3 +379,105 @@ async def test_cluster_count_cap_409(pool, dsn):
             409,
             "cluster_limit",
         )
+
+
+async def test_meta_returns_all_form_defaults(pool, dsn):
+    async with client_for(create_app(make_settings(dsn), pool)) as c:
+        meta = (await c.get("/api/v1/meta")).json()
+    assert meta["models"][0] == "claude-opus-5-5"
+    assert meta["efforts"] == ["low", "medium", "high", "xhigh", "max"]
+    d = meta["defaults"]
+    assert d["model"] == "claude-opus-5-5"
+    assert d["effort"] == ""
+    assert d["workdir"] == "workdir"
+    assert d["resources"] == {
+        "requests": {"cpu": "500m", "memory": "1Gi"},
+        "limits": {"cpu": "4", "memory": "8Gi"},
+    }
+    assert d["any_mcp_config"] == {}
+    assert d["discard_hook"] == "none"
+    for key in ("replicas", "pvc_size", "storage_class", "max_attempts", "auto_compact_pct"):
+        assert d[key] not in (None, ""), key
+
+
+async def test_spec_rejects_unknown_model_and_effort(pool, dsn):
+    app = create_app(make_settings(dsn), pool)
+    async with client_for(app) as c:
+        for spec in ({"model": "gpt-9"}, {"effort": "turbo"}):
+            r = await c.post("/api/v1/clusters", json={"slug": "bad", "spec": spec})
+            assert_error(r, 422, "invalid_request")
+            assert next(iter(spec.values())) in r.json()["error"]["message"]
+        ok = {"model": "claude-haiku-5-5", "effort": "max"}
+        assert (
+            await c.post("/api/v1/clusters", json={"slug": "ok", "spec": ok})
+        ).status_code == 201
+        empty = {"effort": ""}
+        assert (
+            await c.post("/api/v1/clusters", json={"slug": "ok2", "spec": empty})
+        ).status_code == 201
+
+
+async def test_spec_rejects_explicit_request_above_limit(pool, dsn):
+    app = create_app(make_settings(dsn), pool)
+    async with client_for(app) as c:
+        res = {"requests": {"cpu": "8"}, "limits": {"cpu": "2"}}
+        r = await c.post("/api/v1/clusters", json={"slug": "bad", "spec": {"resources": res}})
+        assert_error(r, 422, "invalid_request")
+        ok = {"requests": {"cpu": "2"}, "limits": {"memory": "2Gi"}}
+        r = await c.post("/api/v1/clusters", json={"slug": "ok", "spec": {"resources": ok}})
+        assert r.status_code == 201
+
+
+async def test_write_fills_default_resources_per_key(pool, dsn):
+    app = create_app(make_settings(dsn), pool)
+    async with client_for(app) as c:
+        r = await c.post("/api/v1/clusters", json={"slug": "a", "spec": {}})
+        assert r.json()["spec"]["resources"] == {
+            "requests": {"cpu": "500m", "memory": "1Gi"},
+            "limits": {"cpu": "4", "memory": "8Gi"},
+        }
+        spec = {"resources": {"requests": {"cpu": "2"}, "limits": {"memory": "2Gi"}}}
+        r = await c.post("/api/v1/clusters", json={"slug": "b", "spec": spec})
+        assert r.json()["spec"]["resources"] == {
+            "requests": {"cpu": "2", "memory": "1Gi"},
+            "limits": {"cpu": "4", "memory": "2Gi"},
+        }
+        # guard: default limit 4 < explicit request 8 stays empty; default request 1Gi > limit
+        spec = {"resources": {"requests": {"cpu": "8"}, "limits": {"memory": "512Mi"}}}
+        r = await c.post("/api/v1/clusters", json={"slug": "g", "spec": spec})
+        assert r.json()["spec"]["resources"] == {
+            "requests": {"cpu": "8"},
+            "limits": {"memory": "512Mi"},
+        }
+        cid = r.json()["id"]
+        r = await c.patch(f"/api/v1/clusters/{cid}", json={"spec": {"replicas": 2}})
+        assert r.json()["spec"]["resources"] == {
+            "requests": {"cpu": "500m", "memory": "1Gi"},
+            "limits": {"cpu": "4", "memory": "8Gi"},
+        }
+
+
+async def test_patch_keeps_stored_legacy_model_and_effort(pool, dsn):
+    app = create_app(make_settings(dsn), pool)
+    async with client_for(app) as c:
+        cluster = await insert_cluster(pool, spec={"model": "legacy-1", "effort": "turbo"})
+        url = f"/api/v1/clusters/{cluster['id']}"
+        same = {"model": "legacy-1", "effort": "turbo", "replicas": 2}
+        assert (await c.patch(url, json={"spec": same})).status_code == 200
+        for bad in ({"model": "gpt-9", "effort": "turbo"}, {"model": "legacy-1", "effort": "x"}):
+            assert_error(await c.patch(url, json={"spec": bad}), 422, "invalid_request")
+        assert (
+            await c.post("/api/v1/clusters", json={"slug": "n", "spec": same})
+        ).status_code == 422
+
+
+async def test_patch_high_request_without_limit(pool, dsn):
+    app = create_app(make_settings(dsn), pool)
+    async with client_for(app) as c:
+        cluster = await insert_cluster(pool, spec={"resources": {"requests": {"cpu": "8"}}})
+        r = await c.patch(
+            f"/api/v1/clusters/{cluster['id']}",
+            json={"spec": {"resources": {"requests": {"cpu": "8"}}, "replicas": 2}},
+        )
+        assert r.status_code == 200, r.text
+        assert "cpu" not in r.json()["spec"]["resources"]["limits"]

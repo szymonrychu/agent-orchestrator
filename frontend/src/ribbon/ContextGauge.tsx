@@ -15,6 +15,8 @@ export interface ContextGaugeProps {
 
 const SIZES = { small: 28, medium: 40 } as const
 const THICKNESS = 4
+/** MUI CircularProgress draws in a 44-unit box; the ring spans radius 18 to 22 from its centre. */
+const VIEW = 44
 
 const clamp = (n: number): number => Math.min(100, Math.max(0, n))
 
@@ -40,9 +42,18 @@ export function ContextGauge({ value, autoCompactPct, size = 'small', label }: C
         sx={{ position: 'absolute', color: warn ? TOKENS.warning : TOKENS.accent }}
       />
       {tick !== null && (
-        <Box data-testid="context-gauge-tick" aria-hidden style={{ transform: `rotate(${tick * 3.6}deg)` }} sx={{ position: 'absolute', inset: 0 }}>
-          <Box sx={{ position: 'absolute', top: 0, left: '50%', width: 1, height: THICKNESS + 2, ml: '-0.5px', bgcolor: TOKENS.textPrimary }} />
-        </Box>
+        <svg viewBox={`0 0 ${VIEW} ${VIEW}`} width={px} height={px} aria-hidden style={{ position: 'absolute', inset: 0 }}>
+          <line
+            data-testid="context-gauge-tick"
+            x1={VIEW / 2}
+            x2={VIEW / 2}
+            y1={0}
+            y2={THICKNESS}
+            transform={`rotate(${tick * 3.6} ${VIEW / 2} ${VIEW / 2})`}
+            stroke={TOKENS.textPrimary}
+            strokeWidth={1.5}
+          />
+        </svg>
       )}
       <Box
         sx={{
