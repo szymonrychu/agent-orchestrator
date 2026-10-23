@@ -433,7 +433,7 @@ async def test_at_most_eight_sends_in_flight(env):
         state["now"] += 1
         state["peak"] = max(state["peak"], state["now"])
         try:
-            await asyncio.sleep(0.6)
+            await asyncio.sleep(0.2)
             await real(claim)
         finally:
             state["now"] -= 1
