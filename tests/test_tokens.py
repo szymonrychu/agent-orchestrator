@@ -1,3 +1,4 @@
+import dataclasses
 from uuid import UUID
 
 import pytest
@@ -40,8 +41,8 @@ def test_repr_masks():
 
 def test_tokens_for_uses_master_key(monkeypatch):
     monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://u:p@h/db")
-    monkeypatch.setenv("ORCH_MASTER_KEY", "secret")
-    assert tokens_for(Settings(), CID) == derive_tokens(b"secret", CID)
+    monkeypatch.setenv("ORCH_MASTER_KEY", "s" * 32)
+    assert tokens_for(Settings(), CID) == derive_tokens(b"s" * 32, CID)
     monkeypatch.delenv("ORCH_MASTER_KEY")
     with pytest.raises(SettingsError):
         tokens_for(Settings(), CID)
@@ -49,5 +50,5 @@ def test_tokens_for_uses_master_key(monkeypatch):
 
 def test_frozen():
     assert isinstance(derive_tokens(KEY, CID), ClusterTokens)
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         derive_tokens(KEY, CID).auth = "x"  # type: ignore[misc]
