@@ -171,11 +171,11 @@ ingress:
 ```
 ## Security
 
-The api trusts only the direct socket peer (`ORCH_ALLOWED_CIDRS`, see API). Behind an ingress that peer is always the ingress controller, which runs on a cluster node, so legitimate traffic always arrives at the api from a node IP and the node CIDRs must stay in `ORCH_ALLOWED_CIDRS`. That makes the allowlist blind to who the original client was.
+The api trusts only the direct socket peer (`ORCH_ALLOWED_CIDRS`, see API). Behind an ingress that peer is the ingress controller, but not its node LAN IP. ingress-nginx runs hostNetwork, yet on a flannel cluster its proxied connection reaches the api pod from the node's pod-network gateway address: from another node via `flannel.1` as `10.244.N.0`, from the same node via `cni0` as `10.244.N.1`. A LAN client therefore gets `403` if `ORCH_ALLOWED_CIDRS` lists only the LAN CIDR. Set `ORCH_ALLOWED_CIDRS` to each node's podCIDR `.0/31` (covers `.0` and `.1`; agent pods get `.2` and up, so they stay outside), derived from `kubectl get nodes -o jsonpath='{range .items[*]}{.spec.podCIDR}{"\n"}{end}'`, for example `10.244.0.0/31,10.244.1.0/31`. Update the list whenever nodes are added or removed. The allowlist is blind to who the original client was.
 
-The boundary this opens: an agent pod can call the ingress hostname. flannel `ipMasq` SNATs pod-to-LAN traffic to the node IP, a hostNetwork ingress-nginx admits it under a LAN `whitelist-source-range`, and proxies it to the api from a node IP that the allowlist accepts. A pod is then indistinguishable from a LAN client.
+The boundary this opens: an agent pod can call the ingress hostname. flannel `ipMasq` SNATs pod-to-LAN traffic to the node IP, a hostNetwork ingress-nginx admits it under a LAN `whitelist-source-range`, and proxies it to the api from the node pod-network gateway address that the allowlist accepts. A pod is then indistinguishable from a LAN client.
 
-Close it at the ingress: set `ingress.denySourceRanges` to the cluster node IPs (pods egress SNATed as node IPs, so denying them denies pods) and `ingress.allowSourceRanges` to the LAN CIDR. A process running on a node itself is denied too. Example:
+Close it at the ingress: set `ingress.denySourceRanges` to the cluster node IPs (pod egress to the LAN is SNATed to node LAN IPs, so denying them denies pods) and `ingress.allowSourceRanges` to the LAN CIDR. A process running on a node itself is denied too. Example:
 
 ```yaml
 ingress:
