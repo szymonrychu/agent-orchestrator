@@ -37,7 +37,7 @@ vi.mock("../api/client", async (orig) => ({
 }));
 vi.mock("../api/stream", () => ({
   openStream: (url: string, opts: StreamOptions) => {
-    // The queue strip's cluster status stream is not under test here.
+    // Record only the chat event stream; the queue strip's cluster status stream is covered in Composer.test.tsx.
     if (!url.includes("/events/")) return { close: vi.fn() };
     stream.opened.push({ url, opts });
     return { close: stream.close };
