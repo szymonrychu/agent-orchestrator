@@ -40,6 +40,19 @@ class Env:
     def dispatcher(self, **kw) -> Dispatcher:
         return Dispatcher(self.pool, make_settings(self.dsn, **kw))
 
+    def send_only_dispatcher(self, **kw) -> Dispatcher:
+        """A dispatcher whose verifier pass does nothing, to pin the hand-off to verifying.
+
+        The verifier itself is covered in tests/test_ambiguous_verify.py.
+        """
+        d = self.dispatcher(**kw)
+
+        async def no_verify() -> int:
+            return 0
+
+        d.verify_pending = no_verify
+        return d
+
     async def agent(self, free_ago: float = 0, state: str = "idle", fake=None, session=None):
         fake = fake or self.fake
         if session is None:
@@ -264,7 +277,7 @@ async def test_ambiguous_send_moves_to_verifying_without_resend(env):
     agent = await env.agent()
     m = await env.msg()
     env.fake.delay_turn_response(3)  # the turn is recorded, the answer comes too late
-    d = env.dispatcher(wrapper_send_timeout_seconds=0.5, dispatching_stale_seconds=2)
+    d = env.send_only_dispatcher(wrapper_send_timeout_seconds=0.5, dispatching_stale_seconds=2)
     await d.drain()
     row = await env.message(m["id"])
     assert (row["status"], row["error"]) == ("verifying", "ambiguous")
@@ -282,7 +295,7 @@ async def test_slow_send_heartbeats_and_times_out(env):
     await env.agent()
     m = await env.msg()
     env.fake.delay_turn_response(5)
-    d = env.dispatcher(
+    d = env.send_only_dispatcher(
         wrapper_send_timeout_seconds=1.0,
         dispatching_heartbeat_seconds=0.2,
         dispatching_stale_seconds=2.0,

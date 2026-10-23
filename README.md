@@ -181,6 +181,51 @@ NOTIFY payloads are wake-up hints that carry ids only. Every loop also polls, be
 
 Polling fallbacks: dispatcher `ORCH_DISPATCH_POLL_SECONDS` (2 s), reconciler `ORCH_RECONCILE_POLL_SECONDS` (10 s), ingester stream refresh `ORCH_INGEST_REFRESH_SECONDS` (5 s); the api SSE streams re-read on a 5 s poll when no NOTIFY arrives.
 
+## Delivery and retries
+
+The dispatcher claims the oldest queued message of a cluster, reserves the agent free the longest, and posts it as a wrapper turn carrying `metadata = {orch_message_id, orch_attempt}`. Every send ends in exactly one outcome (D23, D24):
+
+| Outcome | Wrapper answer | Reservation | Message becomes |
+|---|---|---|---|
+| accepted | 202 with a `turn_id` | kept until a newer `free_since` | `sent` with that `turn_id` |
+| busy | 409 | released | `queued` again at once; no attempt counted, no backoff |
+| unavailable | 5xx, connect error, an agent with no url | released | `queued` with backoff and one attempt counted, or `failed` (`unavailable`) at max |
+| gone | 404, 410 | released; a `rebootstrap` command is enqueued | `queued` with backoff and one attempt counted, or `failed` (`session_gone`) at max |
+| config error | 401, 403 | released | `failed` (`config_error`) at once; a resend cannot succeed |
+| rejected | 413, 422 and any other 4xx | released | `failed` (`rejected`) at once; a resend cannot succeed |
+| ambiguous | read timeout, reset after the request was written, 2xx without a `turn_id` | kept | `verifying` (`ambiguous`); the verifier decides |
+
+Backoff. A counted attempt sets `not_before = now() + least(ORCH_RETRY_BACKOFF_BASE_SECONDS * 2^(attempts - 1), ORCH_RETRY_BACKOFF_MAX_SECONDS)` (defaults 2 s and 60 s: 2, 4, 8, 16 s, and so on up to the 60 s cap). The bound is the cluster's `spec.max_attempts` (default 5, 1 to 10): the attempt that reaches it fails the message. An untargeted head waiting out its backoff holds its cluster's queue, which keeps per-cluster FIFO. A retry goes through the normal claim, so it may land on another agent. Every time comparison uses the database clock `now()`; wrapper timestamps are stored, never compared.
+
+Slow sends. The send timeout `ORCH_WRAPPER_SEND_TIMEOUT_SECONDS` (15 s) is at most half of the stale cutoff `ORCH_DISPATCHING_STALE_SECONDS` (60 s). While a send is in flight the `dispatching` row heartbeats every `ORCH_DISPATCHING_HEARTBEAT_SECONDS` (5 s). A `dispatching` row whose `coalesce(heartbeat_at, dispatched_at)` is older than the cutoff belonged to a lost dispatcher: it moves to `verifying` (`dispatcher_lost`), never straight back to `queued`.
+
+### The `verifying` state
+
+A message in `verifying` has `ambiguous_at = now()` and keeps its agent reserved, because its turn may be running. Every dispatcher pass (each NOTIFY wake and each poll) runs the verifier (`dispatcher/verify.py`) over at most 50 such messages. For each one it asks the original agent's wrapper, with the cluster's derived token, whether a turn carrying this message started:
+
+- It reads the session snapshot. When `current_turn_id` is set, it fetches that turn record. It then fetches the records of the newest 10 turns of the turns list (the list holds summaries only, so each record is read on its own).
+- Started: a record whose `metadata.orch_message_id` is this message. The message becomes `sent` with that `turn_id` and the reservation stays. A peer or other turn running on the agent does not match, because the match is on the message id, never on "some turn is running".
+- Definitely not started: the wrapper answered the snapshot and every turn lookup, no record carries the id, and the message has been `verifying` for at least the settle window. An attempt is counted (`ambiguous_not_started`) and the message is requeued with backoff, or fails at max. The reservation is cleared only while `agents.last_dispatched_at` still equals this message's `dispatched_at`, so a newer claim on the agent is never undone.
+- Unknown: the wrapper is unreachable, the session answers 404 (or any other error), or the message is still inside the settle window. Nothing changes; the next pass checks again.
+- Deadline: no definite answer within the deadline fails the message with `ambiguous`. Only the user's explicit Retry (`POST /api/v1/messages/{message_id}/retry`) sends it again, with a fresh attempt budget.
+
+Each decision is one guarded queue update (`WHERE status = 'verifying'`), so two dispatcher replicas verifying the same message resolve it once.
+
+### Settle window and deadline
+
+| Setting | Default | Rule |
+|---|---|---|
+| `ORCH_AMBIGUOUS_SETTLE_SECONDS` | `60` | at least twice the send timeout; no not-started decision before it |
+| `ORCH_AMBIGUOUS_DEADLINE_SECONDS` | `600` | greater than the settle window; no definite answer by then fails the message as `ambiguous` |
+
+Both are compared only with the message's age on the database clock, `now() - ambiguous_at`.
+
+### Never twice
+
+The never twice rule: an automatic retry never pastes a message into a session twice. A message whose send may have reached the wrapper is re-sent automatically only after the original wrapper answered, showed no turn carrying its `orch_message_id`, and the settle window passed. The wrapper records a turn, with its metadata, synchronously before it answers 202, so a missing record after the settle window means the request never reached the wrapper's router.
+
+The residual case: a turn request the wrapper holds for longer than the settle window before recording it (a stalled wrapper), accepted after the verifier already saw no turn. Then the message can run twice. The settle window is four times the default send timeout to keep this to a stalled wrapper; raise `ORCH_AMBIGUOUS_SETTLE_SECONDS` to widen the margin where wrappers stall for longer.
+
 ## Data model
 
 Plain SQL migrations (`src/agent_orchestrator/db/migrations`), psycopg 3, no ORM. Events live as long as their cluster and are deleted by cascade when a discard deletes the cluster row.

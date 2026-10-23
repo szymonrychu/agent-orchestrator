@@ -14,10 +14,10 @@ from typing import Any
 import httpx
 from psycopg_pool import AsyncConnectionPool
 
-from agent_orchestrator.db import clusters, queue
+from agent_orchestrator.db import queue
 from agent_orchestrator.db.pool import listen
+from agent_orchestrator.dispatcher.verify import Verifier, cluster_max_attempts
 from agent_orchestrator.settings import Settings
-from agent_orchestrator.spec import ClusterSpec
 from agent_orchestrator.tokens import tokens_for
 from agent_orchestrator.wrapper.client import WrapperClient
 from agent_orchestrator.wrapper.models import (
@@ -42,6 +42,7 @@ class Dispatcher:
         self.pool = pool
         self.settings = settings
         self._http: httpx.AsyncClient | None = None
+        self.verifier = Verifier(pool, settings, self._wrapper)
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -50,16 +51,19 @@ class Dispatcher:
             await self._http.aclose()
             self._http = None
 
-    def _client(self, cluster_id: Any, url: str) -> WrapperClient:
+    def _wrapper(self, url: str, token: str) -> WrapperClient:
+        """A client on the shared connection pool (aclose leaves the pool open)."""
         if self._http is None:
             self._http = httpx.AsyncClient()
-        token = tokens_for(self.settings, cluster_id).auth
         return WrapperClient(
             url,
             token,
             http=self._http,
             send_timeout=self.settings.wrapper_send_timeout_seconds,
         )
+
+    def _client(self, cluster_id: Any, url: str) -> WrapperClient:
+        return self._wrapper(url, tokens_for(self.settings, cluster_id).auth)
 
     async def run(self, stop: asyncio.Event) -> None:
         wake = asyncio.Event()
@@ -104,9 +108,9 @@ class Dispatcher:
             await queue.verify_stale_dispatching(conn, self.settings.dispatching_stale_seconds)
         await self.verify_pending()
 
-    async def verify_pending(self) -> None:
-        """Called once per wake after the stale sweep; override to verify pending sends."""
-        return None
+    async def verify_pending(self) -> int:
+        """Check verifying messages against their wrappers, once per wake and poll (D24)."""
+        return await self.verifier.verify_once()
 
     async def _drain_messages(self) -> None:
         slots = asyncio.Semaphore(MAX_IN_FLIGHT)
@@ -184,7 +188,7 @@ class Dispatcher:
             elif isinstance(outcome, Rejected):
                 await queue.fail_message(conn, mid, "rejected")
             elif isinstance(outcome, Unavailable | Gone):
-                max_attempts = await self._max_attempts(conn, claim)
+                max_attempts = await cluster_max_attempts(conn, claim.cluster_id)
                 error = "session_gone" if isinstance(outcome, Gone) else "unavailable"
                 await queue.record_failure(
                     conn,
@@ -198,10 +202,6 @@ class Dispatcher:
                     await queue.enqueue_command(conn, claim.agent_id, "rebootstrap")
             else:  # pragma: no cover - SubmitOutcome is exhaustive
                 log.error("unmapped outcome %r for message %s", outcome, mid)
-
-    async def _max_attempts(self, conn: Any, claim: queue.Claim) -> int:
-        cluster = await clusters.get(conn, claim.cluster_id)
-        return cluster.spec.max_attempts if cluster is not None else ClusterSpec().max_attempts
 
     # ------------------------------------------------------------------ commands
 
