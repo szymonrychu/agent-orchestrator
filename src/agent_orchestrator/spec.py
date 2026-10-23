@@ -18,7 +18,7 @@ _ENV_KEY_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 _RESERVED_ENV_PREFIXES = ("CCW_", "CLAUDE_", "ANTHROPIC_")
 _RESERVED_ENV_SUFFIXES = ("_PROXY", "_BASE_URL")
 _QUANTITY_RE = re.compile(
-    r"^([+-]?(?:\d+\.?\d*|\.\d+))(Ki|Mi|Gi|Ti|Pi|Ei|[numkMGTPE]|[eE][+-]?\d+)?$"
+    r"([+-]?(?:\d+\.?\d*|\.\d+))(Ki|Mi|Gi|Ti|Pi|Ei|[numkMGTPE]|[eE][+-]?\d+)?"
 )
 _SUFFIX: dict[str, Decimal] = {
     "n": Decimal("1e-9"),
@@ -57,7 +57,7 @@ def validate_slug(slug: str) -> None:
 
 def parse_quantity(value: str) -> Decimal:
     """Parse a Kubernetes quantity (e.g. 500m, 20Gi, 1e3) into a Decimal."""
-    m = _QUANTITY_RE.match(value.strip()) if isinstance(value, str) else None
+    m = _QUANTITY_RE.fullmatch(value) if isinstance(value, str) else None
     if not m:
         raise ValueError(f"{value!r} is not a Kubernetes quantity")
     number, suffix = m.group(1), m.group(2) or ""
@@ -70,7 +70,8 @@ def parse_quantity(value: str) -> Decimal:
 
 
 def _quantity(value: str) -> str:
-    parse_quantity(value)
+    if parse_quantity(value) <= 0:
+        raise ValueError(f"{value!r} must be a positive quantity")
     return value
 
 

@@ -199,3 +199,9 @@ def test_spec_retry_default_and_discard_hook_url():
     with pytest.raises(ValidationError):
         ClusterSpec(workdir="Bad_Dir")
     validate_spec(ClusterSpec(discard_hook_url="https://h/x"), _settings())
+
+
+@pytest.mark.parametrize("bad", [" 10Gi", "10Gi ", "1Gi\n", "-1Gi", "0"])
+def test_spec_rejects_malformed_pvc_size(bad):
+    with pytest.raises(ValidationError):
+        ClusterSpec(pvc_size=bad)
