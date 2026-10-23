@@ -551,6 +551,64 @@ Lists the shells of every ready agent of the cluster. The agents are queried con
 
 Closes one shell and everything it started. Guarded by the Origin allowlist like the create route. `terminal_id` must be `term_` plus 12 lowercase hex digits, else `422 invalid_request` before any wrapper call. Response 204 without a body. Errors: 403 `forbidden_origin`, 404 `not_found` (agent), 404 `terminal_not_found`, 409 `agent_not_ready`, 422 `invalid_request`, 502 `wrapper_unreachable`, 502 `wrapper_error`, 503 `unavailable`.
 
+### `WS /api/v1/agents/{agent_id}/terminals/{terminal_id}/attach`
+
+Attaches to one shell created with `POST /api/v1/agents/{agent_id}/terminals`. WebSocket routes are not in OpenAPI, so this section is the contract. The api relays the socket to the agent's wrapper (`/v1/sessions/{session_id}/terminals/{terminal_id}/attach`), adding the cluster's wrapper bearer itself: the client never sees or sends a wrapper token, and the token appears in no frame, close reason or log line.
+
+Frames, relayed unchanged in both directions:
+
+- binary frames are raw PTY bytes: keystrokes from the client, shell output to the client. Split input into frames of at most 64 KiB; a larger frame is closed by the wrapper with 1009.
+- text frames are JSON control messages. Client to server: `{"type": "resize", "cols": 120, "rows": 40}` (1..1000 each) and `{"type": "ping"}`; server to client: `{"type": "pong"}` and `{"type": "exit", "code": 0}` when the shell exits, followed by a close 1000. An unknown control message is closed with 1003. The browser UI pings every 20 s to keep idle proxies from dropping the socket; the api adds no pings of its own.
+
+Replay on attach: the wrapper first sends the shell's recent output (its scrollback ring, up to 256 KiB) as binary frames, then live output, so a reconnecting client redraws the screen. Several clients may attach to one shell at once; a client that cannot keep up is closed with 1013 rather than slowing the shell. Attaching to a shell that already exited replays its output, sends the `exit` frame and closes 1000.
+
+Origin rule: the upgrade is checked against `ORCH_ALLOWED_ORIGINS` (see Origin allowlist) and the source allowlist before it is accepted. An `Origin` of `null` or one not in the list is refused with close 1008 before accept, which a client sees as an HTTP 403 handshake answer; a client that sends no `Origin` (a headless client) passes.
+
+Close codes. Every other failure is a close after the socket was accepted, with the code below and a short reason:
+
+| Code | Reason | When |
+|---|---|---|
+| 1008 | `invalid_terminal_id` | `terminal_id` is not `term_` plus 12 lowercase hex digits; checked first, no wrapper connection is opened |
+| 4404 | `not_found` | unknown agent (or not a UUID), or the wrapper knows no such session or terminal (its 404) |
+| 4409 | `agent_not_ready` | the agent is not ready, has no wrapper session or its cluster is being discarded, or the wrapper session is not active (its 409) |
+| 1011 | `wrapper_unavailable`, `unavailable` | the wrapper is unreachable, rejected the bearer, or failed otherwise; `unavailable` when no master key is configured |
+
+Once both sides are open, a close on either side closes the other side with a mapped code: 1000, 1003, 1008, 1009, 1011, 1013, 4000-4999 and every other code a close frame may carry (such as 1001 when a browser tab closes) pass through with their reason; 1005 (a close frame without a code) becomes 1000; 1006 (connection dropped without a close frame), 1015 and a close without a code become 1011. The reserved codes 1005, 1006 and 1015 are never sent. The relay keeps no buffer of its own and ends with its connections.
+
+Headless example (Python, `websockets` 17, no `Origin` header):
+
+```python
+import asyncio
+import json
+
+import httpx
+from websockets.asyncio.client import connect
+
+API = "http://orchestrator.example.com"
+AGENT = "0c1d..."  # an agent id from GET /api/v1/clusters/{cluster_id}/agents
+
+
+async def main() -> None:
+    async with httpx.AsyncClient(base_url=API) as http:
+        made = await http.post(f"/api/v1/agents/{AGENT}/terminals", json={"rows": 24, "cols": 80})
+        made.raise_for_status()
+        terminal_id = made.json()["terminal_id"]
+    url = f"ws://orchestrator.example.com/api/v1/agents/{AGENT}/terminals/{terminal_id}/attach"
+    async with connect(url) as ws:
+        await ws.send(json.dumps({"type": "resize", "cols": 120, "rows": 40}))
+        await ws.send(b"ls -la\rexit\r")  # keystrokes are binary frames
+        async for frame in ws:
+            if isinstance(frame, bytes):
+                print(frame.decode(errors="replace"), end="")  # PTY output, replay first
+            elif json.loads(frame)["type"] == "exit":
+                break  # the shell ended; the server closes with 1000
+
+
+asyncio.run(main())
+```
+
+Use `wss://` behind a TLS ingress. A closed socket raises `websockets.exceptions.ConnectionClosed`, whose `rcvd.code` is one of the codes above.
+
 ### `GET /api/v1/stream`
 
 SSE stream of live cluster, agent and message state. It opens with a `snapshot`, then sends only deltas. Response 200 `text/event-stream`.

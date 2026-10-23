@@ -21,6 +21,7 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "pyyaml" },
     { name = "uvicorn", extra = ["standard"] },
+    { name = "websockets" },
 ]
 
 [package.dev-dependencies]
@@ -43,6 +44,7 @@ requires-dist = [
     { name = "pydantic-settings" },
     { name = "pyyaml" },
     { name = "uvicorn", extras = ["standard"] },
+    { name = "websockets", specifier = ">=17.3" },
 ]
 
 [package.metadata.requires-dev]
