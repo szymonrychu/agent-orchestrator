@@ -17,6 +17,7 @@ from psycopg_pool import AsyncConnectionPool
 from agent_orchestrator.db import clusters, queue
 from agent_orchestrator.db.pool import listen
 from agent_orchestrator.settings import Settings
+from agent_orchestrator.spec import ClusterSpec
 from agent_orchestrator.tokens import tokens_for
 from agent_orchestrator.wrapper.client import WrapperClient
 from agent_orchestrator.wrapper.models import (
@@ -34,7 +35,6 @@ log = logging.getLogger(__name__)
 MAX_IN_FLIGHT = 8
 CHANNELS = ("agent_free", "message_queued")
 COMMAND_KINDS = ("interrupt", "compact")
-DEFAULT_MAX_ATTEMPTS = 5
 
 
 class Dispatcher:
@@ -200,7 +200,7 @@ class Dispatcher:
 
     async def _max_attempts(self, conn: Any, claim: queue.Claim) -> int:
         cluster = await clusters.get(conn, claim.cluster_id)
-        return cluster.spec.max_attempts if cluster is not None else DEFAULT_MAX_ATTEMPTS
+        return cluster.spec.max_attempts if cluster is not None else ClusterSpec().max_attempts
 
     # ------------------------------------------------------------------ commands
 

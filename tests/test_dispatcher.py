@@ -375,3 +375,73 @@ async def test_submit_metadata_and_permanent_failures(pool, dsn):
                 await e2.fake.stop()
     finally:
         await env.fake.stop()
+
+
+async def test_stale_dispatching_row_goes_to_verifier_not_resent(env):
+    """A crash between claim commit and send leaves a dispatching row (D24)."""
+    agent = await env.agent()
+    m = await env.msg(status="dispatching", agent_id=agent["id"], attempts=0)
+    await env.exec(
+        "UPDATE messages SET dispatched_at = now() - interval '1 hour', heartbeat_at = NULL"
+        " WHERE id=%s",
+        (m["id"],),
+    )
+    d = env.dispatcher(dispatching_stale_seconds=30)
+    await d.drain()
+    await d.aclose()
+    row = await env.message(m["id"])
+    assert (row["status"], row["error"]) == ("verifying", "dispatcher_lost")
+    assert env.fake.received_turns == 0
+
+
+async def test_notify_wakes_dispatcher_on_both_channels(env):
+    await env.agent()
+    await env.agent()
+    d = env.dispatcher(dispatch_poll_seconds=60)  # the poll cannot be what wakes it
+    stop = asyncio.Event()
+    task = asyncio.create_task(d.run(stop))
+    try:
+        await asyncio.sleep(0.5)  # initial drain done, listening
+        for channel in ("message_queued", "agent_free"):
+            m = await env.msg()
+            await env.exec("SELECT pg_notify(%s, '{}')", (channel,))
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if (await env.message(m["id"]))["status"] == "sent":
+                    break
+                await asyncio.sleep(0.05)
+            assert (await env.message(m["id"]))["status"] == "sent", channel
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, 5)
+
+
+async def test_at_most_eight_sends_in_flight(env):
+    fakes = [FakeWrapper(token=env.token) for _ in range(9)]
+    for f in fakes:
+        await f.start()
+    await env.agent()
+    for f in fakes:
+        await env.agent(fake=f)
+    for i in range(10):
+        await env.msg(text=f"m{i}")
+    d = env.dispatcher()
+    state = {"now": 0, "peak": 0}
+    real = d._send
+
+    async def counting(claim):
+        state["now"] += 1
+        state["peak"] = max(state["peak"], state["now"])
+        try:
+            await asyncio.sleep(0.2)
+            await real(claim)
+        finally:
+            state["now"] -= 1
+
+    d._send = counting
+    await d.drain()
+    await d.aclose()
+    for f in fakes:
+        await f.stop()
+    assert state["peak"] == 8
+    assert env.fake.received_turns + sum(f.received_turns for f in fakes) == 10
