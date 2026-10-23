@@ -212,6 +212,37 @@ The reconciler is level-triggered: every `ORCH_RECONCILE_POLL_SECONDS` (10 s), a
 
 A deleting cluster first passes the pre-discard gate, then loses every labelled object including its PVC, and its Secret by name. Once no labelled object or pod is left, its row is deleted, which cascades its agents, messages, events, turns, commands and checks. An error in one cluster is written into its status message and never stops the others. Restart commands are claimed in the same pass: the agent's pod is deleted and the StatefulSet recreates it.
 
+## Discard
+
+`DELETE /api/v1/clusters/{id}` marks the cluster `deleting`; the reconciler then removes everything. A discard deletes the cluster's Kubernetes objects (check Jobs, StatefulSet and its pods, headless Service, ConfigMap, the Secret by name and the RWX PVC with the workspace) and, last, the cluster row, which cascades its whole chat history: agents, messages, turns, commands, checks and events.
+
+### Hook
+
+An optional hook receives the full history export before anything is deleted. None is configured by default. The hook comes from, in order of precedence:
+
+1. `spec.discard_hook_url` of the cluster (a webhook URL, http or https only);
+2. `ORCH_DISCARD_HOOK_COMMAND` (a shell command) or `ORCH_DISCARD_HOOK_URL` (a webhook URL), set at most one.
+
+A command comes only from settings, never from the spec: the API has no auth and the reconciler holds the Kubernetes credentials. Both kinds are bounded by `ORCH_DISCARD_HOOK_TIMEOUT_SECONDS` (120).
+
+### Export format
+
+JSONL, one JSON object per line, each with a `kind`. The first line is the `cluster` record (`id`, `slug`, `spec`, `created_at`). Then come the `agent`, `message`, `turn`, `command`, `check` and `event` records of the cluster, each kind in id order (turns in `started_at` order); a record carries the table's columns. A `command` record's own kind column is named `command_kind`. Timestamps are ISO 8601 UTC. The export is streamed from the database with server-side cursors, so a long history is never held in memory. The cluster is already `deleting` and the API refuses new messages, so the history is complete bar agents still finishing a turn.
+
+### Command contract
+
+Run through `sh -c` with the JSONL on stdin, `ORCH_CLUSTER_ID` and `ORCH_CLUSTER_SLUG` in its environment, in its own process group. Exit 0 is success. A non-zero exit is a failure whose reason carries the exit code and the tail of stderr (bounded). On timeout the whole process group is killed.
+
+### Webhook contract
+
+An HTTP `POST` of the JSONL, streamed, with `Content-Type: application/x-ndjson`, `X-Orch-Cluster-Id` and `X-Orch-Cluster-Slug`. Any 2xx is success; any other status, a connection error or a timeout is a failure.
+
+### Delivery and retries
+
+Delivery is at-least-once. Success writes `status.discard_hook_delivered` (database time), after which the export is never sent again, also not after a reconciler restart. A crash between the hook accepting and that write sends the export a second time, so a receiver must tolerate duplicates (the cluster `id` identifies them).
+
+A failing hook holds the discard: nothing is deleted, the cluster stays `deleting`, and the status records `discard_hook_failed` (the reason), `discard_hook_failures` (the count) and `discard_hook_next_at`. The hook is retried on a later reconcile once the database clock passes `discard_hook_next_at`, with the backoff `ORCH_RETRY_BACKOFF_BASE_SECONDS` doubling up to `ORCH_RETRY_BACKOFF_MAX_SECONDS`. One cluster's failing hook never stops the other clusters reconciling.
+
 ## Architecture
 
 One repo and one image; the entrypoint is `orch <cmd>`. The processes coordinate only through Postgres.

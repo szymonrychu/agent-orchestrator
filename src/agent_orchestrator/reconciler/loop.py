@@ -23,16 +23,19 @@ from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
 
+import httpx
 from psycopg_pool import AsyncConnectionPool
 
 from agent_orchestrator.db import agents as agents_repo
 from agent_orchestrator.db import clusters, queue
 from agent_orchestrator.db.clusters import Cluster, ClusterNotFound
+from agent_orchestrator.db.export import export_cluster_history
 from agent_orchestrator.db.pool import listen, notify
 from agent_orchestrator.k8s.kube import FIELD_MANAGER, KubeApi, Obj, is_owned, pod_ready
 from agent_orchestrator.k8s.labels import cluster_labels, object_names, prefix
 from agent_orchestrator.k8s.render import pod_url, render_cluster
 from agent_orchestrator.reconciler.checks import CheckRunner
+from agent_orchestrator.reconciler.discard_hook import HookResult, resolve_hook, run_discard_hook
 from agent_orchestrator.reconciler.sessions import SessionBootstrapper
 from agent_orchestrator.settings import Settings
 from agent_orchestrator.tokens import tokens_for
@@ -46,6 +49,8 @@ PRUNE_ORDER = ("StatefulSet", "Service", "ConfigMap", "PersistentVolumeClaim")
 # A discard also deletes the check Jobs, ahead of the PVC they mount. A converge never prunes
 # them: they are created per check, not rendered.
 DISCARD_ORDER = ("Job", *PRUNE_ORDER)
+
+_HOOK_FAILURE_KEYS = ("discard_hook_failed", "discard_hook_failures", "discard_hook_next_at")
 
 WrapperFactory = Callable[[str, str], Any]
 """(base_url, auth_token) -> wrapper client; used by session bootstrap."""
@@ -63,6 +68,7 @@ class Reconciler:
         self.kube = kube
         self.settings = settings
         self.wrapper_factory = wrapper_factory
+        self.hook_transport: httpx.AsyncBaseTransport | None = None
         self.checks = CheckRunner(pool, kube, settings)
         self.bootstrapper = (
             SessionBootstrapper(pool, wrapper_factory) if wrapper_factory is not None else None
@@ -127,11 +133,69 @@ class Reconciler:
     async def pre_discard(self, cluster: Cluster) -> bool:
         """The gate before a discard deletes anything (D15): True lets the deletion proceed.
 
-        The base reconciler has no pre-discard hook, so it always returns True. A subclass
-        overrides this to deliver the cluster's history export and returns False to block
-        the deletion until delivery succeeds.
+        With no hook, or after the export was delivered, it is True. Otherwise the history
+        export goes to the hook: success records `discard_hook_delivered` (database clock), a
+        failure records `discard_hook_failed`, `discard_hook_failures` and
+        `discard_hook_next_at` and returns False, so nothing is deleted. The hook is retried
+        once the database clock passes `discard_hook_next_at`.
         """
-        return True
+        hook = resolve_hook(cluster, self.settings)
+        status = cluster.status
+        if hook is None or status.get("discard_hook_delivered"):
+            return True
+        next_at = status.get("discard_hook_next_at")
+        async with self.pool.connection() as conn:
+            if (
+                next_at
+                and (
+                    await (
+                        await conn.execute("SELECT %s::timestamptz > now()", (next_at,))
+                    ).fetchone()
+                )[0]
+            ):
+                return False
+            try:
+                result = await run_discard_hook(
+                    hook,
+                    cluster,
+                    export_cluster_history(conn, cluster.id),
+                    self.settings.discard_hook_timeout_seconds,
+                    transport=self.hook_transport,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.exception("discard hook of cluster %s crashed", cluster.slug)
+                result = HookResult(False, f"{type(exc).__name__}: {exc}")
+        if result.ok:
+            async with self.pool.connection() as conn:
+                now = (await (await conn.execute("SELECT now()")).fetchone())[0]
+            await self._write_status(
+                cluster,
+                {"discard_hook_delivered": now.isoformat()},
+                cluster.observed_generation,
+                drop=_HOOK_FAILURE_KEYS,
+            )
+            return True
+        failures = int(status.get("discard_hook_failures", 0)) + 1
+        delay = self.settings.retry_delay_seconds(failures)
+        async with self.pool.connection() as conn:
+            retry_at = (
+                await (
+                    await conn.execute("SELECT now() + make_interval(secs => %s)", (delay,))
+                ).fetchone()
+            )[0]
+        log.warning("discard hook of cluster %s failed: %s", cluster.slug, result.reason)
+        await self._write_status(
+            cluster,
+            {
+                "discard_hook_failed": result.reason,
+                "discard_hook_failures": failures,
+                "discard_hook_next_at": retry_at.isoformat(),
+            },
+            cluster.observed_generation,
+        )
+        return False
 
     # ------------------------------------------------------------------ an active cluster
 
@@ -362,18 +426,23 @@ class Reconciler:
     # ------------------------------------------------------------------ status
 
     async def _write_status(
-        self, cluster: Cluster, fields: dict[str, Any], observed_generation: int
+        self,
+        cluster: Cluster,
+        fields: dict[str, Any],
+        observed_generation: int,
+        drop: tuple[str, ...] = (),
     ) -> None:
         """Merge `fields` into the stored status; a write only when something changed.
 
         The row is re-read, so keys another step of this tick wrote (the discard hook's) are
-        kept. Skipping unchanged writes keeps the reconciler's own NOTIFY from waking it.
+        kept (`drop` removes some). Skipping unchanged writes keeps the reconciler's own NOTIFY
+        from waking it.
         """
         async with self.pool.connection() as conn, conn.transaction():
             current = await clusters.get(conn, cluster.id)
             if current is None:
                 return
-            status = {**current.status, **fields}
+            status = {k: v for k, v in current.status.items() if k not in drop} | fields
             if status == current.status and observed_generation == current.observed_generation:
                 return
             await clusters.set_status(conn, cluster.id, status, observed_generation)
