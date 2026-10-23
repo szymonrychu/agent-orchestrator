@@ -10,23 +10,31 @@ from fastapi.responses import JSONResponse
 from psycopg_pool import AsyncConnectionPool
 
 from agent_orchestrator import __version__
-from agent_orchestrator.api import clusters, errors, messages
+from agent_orchestrator.api import clusters, errors, messages, streams
 from agent_orchestrator.api.allowlist import SourceAllowlist
 from agent_orchestrator.api.errors import error_response
+from agent_orchestrator.api.listener import Listener
 from agent_orchestrator.db.pool import open_pool
 from agent_orchestrator.settings import Settings
 
 
-def create_app(settings: Settings, pool: AsyncConnectionPool | None = None) -> FastAPI:
+def create_app(
+    settings: Settings,
+    pool: AsyncConnectionPool | None = None,
+    stream_poll_seconds: float = streams.DEFAULT_POLL_SECONDS,
+) -> FastAPI:
     owns_pool = pool is None
+    listener = Listener(settings.database_url)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if owns_pool:
             app.state.pool = await open_pool(settings.database_url)
+        await listener.start()
         try:
             yield
         finally:
+            await listener.stop()
             if owns_pool:
                 await app.state.pool.close()
 
@@ -40,9 +48,12 @@ def create_app(settings: Settings, pool: AsyncConnectionPool | None = None) -> F
     )
     app.state.settings = settings
     app.state.pool = pool
+    app.state.listener = listener
+    app.state.stream_poll_seconds = stream_poll_seconds
     errors.install(app)
     app.include_router(clusters.router)
     app.include_router(messages.router)
+    app.include_router(streams.router)
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz() -> dict:

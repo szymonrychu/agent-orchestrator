@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from typing import Any
 
 import psycopg
@@ -31,8 +31,12 @@ async def listen(
     *,
     initial_backoff: float = 0.5,
     max_backoff: float = 30.0,
+    on_ready: Callable[[], None] | None = None,
 ) -> AsyncIterator[tuple[str, dict]]:
-    """Yield (channel, payload) on a dedicated connection, reconnecting with backoff."""
+    """Yield (channel, payload) on a dedicated connection, reconnecting with backoff.
+
+    on_ready is called each time the LISTENs are established (also after a reconnect).
+    """
     backoff = initial_backoff
     while True:
         try:
@@ -40,6 +44,8 @@ async def listen(
                 for ch in channels:
                     await conn.execute(sql.SQL("LISTEN {}").format(sql.Identifier(ch)))
                 backoff = initial_backoff
+                if on_ready is not None:
+                    on_ready()
                 async for n in conn.notifies():
                     try:
                         payload = json.loads(n.payload) if n.payload else {}

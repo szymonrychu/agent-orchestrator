@@ -46,6 +46,28 @@ def _view(cluster: repo.Cluster, agg: dict | None, settings: Settings) -> schema
     )
 
 
+def agent_view(r: dict) -> schemas.AgentView:
+    known = r["context_pct"] is not None or r["context_used_tokens"] is not None
+    return schemas.AgentView(
+        id=r["id"],
+        ordinal=r["ordinal"],
+        pod_name=r["pod_name"],
+        ready=r["ready"],
+        state=r["state"] or "unknown",
+        free_since=r["free_since"],
+        current_turn_id=r["current_turn_id"],
+        context=schemas.AgentContext(
+            used_tokens=r["context_used_tokens"],
+            window_tokens=r["context_window_tokens"],
+            used_percentage=r["context_pct"],
+        )
+        if known
+        else None,
+        peers=len(r["peers"] or []),
+        gone=r["gone_at"] is not None,
+    )
+
+
 async def _one_view(conn, cluster: repo.Cluster, settings: Settings) -> schemas.ClusterView:
     aggs = await views.cluster_aggregates(conn, cluster.id)
     return _view(cluster, aggs.get(cluster.id), settings)
@@ -172,27 +194,4 @@ async def list_agents(cluster_id: uuid.UUID, pool: Pool) -> list[schemas.AgentVi
         if await repo.get(conn, cluster_id) is None:
             raise not_found("cluster")
         rows = await views.agent_rows(conn, cluster_id)
-    out = []
-    for r in rows:
-        known = r["context_pct"] is not None or r["context_used_tokens"] is not None
-        out.append(
-            schemas.AgentView(
-                id=r["id"],
-                ordinal=r["ordinal"],
-                pod_name=r["pod_name"],
-                ready=r["ready"],
-                state=r["state"] or "unknown",
-                free_since=r["free_since"],
-                current_turn_id=r["current_turn_id"],
-                context=schemas.AgentContext(
-                    used_tokens=r["context_used_tokens"],
-                    window_tokens=r["context_window_tokens"],
-                    used_percentage=r["context_pct"],
-                )
-                if known
-                else None,
-                peers=len(r["peers"] or []),
-                gone=r["gone_at"] is not None,
-            )
-        )
-    return out
+    return [agent_view(r) for r in rows]
