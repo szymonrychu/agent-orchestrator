@@ -618,8 +618,9 @@ async def test_peers_view_recorded(harness, pool) -> None:
     await wait_until(recorded)
     assert (await status_row(pool, h.agent_id))["peers"] == members
 
-    # peers are refreshed on a transition into idle; a disabled mesh counts 0
-    h.fake.peers = {"enabled": False}
+    # peers are refreshed on a transition into idle; a disabled mesh counts 0 even when the
+    # view still lists members
+    h.fake.peers = {"enabled": False, "self": None, "members": members}
     h.fake.emit("session_state", {"state": "busy", "since": OLD_SINCE})
     h.fake.emit("session_state", {"state": "ready", "since": OLD_SINCE})
 
@@ -628,4 +629,5 @@ async def test_peers_view_recorded(harness, pool) -> None:
 
     await wait_until(zero)
     assert status.peer_count({"enabled": False}) == 0
+    assert status.peer_count({"enabled": False, "members": members}) == 0
     assert status.peer_count({"enabled": True, "members": members}) == 2
