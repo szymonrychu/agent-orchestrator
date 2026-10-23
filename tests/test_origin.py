@@ -7,8 +7,10 @@ from pathlib import Path
 import httpx
 import pytest
 from fastapi import Depends, FastAPI
+from test_api_clusters import make_settings
 
 from agent_orchestrator.api import errors
+from agent_orchestrator.api.app import create_app
 from agent_orchestrator.api.origin import OriginAllowlist, require_allowed_origin
 from agent_orchestrator.settings import Settings, SettingsError
 
@@ -83,6 +85,40 @@ async def test_websocket_origin_rule():
     for bad in ("http://evil.example", "null", "http://localhost:5174", "http://localhost:5173/x"):
         assert await _ws(app, bad) == [{"type": "websocket.close", "code": 1008}], bad
     assert len(calls) == 3  # refused before the app ran, so before accept
+
+
+async def test_create_app_wires_origin_and_source_allowlists():
+    app = create_app(
+        make_settings(allowed_cidrs="10.0.0.0/8", allowed_origins=["http://localhost:5173"])
+    )
+    refused = [{"type": "websocket.close", "code": 1008}]
+    # no websocket route is registered, so an upgrade that passes both middlewares is not 1008
+    assert await _ws(app, "http://evil.example") == refused
+    assert await _ws(app, "null") == refused
+    assert await _ws(app, "http://localhost:5173") != refused
+    assert await _ws(app, None) != refused
+
+    # the source allowlist still runs: a peer outside the CIDR is refused even with a good Origin
+    scope = {
+        "type": "websocket",
+        "path": "/ws",
+        "headers": [(b"origin", b"http://localhost:5173")],
+        "client": ("192.168.1.1", 1),
+    }
+    sent: list[dict] = []
+
+    async def receive():
+        return {"type": "websocket.connect"}
+
+    async def send(message):
+        sent.append(message)
+
+    await app(scope, receive, send)
+    assert sent == refused
+
+    # the default empty list refuses every Origin-bearing upgrade
+    default = create_app(make_settings(allowed_cidrs="10.0.0.0/8"))
+    assert await _ws(default, "http://localhost:5173") == refused
 
 
 async def test_empty_list_fails_closed():
