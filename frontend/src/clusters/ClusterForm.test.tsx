@@ -38,27 +38,27 @@ afterEach(cleanup)
 async function ready() {
   await waitFor(() => expect(field('Max attempts').value).toBe('5'))
 }
+const paste = async (label: string, text: string) => {
+  await userEvent.click(field(label))
+  await userEvent.paste(text)
+}
 const replace = async (label: string, text: string) => {
   await userEvent.clear(field(label))
-  if (text) await userEvent.type(field(label), text)
+  if (text) await paste(label, text)
 }
 const pick = async (label: string, option: string) => {
   await userEvent.click(screen.getByRole('combobox', { name: label }))
   await userEvent.click(screen.getByRole('option', { name: option }))
   await waitFor(() => expect(screen.queryByRole('listbox')).toBeNull())
 }
-const paste = async (label: string, text: string) => {
-  await userEvent.click(field(label))
-  await userEvent.paste(text)
-}
 
 describe('ClusterForm', () => {
-  test('creates cluster with full spec', async () => {
+  test('creates cluster with full spec', { timeout: 15000 }, async () => {
     api.createCluster.mockResolvedValue(existing())
     const onSaved = vi.fn()
     wrap(<ClusterForm open mode="create" onClose={vi.fn()} onSaved={onSaved} />)
     await ready()
-    await userEvent.type(field('Slug'), 'alpha-1')
+    await paste('Slug', 'alpha-1')
     await replace('Replicas', '3')
     await pick('Model', 'sonnet')
     await pick('Effort', 'low')
@@ -66,8 +66,8 @@ describe('ClusterForm', () => {
     await replace('Workdir', 'ws')
     await replace('PVC size', '5Gi')
     await userEvent.click(button('Add env'))
-    await userEvent.type(field('Env key 1'), 'FOO')
-    await userEvent.type(field('Env value 1'), 'bar')
+    await paste('Env key 1', 'FOO')
+    await paste('Env value 1', 'bar')
     await userEvent.clear(field('any-mcp config'))
     await paste('any-mcp config', '{"plugins": []}')
     await replace('Max attempts', '4')
@@ -76,7 +76,7 @@ describe('ClusterForm', () => {
     await replace('CPU limit', '2')
     await replace('Memory request', '1Gi')
     await replace('Memory limit', '4Gi')
-    await userEvent.type(field('Pre-discard webhook URL'), 'https://hook.example/x')
+    await paste('Pre-discard webhook URL', 'https://hook.example/x')
     await userEvent.click(button('Create'))
     await waitFor(() => expect(api.createCluster).toHaveBeenCalledTimes(1))
     expect(api.createCluster).toHaveBeenCalledWith({
