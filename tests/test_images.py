@@ -41,7 +41,10 @@ def test_ci_pushes_orchestrator_image_on_main_only():
     assert "github.ref == 'refs/heads/main'" in logins[0]["if"]
     assert "HARBOR_USERNAME" in str(logins[0]) and "HARBOR_PASSWORD" in str(logins[0])
     # exactly one image reference is ever pushed
-    assert set(re.findall(r"harbor\.szymonrichert\.pl/[\w./-]+", text)) == {IMAGE}
+    assert set(re.findall(r"harbor\.szymonrichert\.pl/[\w./-]+", text)) == {
+        IMAGE,
+        "harbor.szymonrichert.pl/charts",
+    }
     assert "pull_request" in _ci()[True]
 
 

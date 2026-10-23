@@ -148,6 +148,16 @@ ingress:
       hosts:
         - orchestrator.example.com
 ```
+## Releasing
+
+The chart is published to `oci://harbor.szymonrichert.pl/charts/agent-orchestrator` with immutable versions; Harbor rejects a repeated version and CI fails first with a clear message. `scripts/chart-version.sh` picks the version from `version` in `chart/agent-orchestrator/Chart.yaml`:
+
+- Every push to `main` (after the `chart` and `images` jobs pass) publishes `<version>-main.<sha7>`, with `appVersion` set to `<sha7>`. agents-helmfile can pin that exact version.
+- A tag `vX.Y.Z` publishes `X.Y.Z`. The tag must equal Chart.yaml's `version`, otherwise the job fails. The tagged commit must already have been built by main CI: the job checks that `harbor.szymonrichert.pl/containers/agent-orchestrator:<sha7>` exists before packaging.
+- To release: bump `version` in Chart.yaml, merge to `main`, wait for CI, then `git tag vX.Y.Z` on that commit and push the tag.
+- Publishing a version that already exists fails with `chart version <v> already published; bump chart/agent-orchestrator/Chart.yaml version`.
+- The Harbor robot (`HARBOR_USERNAME`, `HARBOR_PASSWORD`) needs push on both the `containers` and `charts` projects.
+
 ## Architecture
 
 One repo and one image; the entrypoint is `orch <cmd>`. The processes coordinate only through Postgres.
