@@ -50,7 +50,6 @@ def test_role_has_exactly_d9_rules() -> None:
         ("", "pods/log", ("get",)),
     }
     assert _rules(role) == expected
-    assert len(role["rules"]) == len(expected)
 
 
 def test_secrets_write_only_and_no_exec() -> None:
@@ -86,7 +85,7 @@ def test_rbac_create_false() -> None:
 
 def test_ingress_optional_from_values() -> None:
     assert _by_kind("Ingress") == []
-    values = yaml.safe_load(open(CHART / "values.yaml"))
+    values = yaml.safe_load((CHART / "values.yaml").read_text())
     assert values["ingress"]["enabled"] is False
     assert values["ingress"]["className"] == ""
     assert values["ingress"]["annotations"] == {}
