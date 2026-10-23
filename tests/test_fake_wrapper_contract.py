@@ -36,9 +36,7 @@ TIMEOUT = 40.0
 
 @pytest.fixture(scope="session")
 def real_wrapper() -> Iterator[RealWrapper]:
-    image = os.environ.get("ORCH_TEST_WRAPPER_IMAGE")
-    if not image:
-        pytest.skip("ORCH_TEST_WRAPPER_IMAGE is not set")
+    image = os.environ["ORCH_TEST_WRAPPER_IMAGE"]  # integration leg: required, KeyError if unset
     wrapper = RealWrapper(image, token=TOKEN)
     wrapper.start()
     try:
