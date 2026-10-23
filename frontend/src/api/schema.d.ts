@@ -675,6 +675,10 @@ export interface components {
             started_at: string;
             /** Status */
             status: string | null;
+            /** Usage */
+            usage?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** ValidationError */
         ValidationError: {
