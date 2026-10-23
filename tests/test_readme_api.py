@@ -132,11 +132,13 @@ def test_frontend_schema_matches_openapi(tmp_path: Path) -> None:
                 missing.append(f"{name}.{prop}")
     assert not missing, f"schema.d.ts is stale (run `npm run gen:api`): {missing}"
 
-    # Exact check when the generator is installed (CI frontend job always has it).
+    # Exact check: regenerate with the pinned generator and compare byte for byte.
     binary = ROOT / "frontend" / "node_modules" / ".bin" / "openapi-typescript"
-    if binary.exists() and shutil.which("node"):
-        out = tmp_path / "schema.check.d.ts"
-        subprocess.run([str(binary), str(ROOT / "openapi.json"), "-o", str(out)], check=True)
-        assert out.read_text(encoding="utf-8") == types, (
-            "schema.d.ts differs from generated output (run `npm run gen:api`)"
-        )
+    assert binary.exists() and shutil.which("node"), (
+        "openapi-typescript is not installed: run `npm ci` in frontend/"
+    )
+    out = tmp_path / "schema.check.d.ts"
+    subprocess.run([str(binary), str(ROOT / "openapi.json"), "-o", str(out)], check=True)
+    assert out.read_text(encoding="utf-8") == types, (
+        "schema.d.ts differs from generated output (run `npm run gen:api`)"
+    )
