@@ -68,13 +68,11 @@ describe('AgentsStrip', () => {
     expect([0, 45000, 59999, 60000, 120000, 3599000, 3600000, 86399000, 86400000, 172800000, -5000].map(formatAge)).toEqual(['0s', '45s', '59s', '1m', '2m', '59m', '1h', '23h', '1d', '2d', '0s'])
   })
 
-  test('agent_filter_and_row_retired', async () => {
-    // The frontend has no node typings, so the builtin is loaded through a variable specifier.
-    const builtin = 'node:child_process'
-    const { execFileSync } = (await import(/* @vite-ignore */ builtin)) as { execFileSync: (cmd: string, args: string[], opts: { encoding: 'utf8' }) => string }
-    const files = execFileSync('git', ['ls-files', '--', 'src/chat', 'src/ribbon'], { encoding: 'utf8' }).split('\n')
-    expect(files).not.toContain('src/chat/AgentFilter.tsx')
-    expect(files).not.toContain('src/ribbon/AgentRow.tsx')
-    expect(files).toContain('src/chat/AgentsStrip.tsx')
+  test('agent_filter_and_row_retired', () => {
+    // Filesystem check via Vite's glob (keys only, nothing is imported), independent of git state.
+    const onDisk = Object.keys(import.meta.glob(['./*', '../ribbon/*']))
+    expect(onDisk).not.toContain('./AgentFilter.tsx')
+    expect(onDisk).not.toContain('../ribbon/AgentRow.tsx')
+    expect(onDisk).toContain('./AgentsStrip.tsx')
   })
 })
