@@ -1,4 +1,5 @@
 /** The one confirm pattern for destructive actions: a modal with Cancel and an error-coloured confirm button. */
+import type { ReactNode } from 'react'
 import { Button, Dialog, DialogActions, DialogContent, DialogContentText, DialogTitle } from '@mui/material'
 
 export interface ConfirmDialogProps {
@@ -8,6 +9,10 @@ export interface ConfirmDialogProps {
   title: string
   /** Optional explanation below the heading. */
   body?: string
+  /** Extra content below the body, e.g. a typed-confirmation field. */
+  children?: ReactNode
+  /** Disables the confirm button (Cancel stays enabled). */
+  confirmDisabled?: boolean
   /** Label of the destructive button, e.g. "Delete". */
   confirmLabel: string
   /** Called once when the confirm button is pressed. */
@@ -20,18 +25,19 @@ export interface ConfirmDialogProps {
  * @param props see ConfirmDialogProps.
  * @returns the dialog element.
  */
-export function ConfirmDialog({ open, title, body, confirmLabel, onConfirm, onCancel }: ConfirmDialogProps) {
+export function ConfirmDialog({ open, title, body, confirmLabel, children, confirmDisabled, onConfirm, onCancel }: ConfirmDialogProps) {
   return (
     <Dialog open={open} onClose={onCancel} aria-labelledby="confirm-dialog-title">
       <DialogTitle id="confirm-dialog-title">{title}</DialogTitle>
-      {body && (
+      {(body || children) && (
         <DialogContent>
-          <DialogContentText>{body}</DialogContentText>
+          {body && <DialogContentText>{body}</DialogContentText>}
+          {children}
         </DialogContent>
       )}
       <DialogActions>
         <Button onClick={onCancel}>Cancel</Button>
-        <Button color="error" variant="outlined" onClick={onConfirm}>{confirmLabel}</Button>
+        <Button color="error" variant="outlined" disabled={confirmDisabled} onClick={onConfirm}>{confirmLabel}</Button>
       </DialogActions>
     </Dialog>
   )
