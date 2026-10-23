@@ -150,6 +150,23 @@ async def test_busy_agents_leave_message_queued(pool):
     assert (await _msg(pool, stuck))["status"] == "queued"
 
 
+async def test_deleting_cluster_is_not_dispatched(pool):
+    # A deleting cluster is being exported and torn down (D15): a turn started now would miss
+    # the discard-hook history, so its queued messages stay queued while other clusters move.
+    deleting = (await insert_cluster(pool, desired="deleting"))["id"]
+    active = (await insert_cluster(pool))["id"]
+    await _ready_agent(pool, deleting, free_ago=60)
+    other = await _ready_agent(pool, active)
+    held = await _enqueue(pool, deleting, "first")
+    moving = await _enqueue(pool, active, "second")
+
+    claim = await _claim(pool)
+
+    assert (claim.message_id, claim.agent_id) == (moving, other["id"])
+    assert await _claim(pool) is None
+    assert (await _msg(pool, held))["status"] == "queued"
+
+
 async def test_reservation_rule_blocks_redispatch_before_idle_seen(pool):
     cid = (await insert_cluster(pool))["id"]
     agent = await _ready_agent(pool, cid, free_ago=5)
@@ -629,7 +646,7 @@ async def test_verifying_transitions_and_guarded_release(pool):
     assert await _call(pool, q.resolve_started, started.message_id, "turn-9") is True
     assert await _call(pool, q.resolve_started, started.message_id, "turn-9") is False
     m = await _msg(pool, started.message_id)
-    assert (m["status"], m["turn_id"]) == ("sent", "turn-9")
+    assert (m["status"], m["turn_id"], m["error"]) == ("sent", "turn-9", None)
     assert (await _agent(pool, agent["id"]))["last_dispatched_at"] == started.dispatched_at
     await _exec(pool, "UPDATE agents SET last_dispatched_at = NULL WHERE id=%s", (agent["id"],))
 

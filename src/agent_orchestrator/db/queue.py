@@ -172,6 +172,8 @@ async def retry_message(conn: psycopg.AsyncConnection, id: int) -> bool:
 
 # ---------------------------------------------------------------- messages: the claim
 
+# A deleting cluster is excluded: its history is being exported and its pods torn down (D15),
+# so a turn started now would miss the discard-hook export. Its messages stay queued.
 _CANDIDATES = """
 SELECT m.cluster_id, min(m.id) AS head
 FROM messages m JOIN clusters c ON c.id = m.cluster_id
@@ -473,7 +475,7 @@ async def list_verifying(conn: psycopg.AsyncConnection, limit: int) -> list[Veri
 async def resolve_started(conn: psycopg.AsyncConnection, id: int, turn_id: str) -> bool:
     row = await _transition(
         conn,
-        "UPDATE messages SET status = 'sent', turn_id = %(turn_id)s"
+        "UPDATE messages SET status = 'sent', turn_id = %(turn_id)s, error = NULL"
         " WHERE id = %(id)s AND status = 'verifying' RETURNING cluster_id",
         {"id": id, "turn_id": turn_id},
     )
