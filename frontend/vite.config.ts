@@ -5,7 +5,7 @@ export default defineConfig({
   plugins: [react()],
   build: { outDir: 'dist' },
   server: {
-    proxy: { '/api': 'http://localhost:8000' },
+    proxy: { '/api': { target: 'http://localhost:8000', ws: true } },
   },
   test: {
     environment: 'node',
