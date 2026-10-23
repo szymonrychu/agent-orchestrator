@@ -230,7 +230,14 @@ A deleting cluster first passes the pre-discard gate, then loses every labelled 
 
 ## Discard
 
-`DELETE /api/v1/clusters/{id}` marks the cluster `deleting`; the reconciler then removes everything. A discard deletes the cluster's Kubernetes objects (check Jobs, StatefulSet and its pods, headless Service, ConfigMap, the Secret by name and the RWX PVC with the workspace) and, last, the cluster row, which cascades its whole chat history: agents, messages, turns, commands, checks and events.
+`DELETE /api/v1/clusters/{id}` marks the cluster `deleting`; the reconciler then removes everything, in this order:
+
+1. **Quiesce** (only when a hook is configured and has not yet delivered): the StatefulSet is scaled to zero and the reconciler waits until no agent pod is left, then gives the ingester `ORCH_DISCARD_DRAIN_SECONDS` (5) to store the last events of their streams. The wait is bounded by `ORCH_DISCARD_QUIESCE_TIMEOUT_SECONDS` (120) from the start of the discard; after that the discard logs a warning and goes on.
+2. **Export** the full history as JSONL.
+3. **Hook**: deliver the export; a failed hook blocks the deletion and is retried with backoff.
+4. **Delete** everything.
+
+A discard deletes the cluster's Kubernetes objects (check Jobs, StatefulSet and its pods, headless Service, ConfigMap, the Secret by name and the RWX PVC with the workspace) and, last, the cluster row, which cascades its whole chat history: agents, messages, turns, commands, checks and events.
 
 ### Hook
 
@@ -243,7 +250,7 @@ A command comes only from settings, never from the spec: the API has no auth and
 
 ### Export format
 
-JSONL, one JSON object per line, each with a `kind`. The first line is the `cluster` record (`id`, `slug`, `spec`, `created_at`). Then come the `agent`, `message`, `turn`, `command`, `check` and `event` records of the cluster, each kind in id order (turns in `started_at` order); a record carries the table's columns. A `command` record's own kind column is named `command_kind`. Timestamps are ISO 8601 UTC. The export is streamed from the database with server-side cursors, so a long history is never held in memory. The cluster is already `deleting` and the API refuses new messages, so the history is complete bar agents still finishing a turn.
+JSONL, one JSON object per line, each with a `kind`. The first line is the `cluster` record (`id`, `slug`, `spec`, `created_at`). Then come the `agent`, `message`, `turn`, `command`, `check` and `event` records of the cluster, each kind in id order (turns in `started_at` order); a record carries the table's columns. A `command` record's own kind column is named `command_kind`. Timestamps are ISO 8601 UTC. The export is streamed from the database with server-side cursors, so a long history is never held in memory. The cluster is already `deleting` and the API refuses new messages, so, with the agents quiesced first, the history includes every event the agents produced.
 
 ### Command contract
 

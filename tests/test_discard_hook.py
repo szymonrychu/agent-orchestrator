@@ -32,6 +32,7 @@ IMAGE = "harbor.example/containers/claude-code-wrapper:ca2ddf3"
 class Env:
     def __init__(self, pool, dsn: str, tmp_path, **settings) -> None:
         self.pool, self.tmp = pool, tmp_path
+        settings.setdefault("discard_drain_seconds", 0)
         self.kube = FakeKube(namespace="agents")
         self.settings = Settings(
             database_url=dsn,
@@ -410,3 +411,62 @@ async def test_no_hook_discards_directly(env):
     assert await env.get(c.id) is None
     assert await env.history_rows(c.id) == 0
     assert env.kube.names("PersistentVolumeClaim") == []
+
+
+async def _quiescing_env(pool, dsn, tmp_path, **settings):
+    env = Env(pool, dsn, tmp_path, **settings)
+    env.settings.discard_hook_command = env.command_hook()
+    c = await env.cluster("alpha", replicas=2)
+    await env.rec.reconcile_once()
+    assert len(env.kube.names("Pod")) == 2
+    a1 = await insert_agent(env.pool, c.id, ordinal=5, pod_name="p5")
+    env.kube.controller_paused = True  # the pods linger after the scale-down, like a slow stop
+    await env.discard(c.id)
+    return env, c, a1
+
+
+async def test_discard_quiesces_before_export(pool, dsn, tmp_path):
+    env, c, _ = await _quiescing_env(pool, dsn, tmp_path)
+    await env.rec.reconcile_once()
+    sts = env.kube.applied("StatefulSet")[-1]
+    assert sts.obj["spec"]["replicas"] == 0
+    assert env.calls() == 0  # pods still running: nothing exported, nothing deleted
+    got = await env.get(c.id)
+    assert got is not None and "waiting for agent pods" in got.status["message"]
+    assert env.kube.names("StatefulSet") and env.kube.names("PersistentVolumeClaim")
+
+    for name in env.kube.names("Pod"):
+        await env.kube.delete_pod("agents", name)
+    await env.rec.reconcile_once()
+    assert env.calls() == 1
+    assert await env.get(c.id) is None
+
+
+async def test_drain_grace_delays_export_and_timeout_proceeds(pool, dsn, tmp_path):
+    env, c, _ = await _quiescing_env(pool, dsn, tmp_path, discard_drain_seconds=3600)
+    for name in env.kube.names("Pod"):
+        await env.kube.delete_pod("agents", name)
+    await env.rec.reconcile_once()
+    assert env.calls() == 0
+    got = await env.get(c.id)
+    assert "drain" in got.status["message"]
+
+    # the bounded wait ends: the export goes ahead
+    env.settings.discard_quiesce_timeout_seconds = 0
+    await env.rec.reconcile_once()
+    assert env.calls() == 1 and await env.get(c.id) is None
+
+
+async def test_export_contains_in_flight_events(pool, dsn, tmp_path):
+    env, c, a1 = await _quiescing_env(pool, dsn, tmp_path)
+    await env.rec.reconcile_once()
+    assert env.calls() == 0
+    # a turn still in flight lands an event after the discard began, before the pods are gone
+    await insert_event(env.pool, c.id, a1["id"], type="late_in_flight")
+    for name in env.kube.names("Pod"):
+        await env.kube.delete_pod("agents", name)
+    await env.rec.reconcile_once()
+    assert env.calls() == 1
+    exported = (env.tmp / "out.jsonl").read_text()
+    assert "late_in_flight" in exported
+    assert await env.get(c.id) is None

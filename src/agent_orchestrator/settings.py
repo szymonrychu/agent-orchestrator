@@ -103,6 +103,8 @@ class Settings(BaseSettings):
     discard_hook_command: str = ""
     discard_hook_url: str = ""
     discard_hook_timeout_seconds: float = 120
+    discard_quiesce_timeout_seconds: float = 120
+    discard_drain_seconds: float = 5
 
     any_mcp_repo: str = "https://github.com/szymonrychu/any-mcp"
     any_mcp_ref: str = "v0.1.0"

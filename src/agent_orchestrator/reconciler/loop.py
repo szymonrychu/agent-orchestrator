@@ -21,6 +21,7 @@ import contextlib
 import logging
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -312,6 +313,8 @@ class Reconciler:
     async def _discard(self, cluster: Cluster) -> None:
         async with self.pool.connection() as conn:
             await queue.cancel_checks(conn, cluster.id)
+        if not await self._quiesce(cluster):
+            return
         if not await self.pre_discard(cluster):
             await self._write_status(
                 cluster,
@@ -335,6 +338,75 @@ class Reconciler:
             await clusters.purge(conn, cluster.id)
             await notify(conn, "status", {"cluster_id": str(cluster.id)})
         log.info("cluster %s discarded", slug)
+
+    async def _db_now(self) -> datetime:
+        async with self.pool.connection() as conn:
+            return (await (await conn.execute("SELECT now()")).fetchone())[0]
+
+    async def _quiesce(self, cluster: Cluster) -> bool:
+        """Stop the agents and let the ingester drain before the history is exported.
+
+        Only when an export is still owed (a hook that has not delivered). The StatefulSet is
+        scaled to zero; once no agent pod is left, the ingester gets `discard_drain_seconds`
+        to store the last events of their streams. The wait is bounded by
+        `discard_quiesce_timeout_seconds` from the first pass, after which the discard goes on
+        and logs what it could not confirm. True means the export may run.
+        """
+        if resolve_hook(cluster, self.settings) is None or cluster.status.get(
+            "discard_hook_delivered"
+        ):
+            return True
+        ns, slug = self.settings.namespace, cluster.slug
+        now = await self._db_now()
+        status = cluster.status
+        started = datetime.fromisoformat(status.get("discard_quiesce_started") or now.isoformat())
+        fields: dict[str, Any] = {"discard_quiesce_started": started.isoformat()}
+
+        name = object_names(slug)["statefulset"]
+        sts = await self.kube.get_object("StatefulSet", ns, name)
+        if sts is not None and is_owned(sts, slug) and (sts.get("spec") or {}).get("replicas") != 0:
+            for obj in render_cluster(
+                cluster, self.settings, tokens_for(self.settings, cluster.id)
+            ):
+                if obj["kind"] == "StatefulSet":
+                    obj["spec"]["replicas"] = 0
+                    await self.kube.apply(obj, field_manager=FIELD_MANAGER, force=True)
+
+        base = prefix(slug) + "-"
+        running = [
+            p["metadata"]["name"]
+            for p in await self.kube.list_pods(ns, cluster_labels(slug))
+            if is_owned(p, slug) and p["metadata"]["name"][len(base) :].isdigit()
+        ]
+        timed_out = (now - started).total_seconds() >= self.settings.discard_quiesce_timeout_seconds
+        if running and not timed_out:
+            fields["message"] = "waiting for agent pods to stop: " + ", ".join(sorted(running))
+            await self._write_status(
+                cluster,
+                {"phase": "deleting", **fields},
+                cluster.observed_generation,
+                drop=("discard_quiesced_at",),
+            )
+            return False
+        if running:
+            log.warning(
+                "cluster %s: agent pods %s still running after %gs; exporting anyway",
+                slug,
+                running,
+                self.settings.discard_quiesce_timeout_seconds,
+            )
+        else:
+            quiesced = datetime.fromisoformat(status.get("discard_quiesced_at") or now.isoformat())
+            fields["discard_quiesced_at"] = quiesced.isoformat()
+            drained = (now - quiesced).total_seconds() >= self.settings.discard_drain_seconds
+            if not drained and not timed_out:
+                fields["message"] = "waiting for the ingester to drain the agent streams"
+                await self._write_status(
+                    cluster, {"phase": "deleting", **fields}, cluster.observed_generation
+                )
+                return False
+        await self._write_status(cluster, fields, cluster.observed_generation)
+        return True
 
     async def _remaining(self, slug: str) -> list[str]:
         ns, selector = self.settings.namespace, cluster_labels(slug)
