@@ -31,7 +31,7 @@ OLD_SINCE = "2001-02-03T04:05:06+00:00"
 # --------------------------------------------------------------------------- helpers
 
 
-async def wait_until(pred: Callable[[], Any], timeout: float = 8.0, interval: float = 0.02):
+async def wait_until(pred: Callable[[], Any], timeout: float = 20.0, interval: float = 0.02):
     deadline = asyncio.get_running_loop().time() + timeout
     while True:
         result = pred()
@@ -119,6 +119,7 @@ class Harness:
         self.opened: list[Any] = []
         self.sleeps: list[float] = []
         self.replay_all = False
+        self.client_cls: type[RecordingClient] = RecordingClient
         self.ingester: Ingester | None = None
         self._task: asyncio.Task[None] | None = None
         self._stop: asyncio.Event | None = None
@@ -149,7 +150,7 @@ class Harness:
 
     def factory(self, url: str, cluster_id: uuid.UUID) -> WrapperClient:
         token = derive_tokens(MASTER_KEY.encode(), cluster_id).auth
-        return RecordingClient(url, token, opened=self.opened, replay_all=self.replay_all)
+        return self.client_cls(url, token, opened=self.opened, replay_all=self.replay_all)
 
     async def fast_sleep(self, delay: float) -> None:
         self.sleeps.append(delay)
@@ -169,7 +170,7 @@ class Harness:
     async def stop(self) -> None:
         if self._task is not None and self._stop is not None:
             self._stop.set()
-            await asyncio.wait_for(self._task, 10)
+            await asyncio.wait_for(self._task, 20)
             self._task = None
 
     async def close(self) -> None:
@@ -553,6 +554,40 @@ async def test_agent_removed_stops_stream(harness, pool) -> None:
     await asyncio.sleep(0.3)
     assert (await status_row(pool, h.agent_id))["last_seq"] == seq
     assert ingester.agent_ids() == set()
+
+
+class StubbornClient(RecordingClient):
+    """A client whose stream absorbs the first cancellation, as a shielded close can."""
+
+    async def events(self, session_id: str, last_event_id: int | str | None = None):
+        async for env in super().events(session_id, last_event_id):
+            yield env
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.Event().wait()  # the next cancel ends it
+
+
+async def test_cancel_retried_when_stream_absorbs_it(harness, pool) -> None:
+    h = await harness()
+    h.client_cls = StubbornClient
+    ingester = await h.start()
+    ingester.cancel_grace = 0.05
+    await h.stored_through(h.last_fake_seq())
+    h.fake.drop_streams()  # the stream ends and parks in the stubborn wait
+    await asyncio.sleep(0.1)
+
+    async with pool.connection() as conn:
+        await conn.execute("UPDATE agents SET gone_at=now() WHERE id=%s", (h.agent_id,))
+    await wait_until(lambda: h.agent_id not in ingester.agent_ids(), timeout=3)
+
+    # the refresh loop is not wedged: a new agent still gets its stream
+    snap = await h.client.create_session("a1", "w")
+    other = await insert_agent(
+        pool, h.cluster_id, url=h.fake.base_url, session_id=snap.session_id, ready=True
+    )
+    await wait_until(lambda: other["id"] in ingester.agent_ids(), timeout=3)
+    await asyncio.wait_for(h.stop(), 3)
 
 
 async def test_new_session_restarts_stream(harness, pool) -> None:

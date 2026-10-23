@@ -231,6 +231,7 @@ class Ingester:
         backoff_initial: float = 1.0,
         backoff_max: float = 30.0,
         sleep: Sleep = asyncio.sleep,
+        cancel_grace: float = 1.0,
     ) -> None:
         self.pool = pool
         self.settings = settings
@@ -238,6 +239,7 @@ class Ingester:
         self.backoff_initial = backoff_initial
         self.backoff_max = backoff_max
         self.sleep = sleep
+        self.cancel_grace = cancel_grace
         self._tasks: dict[uuid.UUID, tuple[AgentRef, asyncio.Task[None]]] = {}
 
     def _default_factory(self, url: str, cluster_id: uuid.UUID) -> WrapperClient:
@@ -289,8 +291,16 @@ class Ingester:
                 self._tasks[agent_id] = (ref, task)
 
     async def _cancel(self, agent_ids: list[uuid.UUID]) -> None:
-        tasks = [self._tasks.pop(a)[1] for a in agent_ids if a in self._tasks]
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        """Cancel these agents' tasks and wait for them to end.
+
+        A cancellation can be absorbed (a shielded close swallows it), so a task still running
+        after `cancel_grace` is cancelled again rather than wedging refresh or shutdown.
+        """
+        pending = {self._tasks.pop(a)[1] for a in agent_ids if a in self._tasks}
+        while pending:
+            for task in pending:
+                task.cancel()
+            done, pending = await asyncio.wait(pending, timeout=self.cancel_grace)
+            for task in done:
+                if not task.cancelled() and task.exception() is not None:
+                    log.error("ingest task %s ended with %r", task.get_name(), task.exception())
