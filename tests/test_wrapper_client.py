@@ -359,3 +359,38 @@ async def test_sessions_and_control_methods():
     assert seen[3][:2] == ("POST", "/v1/sessions/s/interrupt")
     assert seen[4][:2] == ("POST", "/v1/sessions/s/commands")
     assert json.loads(seen[4][2]) == {"name": "compact"}
+
+
+async def test_request_json_passthrough():
+    seen = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["auth"] = req.headers["authorization"]
+        seen["url"] = str(req.url)
+        seen["body"] = req.content
+        if req.url.path.endswith("/boom"):
+            return httpx.Response(404, json={"error": {"code": "no_such", "message": "gone"}})
+        if req.url.path.endswith("/empty"):
+            return httpx.Response(204)
+        return httpx.Response(201, json={"ok": [1, 2]})
+
+    c = client(handler)
+    status, body = await c.request_json(
+        "POST", "/files/x", params={"path": "a b", "n": 1}, json={"k": "v"}
+    )
+    assert (status, body) == (201, {"ok": [1, 2]})
+    assert seen["auth"] == "Bearer tok"
+    assert seen["url"] == f"{BASE}/v1/files/x?path=a+b&n=1"
+    assert json.loads(seen["body"]) == {"k": "v"}
+    assert await c.request_json("GET", "/empty") == (204, None)
+    with pytest.raises(WrapperError) as err:
+        await c.request_json("GET", "/boom")
+    assert (err.value.status, err.value.code, err.value.message) == (404, "no_such", "gone")
+
+
+async def test_request_json_transport_failure():
+    def handler(req: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    with pytest.raises(WrapperUnreachable):
+        await client(handler).request_json("GET", "/files/x")

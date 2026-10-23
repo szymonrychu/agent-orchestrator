@@ -20,8 +20,8 @@ Every process reads `ORCH_*` variables (the contract `agent-orchestrator-setting
 | Variable | Default | Read by | Meaning |
 |---|---|---|---|
 | `ORCH_DATABASE_URL` | required | all | Postgres DSN (required) |
-| `ORCH_MASTER_KEY` | unset | api, reconciler | secret key, at least 32 bytes after stripping; only for commands that call require_master_key() |
-| `ORCH_MASTER_KEY_FILE` | empty | api, reconciler | file holding the master key; wins over ORCH_MASTER_KEY |
+| `ORCH_MASTER_KEY` | unset | api (file and terminal proxies), reconciler | secret key, at least 32 bytes after stripping; only for commands that call require_master_key() |
+| `ORCH_MASTER_KEY_FILE` | empty | api (file and terminal proxies), reconciler | file holding the master key; wins over ORCH_MASTER_KEY |
 | `ORCH_NAMESPACE` | `agents` | api, reconciler, dispatcher | the one namespace of the orchestrator and every agent cluster |
 | `ORCH_AGENT_IMAGE` | empty | api, reconciler | claude-code-wrapper image the agent pods run (required to create clusters) |
 | `ORCH_CHECK_IMAGE` | empty | dispatcher | image for check jobs; defaults to agent_image |
@@ -297,7 +297,7 @@ One repo and one image; the entrypoint is `orch <cmd>`. The processes coordinate
 
 | Process | Command | Role |
 |---|---|---|
-| api | `orch api` | FastAPI REST and SSE, serves the SPA; never calls wrappers or Kubernetes |
+| api | `orch api` | FastAPI REST and SSE, serves the SPA; calls wrappers only for the file and terminal proxies in `api/workspace.py` (derived per-cluster tokens, user decision N1), never Kubernetes |
 | dispatcher | `orch dispatcher` | claims messages and commands, calls wrapper turns, interrupt and compact, verifies ambiguous sends |
 | ingester | `orch ingester` | one SSE subscription per agent; writes events, agent status and turns |
 | reconciler | `orch reconciler` | renders and applies Kubernetes objects, observes pods, bootstraps sessions, runs checks, executes restart, runs the pre-discard hook |
@@ -400,7 +400,7 @@ Versioning: `/api/v1` is additive only. New routes, new optional request fields 
 
 Source allowlist: the api checks the direct socket peer against `ORCH_ALLOWED_CIDRS` (default `192.168.1.0/24`). `Forwarded`, `X-Forwarded-For` and `X-Real-IP` are never read. A caller outside the list gets `403 forbidden`. `/healthz` and `/readyz` are exempt.
 
-Error codes: `bad_request` (400), `forbidden` (403), `forbidden_origin` (403, `Origin` not in `ORCH_ALLOWED_ORIGINS`), `not_found` (404), `conflict` (409, slug exists), `cluster_deleting` (409), `cluster_limit` (409, `ORCH_MAX_CLUSTERS` reached), `not_queued` (409), `not_failed` (409), `agent_gone` (409), `invalid_request` (422), `target_gone` (422), `internal` (500, 503 on `/readyz`).
+Error codes: `bad_request` (400), `forbidden` (403), `forbidden_origin` (403, `Origin` not in `ORCH_ALLOWED_ORIGINS`), `not_found` (404), `conflict` (409, slug exists), `cluster_deleting` (409), `cluster_limit` (409, `ORCH_MAX_CLUSTERS` reached), `not_queued` (409), `not_failed` (409), `agent_gone` (409), `agent_not_ready` (409, no ready agent for a file or terminal proxy), `invalid_request` (422), `target_gone` (422), `internal` (500, 503 on `/readyz`), `wrapper_error` (502, the wrapper answered 5xx), `wrapper_unreachable` (502, the wrapper pod could not be reached), `unavailable` (503, no master key for the proxies).
 
 ### `GET /api/v1/meta`
 

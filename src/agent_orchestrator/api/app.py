@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from psycopg_pool import AsyncConnectionPool
 
 from agent_orchestrator import __version__
-from agent_orchestrator.api import clusters, errors, messages, streams
+from agent_orchestrator.api import clusters, errors, messages, streams, workspace
 from agent_orchestrator.api.allowlist import SourceAllowlist
 from agent_orchestrator.api.errors import error_response
 from agent_orchestrator.api.listener import Listener
@@ -38,6 +38,7 @@ def create_app(
             yield
         finally:
             await listener.stop()
+            await workspace.close_client(app)
             if owns_pool:
                 await app.state.pool.close()
 
@@ -52,6 +53,7 @@ def create_app(
     app.state.settings = settings
     app.state.pool = pool
     app.state.listener = listener
+    app.state.wrapper_http = None
     app.state.stream_poll_seconds = stream_poll_seconds
     errors.install(app)
     app.include_router(clusters.router)

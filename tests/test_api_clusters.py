@@ -209,26 +209,36 @@ async def test_unexpected_error_is_internal(pool, dsn):
         assert_error(await c.get("/api/v1/boom"), 500, "internal")
 
 
+def _imports(path: Path) -> set[str]:
+    out: set[str] = set()
+    for node in ast.walk(ast.parse(path.read_text())):
+        if isinstance(node, ast.Import):
+            out.update(a.name for a in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            if node.level and mod in ("k8s", "wrapper", "reconciler", "tokens"):
+                mod = "agent_orchestrator." + mod
+            out.add(mod)
+            out.update(f"{mod}.{a.name}" for a in node.names)
+    return out
+
+
 def test_api_never_imports_k8s_or_wrapper():
-    banned = (
-        "agent_orchestrator.k8s",
-        "agent_orchestrator.wrapper",
-        "agent_orchestrator.reconciler",
-    )
+    """Only api/workspace.py (the proxy seam, N1) may call wrappers or derive tokens."""
+    always = ("agent_orchestrator.k8s", "agent_orchestrator.reconciler")
+    wrapper_tokens = ("agent_orchestrator.wrapper", "agent_orchestrator.tokens")
+    seam = "workspace.py"
     files = list(Path(api_pkg.__file__).parent.glob("*.py"))
     assert len(files) >= 6
+    assert seam in {f.name for f in files}
     for f in files:
-        for node in ast.walk(ast.parse(f.read_text())):
-            names: list[str] = []
-            if isinstance(node, ast.Import):
-                names = [a.name for a in node.names]
-            elif isinstance(node, ast.ImportFrom):
-                mod = node.module or ""
-                names = [mod] + [f"{mod}.{a.name}" for a in node.names]
-                if node.level and mod in ("k8s", "wrapper", "reconciler"):
-                    names.append("agent_orchestrator." + mod)
-            for n in names:
-                assert not n.startswith(banned), f"{f.name} imports {n}"
+        for n in _imports(f):
+            assert not n.startswith(always), f"{f.name} imports {n}"
+            if f.name != seam:
+                assert not n.startswith(wrapper_tokens), f"{f.name} imports {n}"
+    assert any(
+        n.startswith("agent_orchestrator.wrapper") for n in _imports(files[0].with_name(seam))
+    )
 
 
 async def test_meta_defaults(pool, dsn):

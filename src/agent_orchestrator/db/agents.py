@@ -148,3 +148,13 @@ async def list_agents(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID) -> l
             (cluster_id,),
         )
         return [Agent(**r) for r in await cur.fetchall()]
+
+
+async def list_states(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID) -> dict[uuid.UUID, str]:
+    """The stored `agent_status.state` of each agent of the cluster that has a status row."""
+    cur = await conn.execute(
+        "SELECT s.agent_id, s.state FROM agent_status s JOIN agents a ON a.id = s.agent_id"
+        " WHERE a.cluster_id = %s",
+        (cluster_id,),
+    )
+    return {agent_id: state for agent_id, state in await cur.fetchall()}
