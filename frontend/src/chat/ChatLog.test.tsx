@@ -24,7 +24,7 @@ const virtuosoProps = vi.hoisted(() => ({
     atBottomThreshold: number;
   },
 }));
-const api = vi.hoisted(() => ({ listEvents: vi.fn() }));
+const api = vi.hoisted(() => ({ listEvents: vi.fn(), listMessages: vi.fn(async () => []) }));
 const stream = vi.hoisted(() => ({
   opened: [] as { url: string; opts: StreamOptions }[],
   close: vi.fn(),
@@ -37,6 +37,8 @@ vi.mock("../api/client", async (orig) => ({
 }));
 vi.mock("../api/stream", () => ({
   openStream: (url: string, opts: StreamOptions) => {
+    // The queue strip's cluster status stream is not under test here.
+    if (!url.includes("/events/")) return { close: vi.fn() };
     stream.opened.push({ url, opts });
     return { close: stream.close };
   },

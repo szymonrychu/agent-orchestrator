@@ -6,6 +6,8 @@ import Typography from '@mui/material/Typography'
 import type { AgentView, ClusterView } from '../api/client'
 import { AgentFilter } from './AgentFilter'
 import { ChatLog } from './ChatLog'
+import { Composer } from './Composer'
+import { QueueStrip } from './QueueStrip'
 import { filterByAgents } from './chatModel'
 import { useClusterChat } from './useClusterChat'
 import { TOKENS } from '../theme'
@@ -39,6 +41,8 @@ export function ChatView({ cluster, agents }: ChatViewProps) {
       ) : (
         <ChatLog key={`${cluster.id}:${selected.join(',')}`} items={items} hasMoreBefore={chat.hasMoreBefore} loadingOlder={chat.loadingOlder} onLoadOlder={chat.loadOlder} />
       )}
+      <QueueStrip clusterId={cluster.id} />
+      <Composer key={cluster.id} clusterId={cluster.id} agents={agents} deleting={cluster.desired === 'deleting'} />
     </Box>
   )
 }
