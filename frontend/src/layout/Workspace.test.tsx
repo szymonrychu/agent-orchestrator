@@ -237,6 +237,30 @@ describe('Workspace', () => {
     expect(unmounted).not.toHaveBeenCalled()
   })
 
+  test('keyboard_resize_adopts_and_persists_sizes', () => {
+    mount()
+    const separator = screen.getAllByRole('separator')[0]
+    fireEvent.keyDown(separator, { key: 'ArrowRight' })
+    expect([grow('files'), grow('chat'), grow('terminal')]).toEqual([30, 40, 30])
+    expect(stored().sizes).toEqual([30, 40, 30])
+    expect(stored().collapsed).toEqual([])
+  })
+
+  test('keyboard_resize_survives_remount', () => {
+    const first = mount()
+    fireEvent.keyDown(screen.getAllByRole('separator')[0], { key: 'ArrowRight' })
+    first.unmount()
+    mount()
+    expect([grow('files'), grow('chat'), grow('terminal')]).toEqual([30, 40, 30])
+  })
+
+  test('drag_collapse_is_adopted_and_persisted', () => {
+    mount()
+    fireEvent.keyDown(screen.getAllByRole('separator')[0], { key: 'Home' })
+    expect(strip('files')).toBeTruthy()
+    expect(stored().collapsed).toEqual(['files'])
+  })
+
   test('unmounting the workspace unmounts its slots', () => {
     const view = mount()
     act(() => view.unmount())
