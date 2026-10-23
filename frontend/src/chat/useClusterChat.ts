@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { eventStreamUrl, listEvents } from '../api/client'
 import { openStream } from '../api/stream'
-import { applyEvents, emptyChat, prependHistory, trimWindow } from './chatModel'
+import { applyEvents, emptyChat, prependHistory, trimWindow, MAX_ITEMS } from './chatModel'
 import type { ChatItem, ChatState, EventRow } from './chatModel'
 
 export const PAGE_SIZE = 200
@@ -41,12 +41,16 @@ interface Loaded {
 
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 
-/** @param ordinals agent id to ordinal, used to tag rows. */
-export function useClusterChat(clusterId: string, ordinals: Readonly<Record<string, number>>): ClusterChat {
+/**
+ * @param ordinals agent id to ordinal, used to tag rows.
+ * @param maxItems live window size; injectable so tests can use a small window.
+ */
+export function useClusterChat(clusterId: string, ordinals: Readonly<Record<string, number>>, maxItems: number = MAX_ITEMS): ClusterChat {
   const fresh = (): Loaded => ({ chat: emptyChat(ordinals), hasMoreBefore: false, loading: true, loadingOlder: false, error: null })
   const [loaded, setLoaded] = useState<Loaded>(fresh)
   const epoch = useRef(0)
   const ordinalsRef = useRef(ordinals)
+  const maxItemsRef = useRef(maxItems)
   const oldestId = useRef<number | null>(null)
   const busyOlder = useRef(false)
   const moreBefore = useRef(false)
@@ -61,6 +65,10 @@ export function useClusterChat(clusterId: string, ordinals: Readonly<Record<stri
   useEffect(() => {
     ordinalsRef.current = ordinals
   }, [ordinals])
+
+  useEffect(() => {
+    maxItemsRef.current = maxItems
+  }, [maxItems])
 
   // The cluster id changing is the epoch boundary: everything from the previous cluster is dropped.
   const [shownCluster, setShownCluster] = useState(clusterId)
@@ -92,7 +100,7 @@ export function useClusterChat(clusterId: string, ordinals: Readonly<Record<stri
             const row = data as EventRow
             setLoaded((s) => {
               const applied = applyEvents(s.chat, [row])
-              const chat = trimWindow(applied)
+              const chat = trimWindow(applied, maxItemsRef.current)
               // Trimmed front items are older history again: page from the new oldest id.
               return chat === applied ? { ...s, chat } : { ...s, chat, hasMoreBefore: true }
             })

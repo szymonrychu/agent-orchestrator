@@ -106,10 +106,10 @@ const ev = (
 const text = (id: number, t: string, agent_id = "a0") =>
   ev(id, "assistant_text", { text: t }, agent_id);
 
-function mount(c: ClusterView = cluster) {
+function mount(c: ClusterView = cluster, maxItems?: number) {
   return render(
     <ThemeProvider theme={theme}>
-      <ChatView cluster={c} agents={agents} />
+      <ChatView cluster={c} agents={agents} maxItems={maxItems} />
     </ThemeProvider>,
   );
 }
@@ -267,28 +267,28 @@ describe("ChatLog", () => {
   });
 
   test("trims the live window and pages from the new oldest id", async () => {
-    const rows = Array.from({ length: 2000 }, (_, i) =>
+    const rows = Array.from({ length: 20 }, (_, i) =>
       text(i + 1, `e${i + 1}`),
     );
     api.listEvents.mockResolvedValue({
       events: rows,
       has_more_before: false,
-      next_after_id: 2000,
+      next_after_id: 20,
     });
-    mount();
-    await screen.findByText("e2000");
+    mount(cluster, 20);
+    await screen.findByText("e20");
     expect(screen.getByText("Start of history")).toBeTruthy();
     const start = virtuosoProps.last!.firstItemIndex;
     act(() =>
-      stream.opened[0].opts.onEvent(text(2001, "e2001"), {
+      stream.opened[0].opts.onEvent(text(21, "e21"), {
         type: "assistant_text",
-        id: "2001",
+        id: "21",
       }),
     );
     act(() =>
-      stream.opened[0].opts.onEvent(text(2002, "e2002"), {
+      stream.opened[0].opts.onEvent(text(22, "e22"), {
         type: "assistant_text",
-        id: "2002",
+        id: "22",
       }),
     );
     expect(screen.queryByText("e1")).toBeNull();

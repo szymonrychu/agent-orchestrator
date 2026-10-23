@@ -15,13 +15,15 @@ import { TOKENS } from '../theme'
 export interface ChatViewProps {
   cluster: ClusterView
   agents: AgentView[]
+  /** Live window size; defaults to the production MAX_ITEMS. */
+  maxItems?: number
 }
 
-export function ChatView({ cluster, agents }: ChatViewProps) {
+export function ChatView({ cluster, agents, maxItems }: ChatViewProps) {
   const [filter, setFilter] = useState<{ clusterId: string; ids: string[] }>({ clusterId: cluster.id, ids: [] })
   const selected = useMemo(() => (filter.clusterId === cluster.id ? filter.ids : []), [filter, cluster.id])
   const ordinals = useMemo(() => Object.fromEntries(agents.map((a) => [a.id, a.ordinal])), [agents])
-  const chat = useClusterChat(cluster.id, ordinals)
+  const chat = useClusterChat(cluster.id, ordinals, maxItems)
   const items = useMemo(() => filterByAgents(chat.items, selected), [chat.items, selected])
   const toggle = (id: string) => setFilter({ clusterId: cluster.id, ids: selected.includes(id) ? selected.filter((s) => s !== id) : [...selected, id] })
   return (
