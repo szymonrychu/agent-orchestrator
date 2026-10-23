@@ -521,13 +521,24 @@ async def test_files_errors(leg: Leg) -> None:
             assert (await anon.get(url)).status_code == 401
 
 
-async def test_files_paging_and_too_large(leg: Leg) -> None:
+@pytest.fixture
+async def fake_leg(fake: FakeWrapper) -> AsyncIterator[Leg]:
+    """A Leg over the fake alone, for controls the real image does not expose."""
+    http = httpx.AsyncClient(
+        base_url=fake.base_url, headers={"Authorization": f"Bearer {TOKEN}"}, timeout=30
+    )
+    try:
+        yield Leg("fake", fake.base_url, fake, http, [])
+    finally:
+        await http.aclose()
+
+
+async def test_fake_files_paging_and_too_large(fake_leg: Leg, fake: FakeWrapper) -> None:
     """Caps are config on the wrapper (2000 entries, 1 MiB); only the fake can lower them."""
-    if leg.fake is None:
-        pytest.skip("the real image keeps the default caps")
+    leg = fake_leg
     sid = await _tree(leg)
-    leg.fake.files_max_entries = 2
-    leg.fake.file_preview_max_bytes = 8
+    fake.files_max_entries = 2
+    fake.file_preview_max_bytes = 8
     first = (await leg.http.get(f"/v1/sessions/{sid}/files")).json()
     assert [e["name"] for e in first["entries"]] == ["src", ".hidden"]
     assert first["next_offset"] == 2
