@@ -23,6 +23,8 @@ export interface FormValues {
   memRequest: string
   memLimit: string
   hookUrl: string
+  /** Not editable in the form; carried so an edit does not reset it. */
+  image: string
 }
 
 export type FormErrors = Partial<Record<Exclude<keyof FormValues, 'env'>, string>> & { env?: (string | undefined)[] }
@@ -38,7 +40,7 @@ export function blankValues(meta: Meta | null): FormValues {
   return {
     slug: '', replicas: d ? String(d.replicas) : '', model: d?.model ?? '', effort: d?.effort ?? '', peers: true, workdir: 'workdir',
     pvcSize: d?.pvc_size ?? '', env: [], anyMcp: '', maxAttempts: d ? String(d.max_attempts) : '', autoCompact: d ? String(d.auto_compact_pct) : '',
-    cpuRequest: '', cpuLimit: '', memRequest: '', memLimit: '', hookUrl: '',
+    cpuRequest: '', cpuLimit: '', memRequest: '', memLimit: '', hookUrl: '', image: '',
   }
 }
 
@@ -49,7 +51,7 @@ export function valuesFromSpec(slug: string, spec: ClusterSpec): FormValues {
     pvcSize: spec.pvc_size ?? '', env: Object.entries(spec.env).map(([key, value]) => ({ key, value })),
     anyMcp: spec.any_mcp_config ? JSON.stringify(spec.any_mcp_config, null, 2) : '', maxAttempts: num(spec.max_attempts), autoCompact: num(spec.auto_compact_pct),
     cpuRequest: spec.resources?.requests.cpu ?? '', cpuLimit: spec.resources?.limits.cpu ?? '',
-    memRequest: spec.resources?.requests.memory ?? '', memLimit: spec.resources?.limits.memory ?? '', hookUrl: spec.discard_hook_url ?? '',
+    memRequest: spec.resources?.requests.memory ?? '', memLimit: spec.resources?.limits.memory ?? '', hookUrl: spec.discard_hook_url ?? '', image: spec.image ?? '',
   }
 }
 
@@ -128,5 +130,6 @@ export function toSpec(v: FormValues): ClusterSpec {
     any_mcp_config: v.anyMcp.trim() === '' ? null : (JSON.parse(v.anyMcp) as Record<string, unknown>),
     max_attempts: Number(v.maxAttempts), auto_compact_pct: v.autoCompact.trim() === '' ? null : Number(v.autoCompact),
     resources: hasResources ? { requests, limits } : null, discard_hook_url: orNull(v.hookUrl),
+    ...(v.image === '' ? {} : { image: v.image }),
   }
 }

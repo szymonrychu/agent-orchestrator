@@ -110,7 +110,7 @@ describe('ClusterForm', () => {
 
   test('edit patches spec', async () => {
     api.patchCluster.mockResolvedValue(existing())
-    wrap(<ClusterForm open mode="edit" cluster={existing()} onClose={vi.fn()} onSaved={vi.fn()} />)
+    wrap(<ClusterForm open mode="edit" cluster={existing({ image: 'reg/custom:1' })} onClose={vi.fn()} onSaved={vi.fn()} />)
     await waitFor(() => expect(field('Replicas').value).toBe('2'))
     expect(field('Slug').disabled).toBe(true)
     expect(field('PVC size').disabled).toBe(true)
@@ -120,6 +120,7 @@ describe('ClusterForm', () => {
     await userEvent.click(button('Save'))
     await waitFor(() => expect(api.patchCluster).toHaveBeenCalledTimes(1))
     const [id, body] = api.patchCluster.mock.calls[0]
+    expect(body.spec.image).toBe('reg/custom:1')
     expect(id).toBe('c-1')
     expect(body.spec).toMatchObject({ replicas: 4, pvc_size: '20Gi', workdir: 'work', env: { A: 'b' }, model: 'opus' })
     expect(body).not.toHaveProperty('slug')
