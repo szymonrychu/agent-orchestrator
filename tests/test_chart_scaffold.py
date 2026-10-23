@@ -4,9 +4,10 @@ from pathlib import Path
 
 import pytest
 import yaml
-from helm_render import CHART, lint, render, render_error
+from helm_render import CHART, LINT_VALUES, lint, render, render_error
 
 ROOT = CHART.parent.parent
+LINT = yaml.safe_load(LINT_VALUES.read_text())
 
 
 @pytest.fixture
@@ -43,7 +44,7 @@ def test_chart_metadata():
 
 
 def test_standard_helpers_and_labels(probe_chart: Path):
-    (cm,) = render(chart=probe_chart, release="orch")
+    (cm,) = render(LINT, chart=probe_chart, release="orch", show_only=["templates/probe.yaml"])
     labels = cm["metadata"]["labels"]
     assert labels["app.kubernetes.io/name"] == "agent-orchestrator"
     assert labels["app.kubernetes.io/instance"] == "orch"
@@ -84,8 +85,8 @@ def test_hpa_dropped():
 
 
 def test_render_helper_roundtrip(probe_chart: Path):
-    docs = render(chart=probe_chart, show_only=["templates/probe.yaml"], namespace="ns1")
+    docs = render(LINT, chart=probe_chart, show_only=["templates/probe.yaml"], namespace="ns1")
     assert [d["kind"] for d in docs] == ["ConfigMap"]
     # a bogus show-only path must fail and surface helm's text
-    text = render_error(show_only=["templates/missing.yaml"], chart=probe_chart)
+    text = render_error(LINT, show_only=["templates/missing.yaml"], chart=probe_chart)
     assert "missing.yaml" in text

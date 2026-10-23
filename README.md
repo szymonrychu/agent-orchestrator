@@ -66,3 +66,39 @@ Every process reads `ORCH_*` variables (the contract `agent-orchestrator-setting
 | `ORCH_ANY_MCP_REPO` | `https://github.com/szymonrychu/any-mcp` | api, reconciler | any-mcp git repository |
 | `ORCH_ANY_MCP_REF` | `v0.1.0` | api, reconciler | any-mcp pinned release tag vX.Y.Z (never a branch) |
 | `ORCH_ON_START_TIMEOUT_SECONDS` | `600` | api, reconciler | onStart hook timeout |
+
+## Helm chart
+
+The chart lives in `chart/agent-orchestrator` and is published to `oci://harbor.szymonrichert.pl/charts`. It installs into the one namespace the orchestrator manages; agent pods run in the release namespace.
+
+```sh
+helm install agent-orchestrator oci://harbor.szymonrichert.pl/charts/agent-orchestrator \
+  --namespace agents --create-namespace \
+  --set agentImage=harbor.szymonrichert.pl/containers/claude-code-wrapper:1.0.0 \
+  --set postgres.url=postgresql://orch:secret@postgres:5432/orch \
+  --set masterKey.value="$(openssl rand -hex 32)" \
+  --set claude.token="$CLAUDE_CODE_OAUTH_TOKEN"
+```
+
+### Postgres
+
+A Postgres connection is required. Set exactly one of these; none, or more than one, fails the render:
+
+1. `postgres.url`: a full URI, stored in the chart Secret `<fullname>-database` (key `uri`).
+2. `postgres.host`, `user`, `database` (with `password`, `port` default 5432, `sslmode`): composed into `postgresql://<user>:<password>@<host>:<port>/<database>[?sslmode=]` with user and password URL-escaped, stored in `<fullname>-database`.
+3. `postgres.existingSecret` (with `existingSecretKey`, default `uri`): the Secret is referenced directly and no database Secret is created.
+4. `cnpg.enabled=true`: the optional CloudNativePG feature. The chart renders a `postgresql.cnpg.io/v1` Cluster `<fullname>-db` (`instances`, `imageName`, `database`, `owner`, `storage`, `walStorage`, `resources`) and reads the connection URI from the operator's `<fullname>-db-app` Secret, key `uri`. A non-empty `cnpg.backup` is copied verbatim into `spec.backup`. The CNPG operator must already be installed; it is off by default.
+
+### Secrets
+
+| Secret | Key | Created when | Override |
+|---|---|---|---|
+| `<fullname>-database` | `uri` | `postgres.url` or the host parts are set | `postgres.existingSecret` |
+| `<fullname>-master-key` | `master-key` | `masterKey.value` is set | `masterKey.existingSecret` + `existingSecretKey` |
+| `<fullname>-claude` | `CLAUDE_CODE_OAUTH_TOKEN` | `claude.token` is set | `claude.existingSecret` + `existingSecretKey` |
+
+The master key and the Claude token each need a value or an `existingSecret`; with neither the render fails. The agent pods in the release namespace read the Claude Secret, so `existingSecret` must live there.
+
+### Settings ConfigMap
+
+`<fullname>-settings` carries `ORCH_NAMESPACE` (the release namespace), `ORCH_AGENT_IMAGE` (`agentImage`, required) and `ORCH_CLAUDE_SECRET_NAME` (`claude.existingSecret` or `<fullname>-claude`). Every entry of `env` is added verbatim; each key must start with `ORCH_` or the render fails naming it. No secret value is ever written to the ConfigMap; the database URL and master key reach the containers through `secretKeyRef`.

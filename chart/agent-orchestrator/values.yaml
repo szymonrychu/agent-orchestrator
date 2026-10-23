@@ -104,3 +104,65 @@ nodeSelector: {}
 tolerations: []
 
 affinity: {}
+
+# Extra ORCH_* settings, passed verbatim into the settings ConfigMap. Every key must
+# start with ORCH_; anything else fails the render.
+env: {}
+  # ORCH_LOG_LEVEL: info
+
+# Image of the claude-code-wrapper agent pods the reconciler creates (required,
+# becomes ORCH_AGENT_IMAGE).
+agentImage: ""
+
+# Postgres connection. A connection is required: set exactly one of
+#   1. cnpg.enabled=true              (the chart creates a CloudNativePG Cluster)
+#   2. postgres.existingSecret        (an existing Secret holding a connection URI)
+#   3. postgres.url                   (a full URI, stored in the chart Secret)
+#   4. postgres.host + user + database (+ password, port, sslmode), composed into a URI
+postgres:
+  url: ""
+  host: ""
+  port: 5432
+  database: ""
+  user: ""
+  # Raw password; user and password are URL-escaped when the URI is composed.
+  password: ""
+  # Empty omits ?sslmode= from the composed URI.
+  sslmode: ""
+  existingSecret: ""
+  existingSecretKey: uri
+
+# Optional CloudNativePG Cluster named <fullname>-db. Its app Secret <fullname>-db-app
+# (key uri) feeds ORCH_DATABASE_URL. Requires the CNPG operator and its CRDs.
+cnpg:
+  enabled: false
+  instances: 1
+  # Empty uses the operator default image.
+  imageName: ""
+  database: agent_orchestrator
+  owner: agent_orchestrator
+  storage:
+    size: 10Gi
+    storageClass: ""
+  walStorage:
+    enabled: false
+    size: 2Gi
+    storageClass: ""
+  resources: {}
+  # Rendered verbatim as the Cluster spec.backup when non-empty
+  # (barmanObjectStore, retentionPolicy, ...).
+  backup: {}
+
+# Key that encrypts stored per-cluster tokens (ORCH_MASTER_KEY). Set value (stored in
+# <fullname>-master-key) or point existingSecret at your own Secret; one is required.
+masterKey:
+  existingSecret: ""
+  existingSecretKey: master-key
+  value: ""
+
+# Claude OAuth token the agent pods read. Set token (stored in <fullname>-claude) or
+# point existingSecret at a Secret in the release namespace; one is required.
+claude:
+  existingSecret: ""
+  existingSecretKey: CLAUDE_CODE_OAUTH_TOKEN
+  token: ""
