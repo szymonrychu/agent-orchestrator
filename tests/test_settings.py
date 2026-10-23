@@ -210,3 +210,23 @@ def test_env_names_documented_in_readme():
     for name in Settings.model_fields:
         assert f"`ORCH_{name.upper()}`" in text, name
     assert re.search(r"`ORCH_MASTER_KEY_FILE`", text)
+
+
+def test_cross_field_errors_all_reported(monkeypatch):
+    monkeypatch.setenv("ORCH_MASTER_KEY", "short")
+    monkeypatch.setenv("ORCH_WRAPPER_SEND_TIMEOUT_SECONDS", "100")
+    monkeypatch.setenv("ORCH_DISCARD_HOOK_URL", "ftp://x")
+    monkeypatch.setenv("ORCH_ANY_MCP_REF", "main")
+    monkeypatch.setenv("ORCH_ALLOWED_CIDRS", "nope,10.0.0.0/8,bad2")
+    with pytest.raises(SettingsError) as e:
+        Settings()
+    for var in (
+        "ORCH_MASTER_KEY",
+        "ORCH_WRAPPER_SEND_TIMEOUT_SECONDS",
+        "ORCH_DISCARD_HOOK_URL",
+        "ORCH_ANY_MCP_REF",
+        "ORCH_ALLOWED_CIDRS",
+    ):
+        assert var in e.value.problems
+    assert "nope" in e.value.problems["ORCH_ALLOWED_CIDRS"]
+    assert "bad2" in e.value.problems["ORCH_ALLOWED_CIDRS"]

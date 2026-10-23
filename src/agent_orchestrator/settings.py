@@ -120,85 +120,89 @@ class Settings(BaseSettings):
                     problems.setdefault(_var(str(loc[0])), msg)
                 else:
                     problems.setdefault("ORCH_*", msg)
-            # cross-field errors carry their own variable names
+            # the aggregate validator carries its own variable names, one per line
             for name, msg in list(problems.items()):
-                if name == "ORCH_*" and ":" in msg:
-                    var, _, rest = msg.partition(": ")
+                if name == "ORCH_*":
                     del problems[name]
-                    problems[var] = rest
+                    for line in msg.splitlines():
+                        var, _, rest = line.partition(": ")
+                        problems.setdefault(var, rest)
             raise SettingsError(problems) from None
 
     _split = field_validator("models", "allowed_cidrs", "agent_images", mode="before")(
         lambda cls, v: _csv(v)
     )
 
-    @field_validator("allowed_cidrs")
-    @classmethod
-    def _cidrs(cls, v: list[str]) -> list[str]:
-        for entry in v:
+    @model_validator(mode="after")
+    def _validate_all(self) -> Settings:
+        problems: dict[str, str] = {}
+
+        def bad(var: str, msg: str) -> None:
+            problems.setdefault(var, msg)
+
+        bad_cidrs = []
+        for entry in self.allowed_cidrs:
             try:
                 ipaddress.ip_network(entry, strict=False)
-            except ValueError as exc:
-                raise ValueError(f"unparsable CIDR {entry!r}") from exc
-        return v
+            except ValueError:
+                bad_cidrs.append(entry)
+        if bad_cidrs:
+            bad("ORCH_ALLOWED_CIDRS", "unparsable CIDR " + ", ".join(repr(c) for c in bad_cidrs))
 
-    @field_validator("any_mcp_ref")
-    @classmethod
-    def _ref(cls, v: str) -> str:
-        if not _TAG_RE.match(v):
-            raise ValueError(f"{v!r} must be a pinned release tag like v1.2.3, not a branch")
-        return v
+        if not _TAG_RE.match(self.any_mcp_ref):
+            bad(
+                "ORCH_ANY_MCP_REF",
+                f"{self.any_mcp_ref!r} must be a pinned release tag like v1.2.3, not a branch",
+            )
 
-    @model_validator(mode="after")
-    def _resolve_master_key(self) -> Settings:
+        key_var = "ORCH_MASTER_KEY"
         if self.master_key_file:
+            key_var = "ORCH_MASTER_KEY_FILE"
             try:
                 self.master_key = Path(self.master_key_file).read_text()
             except OSError as exc:
-                msg = f"ORCH_MASTER_KEY_FILE: cannot read {self.master_key_file}: {exc}"
-                raise _Bad(msg) from exc
+                bad(key_var, f"cannot read {self.master_key_file}: {exc}")
+                self.master_key = None
         if self.master_key is not None:
             self.master_key = self.master_key.strip()
             if len(self.master_key.encode()) < MIN_MASTER_KEY_BYTES:
-                var = "ORCH_MASTER_KEY_FILE" if self.master_key_file else "ORCH_MASTER_KEY"
-                raise _Bad(f"{var}: master key must be at least {MIN_MASTER_KEY_BYTES} bytes")
+                bad(key_var, f"master key must be at least {MIN_MASTER_KEY_BYTES} bytes")
         if not self.check_image:
             self.check_image = self.agent_image
-        return self
 
-    @model_validator(mode="after")
-    def _timing(self) -> Settings:
-        if 2 * self.wrapper_send_timeout_seconds > self.dispatching_stale_seconds:
-            raise _Bad(
-                "ORCH_WRAPPER_SEND_TIMEOUT_SECONDS: must be at most half of "
-                "ORCH_DISPATCHING_STALE_SECONDS"
+        send = self.wrapper_send_timeout_seconds
+        if 2 * send > self.dispatching_stale_seconds:
+            bad(
+                "ORCH_WRAPPER_SEND_TIMEOUT_SECONDS",
+                "must be at most half of ORCH_DISPATCHING_STALE_SECONDS",
             )
-        if self.ambiguous_settle_seconds < 2 * self.wrapper_send_timeout_seconds:
-            raise _Bad(
-                "ORCH_AMBIGUOUS_SETTLE_SECONDS: must be at least twice "
-                "ORCH_WRAPPER_SEND_TIMEOUT_SECONDS"
+        if self.ambiguous_settle_seconds < 2 * send:
+            bad(
+                "ORCH_AMBIGUOUS_SETTLE_SECONDS",
+                "must be at least twice ORCH_WRAPPER_SEND_TIMEOUT_SECONDS",
             )
         if self.ambiguous_deadline_seconds <= self.ambiguous_settle_seconds:
-            raise _Bad("ORCH_AMBIGUOUS_DEADLINE_SECONDS: must exceed ORCH_AMBIGUOUS_SETTLE_SECONDS")
+            bad("ORCH_AMBIGUOUS_DEADLINE_SECONDS", "must exceed ORCH_AMBIGUOUS_SETTLE_SECONDS")
         if self.retry_backoff_base_seconds <= 0:
-            raise _Bad("ORCH_RETRY_BACKOFF_BASE_SECONDS: must be greater than 0")
+            bad("ORCH_RETRY_BACKOFF_BASE_SECONDS", "must be greater than 0")
         if self.retry_backoff_max_seconds < self.retry_backoff_base_seconds:
-            raise _Bad(
-                "ORCH_RETRY_BACKOFF_MAX_SECONDS: must be at least ORCH_RETRY_BACKOFF_BASE_SECONDS"
+            bad(
+                "ORCH_RETRY_BACKOFF_MAX_SECONDS",
+                "must be at least ORCH_RETRY_BACKOFF_BASE_SECONDS",
             )
-        return self
 
-    @model_validator(mode="after")
-    def _hook(self) -> Settings:
         if self.discard_hook_command and self.discard_hook_url:
-            raise _Bad(
-                "ORCH_DISCARD_HOOK_URL: set at most one of ORCH_DISCARD_HOOK_COMMAND "
-                "and ORCH_DISCARD_HOOK_URL"
+            bad(
+                "ORCH_DISCARD_HOOK_URL",
+                "set at most one of ORCH_DISCARD_HOOK_COMMAND and ORCH_DISCARD_HOOK_URL",
             )
         if self.discard_hook_url:
             parsed = urlparse(self.discard_hook_url)
             if parsed.scheme not in ("http", "https") or not parsed.netloc:
-                raise _Bad("ORCH_DISCARD_HOOK_URL: must be an http or https URL")
+                bad("ORCH_DISCARD_HOOK_URL", "must be an http or https URL")
+
+        if problems:
+            raise _Bad("\n".join(f"{k}: {v}" for k, v in problems.items()))
         return self
 
     def require_master_key(self) -> str:
