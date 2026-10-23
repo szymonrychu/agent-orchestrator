@@ -332,7 +332,7 @@ async def test_sessions_and_control_methods():
 
     c = client(h)
     ss = await c.list_sessions()
-    assert [s.has_transcript for s in ss] == [True, False]
+    assert [s.has_transcript for s in ss] == [True, None]
     await c.create_session("a", "/workdir/a", model="sonnet", effort="high")
     assert json.loads(seen[1][2]) == {
         "name": "a",

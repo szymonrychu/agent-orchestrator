@@ -32,13 +32,15 @@ class Snapshot(_Model):
     model: str | None = None
     workdir: str | None = None
     turns_completed: int = 0
-    # The wrapper does not report transcript presence; resume needs one, and claude writes it
-    # on its first turn. An explicit field wins if the wrapper ever adds it.
+    # The wrapper reports no transcript field (its resume check tests the file on disk). A
+    # completed turn proves a transcript exists (True); zero completed turns proves nothing,
+    # since an interrupted or failed first turn can still leave one, so that stays None
+    # (unknown) and callers must attempt resume rather than skip it. An explicit field wins.
     has_transcript: bool | None = None
 
     def model_post_init(self, _ctx: Any) -> None:
-        if self.has_transcript is None:
-            self.has_transcript = self.turns_completed > 0
+        if self.has_transcript is None and self.turns_completed > 0:
+            self.has_transcript = True
 
 
 class TurnSummary(_Model):
