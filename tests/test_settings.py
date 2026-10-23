@@ -283,3 +283,21 @@ def test_form_defaults_validated(monkeypatch):
         Settings()
     assert "ORCH_DEFAULT_CPU_REQUEST" in exc.value.problems
     assert "ORCH_DEFAULT_MEMORY_LIMIT" in exc.value.problems
+
+
+def test_default_model_and_effort_must_be_listed(monkeypatch):
+    monkeypatch.setenv("ORCH_MODELS", "a,b")
+    assert Settings().default_model == "a"
+    monkeypatch.setenv("ORCH_DEFAULT_MODEL", "zzz")
+    monkeypatch.setenv("ORCH_DEFAULT_EFFORT", "turbo")
+    with pytest.raises(SettingsError) as exc:
+        Settings()
+    assert "ORCH_DEFAULT_MODEL" in exc.value.problems
+    assert "ORCH_DEFAULT_EFFORT" in exc.value.problems
+
+
+def test_default_resources_request_above_limit_rejected(monkeypatch):
+    monkeypatch.setenv("ORCH_DEFAULT_CPU_REQUEST", "8")
+    with pytest.raises(SettingsError) as exc:
+        Settings()
+    assert "ORCH_DEFAULT_CPU_REQUEST" in exc.value.problems

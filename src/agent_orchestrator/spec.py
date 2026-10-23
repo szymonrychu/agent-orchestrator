@@ -169,6 +169,23 @@ def validate_spec(spec: ClusterSpec, settings: Settings) -> None:
         errors.append(f"model {spec.model!r} is not one of: {', '.join(settings.models)}")
     if spec.effort and spec.effort not in settings.efforts:
         errors.append(f"effort {spec.effort!r} is not one of: {', '.join(settings.efforts)}")
+    if spec.resources is not None:
+        merged = {
+            section: {**defaults, **getattr(spec.resources, section)}
+            for section, defaults in settings.default_resources().items()
+        }
+        for key in ("cpu", "memory"):
+            try:
+                over = parse_quantity(merged["requests"][key]) > parse_quantity(
+                    merged["limits"][key]
+                )
+            except ValueError:
+                continue  # an unparsable quantity is reported by the Resources model
+            if over:
+                errors.append(
+                    f"resources: {key} request {merged['requests'][key]} exceeds "
+                    f"limit {merged['limits'][key]} (unset keys use the cluster defaults)"
+                )
     if spec.replicas > settings.max_replicas:
         errors.append(f"replicas {spec.replicas} exceeds the maximum {settings.max_replicas}")
     if spec.pvc_size is not None:

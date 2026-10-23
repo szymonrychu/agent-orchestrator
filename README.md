@@ -25,7 +25,7 @@ Every process reads `ORCH_*` variables (the contract `agent-orchestrator-setting
 | `ORCH_NAMESPACE` | `agents` | api, reconciler, dispatcher | the one namespace of the orchestrator and every agent cluster |
 | `ORCH_AGENT_IMAGE` | empty | api, reconciler | claude-code-wrapper image the agent pods run (required to create clusters) |
 | `ORCH_CHECK_IMAGE` | empty | dispatcher | image for check jobs; defaults to agent_image |
-| `ORCH_DEFAULT_MODEL` | `claude-opus-5-5` | api, reconciler | default model for new sessions (prefilled in the form) |
+| `ORCH_DEFAULT_MODEL` | first of `ORCH_MODELS` | api, reconciler | default model for new sessions (prefilled in the form) |
 | `ORCH_DEFAULT_EFFORT` | empty | api, reconciler | default effort; empty means the Claude Code default |
 | `ORCH_MODELS` | `claude-opus-5-5,claude-sonnet-5-5,claude-haiku-5-5,claude-fable-5-1` | api | comma-separated model choices; a spec naming another model is rejected |
 | `ORCH_EFFORTS` | `low,medium,high,xhigh,max` | api | comma-separated effort choices; a spec naming another effort is rejected (empty effort is allowed) |

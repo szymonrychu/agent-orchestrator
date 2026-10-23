@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     agent_image: str = ""
     check_image: str = ""
 
-    default_model: str = "claude-opus-5-5"
+    default_model: str = ""  # empty = the first entry of models
     default_effort: str = ""
     models: CsvList = [
         "claude-opus-5-5",
@@ -179,6 +179,43 @@ class Settings(BaseSettings):
             raise _Bad(f"{v!r} must be a positive quantity")
         return v
 
+    @field_validator("efforts")
+    @classmethod
+    def _check_default_effort(cls, v: list[str], info: ValidationInfo) -> list[str]:
+        effort = info.data.get("default_effort")
+        if effort and effort not in v:
+            raise _Bad(f"ORCH_DEFAULT_EFFORT::{effort!r} is not one of ORCH_EFFORTS")
+        return v
+
+    @field_validator("models")
+    @classmethod
+    def _check_default_model(cls, v: list[str], info: ValidationInfo) -> list[str]:
+        if not v:
+            raise _Bad("must list at least one model")
+        model = info.data.get("default_model")
+        if model and model not in v:
+            raise _Bad(f"ORCH_DEFAULT_MODEL::{model!r} is not one of ORCH_MODELS")
+        return v
+
+    @field_validator("default_memory_limit")
+    @classmethod
+    def _check_request_within_limit(cls, v: str, info: ValidationInfo) -> str:
+        data = info.data
+        for res, req_key, lim in (
+            ("CPU", "default_cpu_request", data.get("default_cpu_limit")),
+            ("MEMORY", "default_memory_request", v),
+        ):
+            req = data.get(req_key)
+            if req is None or lim is None:
+                continue
+            try:
+                over = parse_quantity(req) > parse_quantity(lim)
+            except ValueError:
+                continue  # reported on its own
+            if over:
+                raise _Bad(f"ORCH_DEFAULT_{res}_REQUEST::must not exceed ORCH_DEFAULT_{res}_LIMIT")
+        return v
+
     @field_validator("any_mcp_ref")
     @classmethod
     def _check_ref(cls, v: str) -> str:
@@ -265,6 +302,8 @@ class Settings(BaseSettings):
     def _resolve(self) -> Settings:
         if self.master_key_file:
             self.master_key = Path(self.master_key_file).read_text().strip()
+        if not self.default_model:
+            self.default_model = self.models[0]
         if not self.check_image:
             self.check_image = self.agent_image
         return self

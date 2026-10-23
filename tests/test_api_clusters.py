@@ -415,3 +415,17 @@ async def test_spec_rejects_unknown_model_and_effort(pool, dsn):
         assert (
             await c.post("/api/v1/clusters", json={"slug": "ok2", "spec": empty})
         ).status_code == 201
+
+
+async def test_spec_rejects_merged_requests_above_limits(pool, dsn):
+    app = create_app(make_settings(dsn), pool)
+    async with client_for(app) as c:
+        for res in (
+            {"requests": {"cpu": "8"}},
+            {"limits": {"memory": "512Mi"}},
+        ):
+            r = await c.post("/api/v1/clusters", json={"slug": "bad", "spec": {"resources": res}})
+            assert_error(r, 422, "invalid_request")
+        ok = {"requests": {"cpu": "2"}, "limits": {"memory": "2Gi"}}
+        r = await c.post("/api/v1/clusters", json={"slug": "ok", "spec": {"resources": ok}})
+        assert r.status_code == 201

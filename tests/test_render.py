@@ -32,6 +32,7 @@ def make_settings(**over) -> Settings:
         "master_key": "m" * 32,
         "agent_image": IMAGE,
         "default_model": "sonnet",
+        "models": ["sonnet", "claude-opus-5-5"],
     }
     base.update(over)
     return Settings(**base)
