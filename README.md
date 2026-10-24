@@ -340,8 +340,24 @@ NOTIFY payloads are wake-up hints that carry ids only. Every loop also polls, be
 | `events` | `{cluster_id, max_id}` | ingester | events stream |
 | `status` | `{cluster_id}` | ingester, dispatcher, reconciler | status stream |
 | `leadership_requested` | `{cluster_id}` | api (leadership routes) | dispatcher |
+| `leader_changed` | `{cluster_id, agent_id, epoch}` | dispatcher (leadership pass) | hive-state push, cluster stream |
 
 Polling fallbacks: dispatcher `ORCH_DISPATCH_POLL_SECONDS` (2 s), reconciler `ORCH_RECONCILE_POLL_SECONDS` (10 s), ingester stream refresh `ORCH_INGEST_REFRESH_SECONDS` (5 s); the api SSE streams re-read on a 5 s poll when no NOTIFY arrives.
+
+### Leadership
+
+Every hive cluster (`coalesce(spec.max_replicas, spec.replicas) > 1`) has at most one leader row in `cluster_leaders`, written only by the dispatcher in `leadership_pass` (`db/leadership.py`). Alone clusters never get a leader row. The pass is one transaction under the per-cluster claim lock (`pg_try_advisory_xact_lock` with the claim namespace and `hashtext(cluster_id)`, the lock `claim_and_pick` takes), so a leader change and a message claim never interleave; a dispatcher that cannot take the lock skips the cluster for that wake. Each pass runs three steps in order:
+
+1. Initial leader (Q2). With no leader row, the lowest-ordinal ready agent (ready, not gone, with a session) becomes leader at epoch 1, reason `initial`. The new row starts `feed_cursor` at the cluster's newest event id, so history is never pushed as current activity.
+2. Queued requests, in id order. Each is decided with one `WHERE status = 'queued'` guarded update that sets `status`, `reject_reason` and `decided_at`, and is checked against the leader as it is at apply time, not when it was queued:
+   - `handover`: rejected `not_leader` unless `from_agent_id` is the current leader; `stale_epoch` unless its epoch equals the current epoch; a named target must be in the cluster, ready, not gone and not the leader, else `target_not_ready`; without a target the ready agent free the longest other than the leader is picked (idle first, then `free_since` ascending, then id, the claim's order), and with none the request is rejected `no_peers`. Applied: reason `handover: <reason>`.
+   - `user` (Q10, the make-leader override): the target must be in the cluster, ready and not gone, else `target_not_ready`. The epoch is not checked (user requests carry none). A target that already leads is applied with no change and no epoch bump. Applied: reason `user`.
+   - An applied change writes the target, `epoch + 1` and `since = now()`.
+3. Lost leader. A gone leader, or one not ready for longer than `LEADER_GRACE_SECONDS` (30 s, a module constant), is replaced by the ready agent free the longest at `epoch + 1`, reason `leader_lost`; with no ready agent the row stays. `unready_since` is set when a pass first sees the leader not ready and cleared by the next pass that sees it ready again, so two separate short unready windows never add up to a takeover.
+
+Every change sends `NOTIFY leader_changed {cluster_id, agent_id, epoch}`.
+
+Election and lost-leader detection are poll-driven. Readiness is observed by the reconciler and is not a NOTIFY the dispatcher hears, so the initial election, the grace clock and the takeover run on the next dispatcher drain, within `ORCH_DISPATCH_POLL_SECONDS` of the readiness change. "The first ready agent leads" therefore means the lowest-ordinal ready agent at the first pass that sees one ready, within the poll window, not the first instantaneous ready event. Requests are applied promptly: `leadership_requested` wakes the dispatcher. Each drain runs the pass, before claiming messages, for hive clusters with queued requests, with no leader row while an agent could lead, whose leader is gone or not ready, or whose `unready_since` is still set.
 
 ## Delivery and retries
 
@@ -403,6 +419,7 @@ Plain SQL migrations (`src/agent_orchestrator/db/migrations`), psycopg 3, no ORM
 | `events` | every stored wrapper event; UNIQUE(agent_id, session_id, seq); the global bigserial id is the SSE id and the page cursor |
 | `commands` | queue: `interrupt`, `compact`, `restart`, `rebootstrap` with status and result |
 | `leadership_requests` | queue: `handover` (from the leader) or `user` requests with target agent, epoch, status (`queued`, `applied`, `rejected`); the api inserts, the dispatcher decides |
+| `cluster_leaders` | one row per hive: leader agent, `epoch`, `since`, `reason` (`initial`, `handover: <reason>`, `user`, `leader_lost`), `unready_since`, feed cursor and pushed hive-state hash; the dispatcher is the only writer (see Leadership) |
 | `checks` | queue: a shell command run as a Kubernetes Job; exit code and log tail |
 
 ## API

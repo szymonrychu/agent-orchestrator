@@ -1,4 +1,4 @@
-"""Dispatcher loop: claim, send, map the outcome, run commands, hand stale rows to the verifier.
+"""Dispatcher loop: leadership, claim, send, map the outcome, run commands, verify stale rows.
 
 The dispatcher never writes agent_status (free_since moves only through the ingester) and never
 re-sends an ambiguous or stale turn: those go to `verifying` and the verifier decides (D24).
@@ -14,7 +14,7 @@ from typing import Any
 import httpx
 from psycopg_pool import AsyncConnectionPool
 
-from agent_orchestrator.db import queue
+from agent_orchestrator.db import leadership, queue
 from agent_orchestrator.db.pool import listen
 from agent_orchestrator.dispatcher.verify import Verifier, cluster_max_attempts
 from agent_orchestrator.settings import Settings
@@ -33,7 +33,7 @@ from agent_orchestrator.wrapper.models import (
 log = logging.getLogger(__name__)
 
 MAX_IN_FLIGHT = 8
-CHANNELS = ("agent_free", "message_queued")
+CHANNELS = ("agent_free", "message_queued", leadership.CHANNEL)
 COMMAND_KINDS = ("interrupt", "compact")
 
 
@@ -102,11 +102,34 @@ class Dispatcher:
     # ------------------------------------------------------------------ one wake
 
     async def drain(self) -> None:
+        await self._drain_leadership()
         await self._drain_messages()
         await self._drain_commands()
         async with self.pool.connection() as conn:
             await queue.verify_stale_dispatching(conn, self.settings.dispatching_stale_seconds)
         await self.verify_pending()
+
+    async def _drain_leadership(self) -> None:
+        """Run the leadership pass for every hive cluster that needs one (D7).
+
+        Before the claims, so a message claimed on this wake already sees the new leader. One
+        failing cluster is logged and never holds up the others or the message drain.
+        """
+        async with self.pool.connection() as conn:
+            for cluster_id in await leadership.leadership_candidates(conn):
+                try:
+                    change = await leadership.leadership_pass(conn, cluster_id)
+                except Exception:
+                    log.exception("leadership pass for cluster %s failed", cluster_id)
+                    continue
+                if change is not None:
+                    log.info(
+                        "cluster %s leader %s epoch %s (%s)",
+                        cluster_id,
+                        change.agent_id,
+                        change.epoch,
+                        change.reason,
+                    )
 
     async def verify_pending(self) -> int:
         """Check verifying messages against their wrappers, once per wake and poll (D24)."""

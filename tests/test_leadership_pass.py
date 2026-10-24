@@ -1,0 +1,483 @@
+"""Leadership pass: election, epoch-fenced requests, lost-leader fallback, one lock, NOTIFY."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import re
+import time
+import uuid
+from pathlib import Path
+
+import psycopg
+from factories import insert_agent, insert_cluster, insert_event, set_agent_status
+from psycopg.rows import dict_row
+
+from agent_orchestrator.db import leadership
+from agent_orchestrator.db.queue import _CLAIM_LOCK_NAMESPACE
+from agent_orchestrator.dispatcher import Dispatcher
+from agent_orchestrator.dispatcher.loop import CHANNELS
+from agent_orchestrator.settings import Settings
+
+README = Path(__file__).resolve().parents[1] / "README.md"
+
+
+# ---------------------------------------------------------------- helpers
+
+
+async def hive(pool, n: int = 3, *, ready: bool = True, max_replicas: int = 4) -> tuple:
+    """A hive cluster with `n` agents, each ready (or not) with a session, free `ordinal` s ago."""
+    c = await insert_cluster(pool, spec={"replicas": n, "max_replicas": max_replicas})
+    agents = []
+    for i in range(n):
+        a = await insert_agent(pool, c["id"], ordinal=i, ready=ready, session_id=f"s{i}")
+        await set_agent_status(pool, a["id"], state="idle")
+        agents.append(a)
+    return c, agents
+
+
+async def run(pool, sql: str, params: tuple = ()) -> None:
+    async with pool.connection() as conn:
+        await conn.execute(sql, params)
+
+
+async def rows(pool, sql: str, params: tuple = ()) -> list[dict]:
+    async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(sql, params)
+        return await cur.fetchall()
+
+
+async def leader_row(pool, cluster_id) -> dict | None:
+    got = await rows(pool, "SELECT * FROM cluster_leaders WHERE cluster_id = %s", (cluster_id,))
+    return got[0] if got else None
+
+
+async def set_leader(pool, cluster_id, agent_id, epoch: int = 3) -> None:
+    await run(
+        pool,
+        "INSERT INTO cluster_leaders (cluster_id, agent_id, epoch, since, reason)"
+        " VALUES (%s, %s, %s, now(), 'initial')",
+        (cluster_id, agent_id, epoch),
+    )
+
+
+async def free_ago(pool, agent_id, seconds: float, state: str = "idle") -> None:
+    await run(
+        pool,
+        "UPDATE agent_status SET state = %s, free_since = now() - make_interval(secs => %s)"
+        " WHERE agent_id = %s",
+        (state, seconds, agent_id),
+    )
+
+
+async def request(pool, cluster_id, kind, frm=None, to=None, reason="full", epoch=None) -> int:
+    async with pool.connection() as conn:
+        return await leadership.insert_request(conn, cluster_id, kind, frm, to, reason, epoch)
+
+
+async def decided(pool, request_id: int) -> tuple:
+    r = (
+        await rows(
+            pool,
+            "SELECT status, reject_reason, decided_at FROM leadership_requests WHERE id = %s",
+            (request_id,),
+        )
+    )[0]
+    assert r["decided_at"] is not None
+    return (r["status"], r["reject_reason"])
+
+
+async def lpass(pool, cluster_id):
+    async with pool.connection() as conn:
+        return await leadership.leadership_pass(conn, cluster_id)
+
+
+class Notes:
+    """Collect `leader_changed` payloads on a dedicated LISTEN connection."""
+
+    def __init__(self, dsn: str) -> None:
+        self.dsn = dsn
+        self.got: list[dict] = []
+
+    async def __aenter__(self) -> Notes:
+        self.conn = await psycopg.AsyncConnection.connect(self.dsn, autocommit=True)
+        await self.conn.execute("LISTEN leader_changed")
+        return self
+
+    async def drain(self, timeout: float = 0.5) -> list[dict]:
+        async for n in self.conn.notifies(timeout=timeout):
+            self.got.append(json.loads(n.payload))
+        return self.got
+
+    async def __aexit__(self, *exc) -> None:
+        await self.conn.close()
+
+
+# ---------------------------------------------------------------- AC1, AC11
+
+
+async def test_initial_leader(pool):
+    c, (a0, a1, a2) = await hive(pool)
+    await insert_event(pool, c["id"], a1["id"])
+    last = await insert_event(pool, c["id"], a1["id"])
+    change = await lpass(pool, c["id"])
+    assert change is not None
+    assert (change.cluster_id, change.agent_id, change.epoch, change.reason) == (
+        c["id"],
+        a0["id"],
+        1,
+        "initial",
+    )
+    row = await leader_row(pool, c["id"])
+    assert (row["agent_id"], row["epoch"], row["reason"]) == (a0["id"], 1, "initial")
+    assert row["since"] is not None and row["unready_since"] is None
+    # history is never pushed as current activity: the cursor starts at the newest event
+    assert row["feed_cursor"] == last["id"]
+    # a second pass changes nothing
+    assert await lpass(pool, c["id"]) is None
+    assert (await leader_row(pool, c["id"]))["epoch"] == 1
+
+
+async def test_initial_leader_needs_ready_agent_with_session(pool):
+    c, (a0, a1, _a2) = await hive(pool, ready=False)
+    assert await lpass(pool, c["id"]) is None
+    assert await leader_row(pool, c["id"]) is None
+    await run(pool, "UPDATE agents SET ready = true, session_id = NULL WHERE id = %s", (a0["id"],))
+    assert await lpass(pool, c["id"]) is None  # ready but no session yet
+    await run(pool, "UPDATE agents SET ready = true WHERE id = %s", (a1["id"],))
+    change = await lpass(pool, c["id"])
+    assert change is not None and change.agent_id == a1["id"]
+
+
+async def test_poll_driven_election_lowest_ordinal(pool):
+    c, (a0, a1, a2) = await hive(pool, ready=False)
+    # ordinal 2 then ordinal 1 become ready between two passes: the next pass (the poll)
+    # elects the lowest ordinal ready, not the first ready event
+    await run(pool, "UPDATE agents SET ready = true WHERE id = %s", (a2["id"],))
+    await run(pool, "UPDATE agents SET ready = true WHERE id = %s", (a1["id"],))
+    change = await lpass(pool, c["id"])
+    assert change is not None and change.agent_id == a1["id"]
+    text = README.read_text()
+    m = re.search(r"^### Leadership\n(.*?)(?=^## |^### )", text, re.S | re.M)
+    assert m, "README has no ### Leadership section"
+    section = " ".join(m.group(1).split())
+    assert "poll-driven" in section
+    assert "ORCH_DISPATCH_POLL_SECONDS" in section
+    assert "lowest-ordinal ready agent" in section
+    assert "within the poll window" in section
+    for word in ("leader_changed", "leadership_requested", "LEADER_GRACE_SECONDS"):
+        assert word in section, word
+
+
+# ---------------------------------------------------------------- AC2, AC3, AC4
+
+
+async def test_handover_named(pool):
+    c, (a0, a1, a2) = await hive(pool)
+    await set_leader(pool, c["id"], a0["id"], epoch=3)
+    rid = await request(pool, c["id"], "handover", a0["id"], a2["id"], "context full", 3)
+    change = await lpass(pool, c["id"])
+    assert change is not None
+    assert (change.agent_id, change.epoch, change.reason) == (
+        a2["id"],
+        4,
+        "handover: context full",
+    )
+    assert await decided(pool, rid) == ("applied", None)
+    row = await leader_row(pool, c["id"])
+    assert (row["agent_id"], row["epoch"], row["reason"]) == (
+        a2["id"],
+        4,
+        "handover: context full",
+    )
+
+
+async def test_handover_any(pool):
+    c, (a0, a1, a2) = await hive(pool)
+    await set_leader(pool, c["id"], a0["id"], epoch=3)
+    await free_ago(pool, a0["id"], 900)  # the leader itself is never picked
+    await free_ago(pool, a1["id"], 10)
+    await free_ago(pool, a2["id"], 300)  # free the longest of the others
+    rid = await request(pool, c["id"], "handover", a0["id"], None, "done", 3)
+    change = await lpass(pool, c["id"])
+    assert change is not None and (change.agent_id, change.epoch) == (a2["id"], 4)
+    assert await decided(pool, rid) == ("applied", None)
+
+
+async def test_handover_rejections(pool):
+    c, (a0, a1, a2) = await hive(pool)
+    await set_leader(pool, c["id"], a0["id"], epoch=3)
+    not_leader = await request(pool, c["id"], "handover", a1["id"], a2["id"], "x", 3)
+    stale = await request(pool, c["id"], "handover", a0["id"], a2["id"], "x", 2)
+    await run(pool, "UPDATE agents SET ready = false WHERE id = %s", (a1["id"],))
+    unready = await request(pool, c["id"], "handover", a0["id"], a1["id"], "x", 3)
+    to_self = await request(pool, c["id"], "handover", a0["id"], a0["id"], "x", 3)
+    await run(pool, "UPDATE agents SET gone_at = now() WHERE id = %s", (a2["id"],))
+    gone = await request(pool, c["id"], "handover", a0["id"], a2["id"], "x", 3)
+    other_c, (stranger,) = await hive(pool, 1)
+    foreign = await request(pool, c["id"], "handover", a0["id"], stranger["id"], "x", 3)
+    no_peers = await request(pool, c["id"], "handover", a0["id"], None, "x", 3)
+    assert await lpass(pool, c["id"]) is None
+    assert await decided(pool, not_leader) == ("rejected", "not_leader")
+    assert await decided(pool, stale) == ("rejected", "stale_epoch")
+    assert await decided(pool, unready) == ("rejected", "target_not_ready")
+    assert await decided(pool, to_self) == ("rejected", "target_not_ready")
+    assert await decided(pool, gone) == ("rejected", "target_not_ready")
+    assert await decided(pool, foreign) == ("rejected", "target_not_ready")
+    assert await decided(pool, no_peers) == ("rejected", "no_peers")
+    row = await leader_row(pool, c["id"])
+    assert (row["agent_id"], row["epoch"]) == (a0["id"], 3)
+
+
+async def test_epoch_rechecked_at_apply_time(pool):
+    """Two handovers queued at the same epoch: the first applies, the second is now stale."""
+    c, (a0, a1, a2) = await hive(pool)
+    await set_leader(pool, c["id"], a0["id"], epoch=3)
+    first = await request(pool, c["id"], "handover", a0["id"], a1["id"], "x", 3)
+    # queued by the old leader before the first one was applied
+    second = await request(pool, c["id"], "handover", a0["id"], a2["id"], "x", 3)
+    # queued by the new leader at the new epoch, decided in the same pass
+    third = await request(pool, c["id"], "handover", a1["id"], a2["id"], "y", 4)
+    change = await lpass(pool, c["id"])
+    assert await decided(pool, first) == ("applied", None)
+    assert await decided(pool, second) == ("rejected", "not_leader")
+    assert await decided(pool, third) == ("applied", None)
+    assert change is not None and (change.agent_id, change.epoch) == (a2["id"], 5)
+
+
+# ---------------------------------------------------------------- AC5
+
+
+async def test_user_override(pool):
+    c, (a0, a1, a2) = await hive(pool)
+    await set_leader(pool, c["id"], a0["id"], epoch=3)
+    # a user request carries no epoch and is never fenced on it
+    rid = await request(pool, c["id"], "user", None, a1["id"], "user", None)
+    change = await lpass(pool, c["id"])
+    assert change is not None and (change.agent_id, change.epoch, change.reason) == (
+        a1["id"],
+        4,
+        "user",
+    )
+    assert await decided(pool, rid) == ("applied", None)
+    # the target already leads: applied, no epoch bump, no change
+    again = await request(pool, c["id"], "user", None, a1["id"], "user", None)
+    assert await lpass(pool, c["id"]) is None
+    assert await decided(pool, again) == ("applied", None)
+    row = await leader_row(pool, c["id"])
+    assert (row["agent_id"], row["epoch"], row["reason"]) == (a1["id"], 4, "user")
+    # an unready or gone target is rejected
+    await run(pool, "UPDATE agents SET ready = false WHERE id = %s", (a2["id"],))
+    unready = await request(pool, c["id"], "user", None, a2["id"], "user", None)
+    await run(pool, "UPDATE agents SET ready = true, gone_at = now() WHERE id = %s", (a2["id"],))
+    gone = await request(pool, c["id"], "user", None, a2["id"], "user", None)
+    assert await lpass(pool, c["id"]) is None
+    assert await decided(pool, unready) == ("rejected", "target_not_ready")
+    assert await decided(pool, gone) == ("rejected", "target_not_ready")
+    assert (await leader_row(pool, c["id"]))["epoch"] == 4
+
+
+# ---------------------------------------------------------------- AC6, AC10
+
+
+async def test_lost_leader_fallback(pool):
+    c, (a0, a1, a2) = await hive(pool)
+    await set_leader(pool, c["id"], a0["id"], epoch=3)
+    await free_ago(pool, a1["id"], 100)
+    await free_ago(pool, a2["id"], 10)
+    # gone: replaced at once by the ready agent free the longest
+    await run(pool, "UPDATE agents SET gone_at = now() WHERE id = %s", (a0["id"],))
+    change = await lpass(pool, c["id"])
+    assert change is not None
+    assert (change.agent_id, change.epoch, change.reason) == (a1["id"], 4, "leader_lost")
+    # unready: first sight records unready_since, no takeover inside the grace
+    await run(pool, "UPDATE agents SET ready = false WHERE id = %s", (a1["id"],))
+    assert await lpass(pool, c["id"]) is None
+    row = await leader_row(pool, c["id"])
+    assert row["unready_since"] is not None and (row["agent_id"], row["epoch"]) == (a1["id"], 4)
+    # past the grace: the ready agent free the longest takes over
+    await run(
+        pool,
+        "UPDATE cluster_leaders SET unready_since = now() - make_interval(secs => %s)"
+        " WHERE cluster_id = %s",
+        (leadership.LEADER_GRACE_SECONDS + 1, c["id"]),
+    )
+    change = await lpass(pool, c["id"])
+    assert change is not None
+    assert (change.agent_id, change.epoch, change.reason) == (a2["id"], 5, "leader_lost")
+    row = await leader_row(pool, c["id"])
+    assert row["unready_since"] is None
+    # with no ready agent left, the row stays
+    await run(pool, "UPDATE agents SET ready = false WHERE cluster_id = %s", (c["id"],))
+    await run(
+        pool,
+        "UPDATE cluster_leaders SET unready_since = now() - interval '1 hour'"
+        " WHERE cluster_id = %s",
+        (c["id"],),
+    )
+    assert await lpass(pool, c["id"]) is None
+    row = await leader_row(pool, c["id"])
+    assert (row["agent_id"], row["epoch"]) == (a2["id"], 5)
+
+
+async def test_unready_since_cleared_when_ready(pool):
+    assert leadership.LEADER_GRACE_SECONDS == 30
+    c, (a0, a1, _a2) = await hive(pool)
+    await set_leader(pool, c["id"], a0["id"], epoch=1)
+
+    async def unready_for(seconds: int) -> None:
+        await run(pool, "UPDATE agents SET ready = false WHERE id = %s", (a0["id"],))
+        assert await lpass(pool, c["id"]) is None  # first sight
+        await run(
+            pool,
+            "UPDATE cluster_leaders SET unready_since = unready_since"
+            " - make_interval(secs => %s) WHERE cluster_id = %s",
+            (seconds, c["id"]),
+        )
+        assert await lpass(pool, c["id"]) is None  # still inside the grace
+
+    await unready_for(20)
+    await run(pool, "UPDATE agents SET ready = true WHERE id = %s", (a0["id"],))
+    async with pool.connection() as conn:
+        assert c["id"] in await leadership.leadership_candidates(conn)  # the clear is due
+    assert await lpass(pool, c["id"]) is None
+    assert (await leader_row(pool, c["id"]))["unready_since"] is None
+    await unready_for(20)
+    row = await leader_row(pool, c["id"])
+    assert (row["agent_id"], row["epoch"]) == (a0["id"], 1)
+
+
+# ---------------------------------------------------------------- AC7
+
+
+async def test_concurrent_passes_single_change(pool, dsn):
+    c, (a0, a1, _a2) = await hive(pool)
+    # a pass that cannot take the cluster lock is skipped
+    async with await psycopg.AsyncConnection.connect(dsn) as holder:
+        await holder.execute(
+            "SELECT pg_advisory_xact_lock(%s, hashtext(%s::text))",
+            (_CLAIM_LOCK_NAMESPACE, c["id"]),
+        )
+        assert await lpass(pool, c["id"]) is None
+        assert await leader_row(pool, c["id"]) is None
+        await holder.rollback()
+
+    async with Notes(dsn) as notes:
+        conns = [await psycopg.AsyncConnection.connect(dsn) for _ in range(4)]
+        try:
+            got = await asyncio.gather(*(leadership.leadership_pass(k, c["id"]) for k in conns))
+            assert sum(g is not None for g in got) == 1
+            rid = await request(pool, c["id"], "handover", a0["id"], None, "x", 1)
+            for _ in range(3):
+                got = await asyncio.gather(*(leadership.leadership_pass(k, c["id"]) for k in conns))
+                assert sum(g is not None for g in got) <= 1
+        finally:
+            for k in conns:
+                await k.close()
+        payloads = await notes.drain()
+    assert await decided(pool, rid) == ("applied", None)
+    row = await leader_row(pool, c["id"])
+    assert row["epoch"] == 2
+    assert [p["epoch"] for p in payloads] == [1, 2]
+
+
+# ---------------------------------------------------------------- AC8
+
+
+async def test_alone_untouched_and_notify(pool, dsn):
+    alone = await insert_cluster(pool, spec={"replicas": 1})
+    solo = await insert_agent(pool, alone["id"], ordinal=0, ready=True, session_id="s0")
+    capped = await insert_cluster(pool, spec={"replicas": 1, "max_replicas": 1})
+    await insert_agent(pool, capped["id"], ordinal=0, ready=True, session_id="s0")
+    rid = await request(pool, alone["id"], "user", None, solo["id"], "user", None)
+    for cl in (alone, capped):
+        assert await lpass(pool, cl["id"]) is None
+        assert await leader_row(pool, cl["id"]) is None
+    assert (await rows(pool, "SELECT status FROM leadership_requests WHERE id = %s", (rid,)))[0][
+        "status"
+    ] == "queued"
+    async with pool.connection() as conn:
+        candidates = await leadership.leadership_candidates(conn)
+    assert alone["id"] not in candidates and capped["id"] not in candidates
+
+    c, (a0, a1, a2) = await hive(pool)
+    async with Notes(dsn) as notes:
+        await lpass(pool, c["id"])  # initial
+        await request(pool, c["id"], "handover", a0["id"], a1["id"], "x", 1)
+        await request(pool, c["id"], "user", None, a2["id"], "user", None)
+        await lpass(pool, c["id"])  # handover then user, two changes in one pass
+        await run(pool, "UPDATE agents SET gone_at = now() WHERE id = %s", (a2["id"],))
+        await lpass(pool, c["id"])  # leader lost
+        payloads = await notes.drain()
+    assert payloads == [
+        {"cluster_id": str(c["id"]), "agent_id": str(a0["id"]), "epoch": 1},
+        {"cluster_id": str(c["id"]), "agent_id": str(a1["id"]), "epoch": 2},
+        {"cluster_id": str(c["id"]), "agent_id": str(a2["id"]), "epoch": 3},
+        {"cluster_id": str(c["id"]), "agent_id": str(a0["id"]), "epoch": 4},
+    ]
+
+
+# ---------------------------------------------------------------- dispatcher wiring
+
+
+def make_settings(dsn: str, **kw) -> Settings:
+    return Settings(database_url=dsn, master_key="k" * 32, **kw)
+
+
+async def test_candidates(pool):
+    c_new, _ = await hive(pool)  # no leader row yet, a ready agent
+    c_idle, (b0, _b1, _b2) = await hive(pool)  # a healthy leader, nothing queued
+    await set_leader(pool, c_idle["id"], b0["id"])
+    c_req, (r0, r1, _r2) = await hive(pool)
+    await set_leader(pool, c_req["id"], r0["id"])
+    await request(pool, c_req["id"], "user", None, r1["id"])
+    c_gone, (g0, _g1, _g2) = await hive(pool)
+    await set_leader(pool, c_gone["id"], g0["id"])
+    await run(pool, "UPDATE agents SET gone_at = now() WHERE id = %s", (g0["id"],))
+    c_unready, (u0, _u1, _u2) = await hive(pool)
+    await set_leader(pool, c_unready["id"], u0["id"])
+    await run(pool, "UPDATE agents SET ready = false WHERE id = %s", (u0["id"],))
+    c_booting, _ = await hive(pool, ready=False)  # no leader row and nobody ready
+    async with pool.connection() as conn:
+        got = set(await leadership.leadership_candidates(conn))
+    assert got == {c_new["id"], c_req["id"], c_gone["id"], c_unready["id"]}
+    assert c_idle["id"] not in got and c_booting["id"] not in got
+
+
+async def test_drain_runs_the_pass(pool, dsn):
+    c, (a0, a1, _a2) = await hive(pool)
+    d = Dispatcher(pool, make_settings(dsn))
+    try:
+        await d.drain()
+        assert (await leader_row(pool, c["id"]))["agent_id"] == a0["id"]
+        rid = await request(pool, c["id"], "handover", a0["id"], a1["id"], "x", 1)
+        await d.drain()
+        assert await decided(pool, rid) == ("applied", None)
+        assert (await leader_row(pool, c["id"]))["agent_id"] == a1["id"]
+    finally:
+        await d.aclose()
+
+
+async def test_leadership_requested_wakes_dispatcher(pool, dsn):
+    assert leadership.CHANNEL in CHANNELS
+    c, (a0, a1, _a2) = await hive(pool)
+    await set_leader(pool, c["id"], a0["id"], epoch=1)
+    d = Dispatcher(pool, make_settings(dsn, dispatch_poll_seconds=60))
+    stop = asyncio.Event()
+    task = asyncio.create_task(d.run(stop))
+    try:
+        await asyncio.sleep(0.5)  # initial drain done, listening
+        rid = await request(pool, c["id"], "user", None, a1["id"])
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if (await leader_row(pool, c["id"]))["agent_id"] == a1["id"]:
+                break
+            await asyncio.sleep(0.05)
+        assert await decided(pool, rid) == ("applied", None)
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, 5)
+
+
+async def test_unknown_cluster_is_a_no_op(pool):
+    assert await lpass(pool, uuid.uuid4()) is None
