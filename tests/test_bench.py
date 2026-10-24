@@ -26,7 +26,10 @@ SPEC = {
 class FakeApi:
     """Just enough of /api/v1 for the bench: one agent per replica, instant turns."""
 
-    def __init__(self, *, verify_status="passed", stream_ok=True, turn_status="completed"):
+    def __init__(
+        self, *, verify_status="passed", stream_ok=True, turn_status="completed", view_ok=True
+    ):
+        self.view_ok = view_ok
         self.calls: list[tuple[str, str]] = []
         self.bodies: dict[str, dict] = {}
         self.clusters: dict[str, int] = {}
@@ -45,6 +48,8 @@ class FakeApi:
             self.bodies[cid] = body
             return httpx.Response(201, json={"id": cid, "slug": body["slug"]})
         if m == "GET" and path.startswith("/api/v1/clusters/") and path.count("/") == 4:
+            if not self.view_ok:
+                return httpx.Response(500, text="boom")
             return httpx.Response(200, json={"id": path.rsplit("/", 1)[1], "leader_epoch": 4})
         if path.endswith("/agents"):
             n = self.clusters[path.split("/")[4]]
@@ -276,3 +281,10 @@ def test_example_has_hive_arm():
     hive = next(a for a in spec.arms if a.name == "hive3")
     assert (hive.replicas, hive.peers) == (3, True)
     assert "hive" in Path("examples/bench.yaml").read_text().split("arms:")[0]
+
+
+def test_leader_epoch_none_when_cluster_view_fails(caplog):
+    with caplog.at_level("WARNING", logger="agent_orchestrator.bench"):
+        recs, _ = run(FakeApi(view_ok=False))
+    assert recs and all(r["leader_epoch"] is None for r in recs)
+    assert "reading leader epoch" in caplog.text
