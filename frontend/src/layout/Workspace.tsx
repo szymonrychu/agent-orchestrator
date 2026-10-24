@@ -31,9 +31,12 @@ const STRIP_WIDTH = 40
 
 const layoutKey = (clusterId: string) => `layout:${clusterId}`
 
+/** The library's inline `flex-basis: auto` beats a stylesheet flex shorthand, so the size is also passed as an inline style. */
+const DIVIDER_WIDTH = 2
+
 const Divider = styled(Separator)(({ theme }) => ({
-  flex: `0 0 ${theme.spacing(0.5)}`,
-  backgroundColor: theme.palette.divider,
+  flex: `0 0 ${DIVIDER_WIDTH}px`,
+  backgroundColor: TOKENS.borderStrong,
   '&[data-separator="hover"], &[data-separator="active"], &:focus-visible': { backgroundColor: theme.palette.primary.main, outline: 'none' },
 }))
 
@@ -149,7 +152,7 @@ function Desktop({ layout, onLayout, slots }: { layout: PanelLayout; onLayout: (
   return (
     <Group orientation="horizontal" groupRef={group} onLayoutChanged={onLayoutChanged} style={{ height: '100%' }}>
       {PANELS.flatMap((name, i) => [
-        ...(i > 0 ? [<Divider key={`sep-${name}`} disableDoubleClick onDoubleClick={() => onLayout(reset())} />] : []),
+        ...(i > 0 ? [<Divider key={`sep-${name}`} style={{ flexBasis: DIVIDER_WIDTH }} disableDoubleClick onDoubleClick={() => onLayout(reset())} />] : []),
         <Panel
           key={name}
           id={name}

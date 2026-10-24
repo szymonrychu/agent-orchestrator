@@ -3,9 +3,7 @@ import Folder from '@mui/icons-material/Folder'
 import FolderOpen from '@mui/icons-material/FolderOpen'
 import InsertDriveFileOutlined from '@mui/icons-material/InsertDriveFileOutlined'
 import Link from '@mui/icons-material/Link'
-import Refresh from '@mui/icons-material/Refresh'
 import Box from '@mui/material/Box'
-import IconButton from '@mui/material/IconButton'
 import Typography from '@mui/material/Typography'
 import { SimpleTreeView } from '@mui/x-tree-view/SimpleTreeView'
 import { TreeItem } from '@mui/x-tree-view/TreeItem'
@@ -20,6 +18,7 @@ import { createFileEvents } from './fileEvents'
 import { errorText, joinPath, useFileTree } from './useFileTree'
 
 const WATCHED_EVENTS = ['tool_call', 'tool_result']
+const POLL_MS = 3000
 
 const entryId = (path: string) => `e:${path}`
 const moreId = (dir: string) => `more:${dir}`
@@ -85,7 +84,7 @@ function PreviewBody({ preview }: { preview: PreviewState }) {
 
 export function FilesPanel({ clusterId }: { clusterId: string }) {
   const tree = useFileTree(clusterId)
-  const { state, setExpanded, loadMore, refresh, refreshExpanded, isLoaded, root } = tree
+  const { state, setExpanded, loadMore, refresh, refreshExpanded, pollExpanded, isLoaded, root } = tree
   const [stored, setPreview] = useState<Preview | null>(null)
   // A preview belongs to the cluster it was opened in: a cluster switch drops it.
   const preview = stored?.clusterId === clusterId ? stored : null
@@ -123,12 +122,49 @@ export function FilesPanel({ clusterId }: { clusterId: string }) {
         if (p && p.path === path && p.state !== 'other') openFile(path)
       },
     })
-    const stream = openStream(eventStreamUrl(clusterId), { eventNames: WATCHED_EVENTS, onEvent: (data) => events.handle(data) })
+    const stream = openStream(eventStreamUrl(clusterId), { eventNames: WATCHED_EVENTS, onEvent: (data) => events.handle(data), onOpen: pollExpanded })
     return () => {
       stream.close()
       events.dispose()
     }
-  }, [clusterId, root, isLoaded, refresh, refreshExpanded, openFile])
+  }, [clusterId, root, isLoaded, refresh, refreshExpanded, pollExpanded, openFile])
+
+  // Safety net for writers the hooks never see (terminal shells, check jobs) and for a tree that loaded in error: poll while the tab is visible, plus one pass on return.
+  useEffect(() => {
+    let timer: ReturnType<typeof setInterval> | undefined
+    const stop = () => {
+      clearInterval(timer)
+      timer = undefined
+    }
+    const sync = () => {
+      stop()
+      if (document.visibilityState !== 'visible') return
+      pollExpanded()
+      timer = setInterval(pollExpanded, POLL_MS)
+    }
+    if (document.visibilityState === 'visible') timer = setInterval(pollExpanded, POLL_MS)
+    document.addEventListener('visibilitychange', sync)
+    return () => {
+      document.removeEventListener('visibilitychange', sync)
+      stop()
+    }
+  }, [pollExpanded])
+
+  // The open file changed on disk (mtime or size in its parent listing): refetch the preview.
+  const seen = useRef<{ path: string; stamp: string | null } | null>(null)
+  useEffect(() => {
+    if (!preview || preview.state === 'other') {
+      seen.current = null
+      return
+    }
+    const slash = preview.path.lastIndexOf('/')
+    const name = preview.path.slice(slash + 1)
+    const e = state.dirs[slash < 0 ? '' : preview.path.slice(0, slash)]?.entries.find((x) => x.name === name)
+    const stamp = e ? `${e.mtime}|${e.size}` : null
+    const prev = seen.current
+    seen.current = { path: preview.path, stamp: stamp ?? (prev?.path === preview.path ? prev.stamp : null) }
+    if (prev?.path === preview.path && stamp !== null && prev.stamp !== null && stamp !== prev.stamp) openFile(preview.path)
+  }, [state.dirs, preview, openFile])
 
   const types = useMemo(() => {
     const out = new Map<string, FileEntry['type']>()
@@ -146,11 +182,6 @@ export function FilesPanel({ clusterId }: { clusterId: string }) {
       previewToken.current += 1
       setPreview({ path, clusterId, state: 'other' })
     }
-  }
-
-  const onRefresh = () => {
-    refreshExpanded()
-    if (preview && preview.state !== 'other') openFile(preview.path)
   }
 
   const children = (dir: string): ReactNode[] => {
@@ -187,9 +218,6 @@ export function FilesPanel({ clusterId }: { clusterId: string }) {
         <Typography noWrap sx={{ flexGrow: 1, fontFamily: MONO_FONT, ...noteSx }}>
           {state.root ?? ''}
         </Typography>
-        <IconButton size="small" aria-label="Refresh files" onClick={onRefresh}>
-          <Refresh fontSize="inherit" />
-        </IconButton>
       </Box>
       {top?.error && (
         <Box role="alert" sx={{ ...noteSx, color: 'error.main', px: 1 }}>

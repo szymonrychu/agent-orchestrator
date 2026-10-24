@@ -32,6 +32,8 @@ export interface FileTree {
   refresh: (path: string) => void
   /** Re-fetch the root and every expanded directory. */
   refreshExpanded: () => void
+  /** Quiet refresh of the root and every expanded directory: skips directories mid-load and retries a failed or missing root. */
+  pollExpanded: () => void
   isLoaded: (path: string) => boolean
   root: () => string | null
 }
@@ -52,11 +54,16 @@ function append(entries: FileEntry[], page: FileEntry[]): FileEntry[] {
   return [...entries, ...page.filter((e) => !seen.has(e.name))]
 }
 
+const sameEntries = (a: FileEntry[], b: FileEntry[]): boolean =>
+  a.length === b.length && a.every((e, i) => e.name === b[i].name && e.type === b[i].type && e.size === b[i].size && e.mtime === b[i].mtime)
+
 export function useFileTree(clusterId: string): FileTree {
   const [state, setState] = useState<TreeState>(initial)
   const ref = useRef(state)
   const epoch = useRef(0)
   const seq = useRef<Record<string, number>>({})
+  // Token of the request in flight per path; a refresh does not mark the dir as loading, so it is tracked here too.
+  const busy = useRef<Record<string, number>>({})
 
   const update = useCallback((fn: (s: TreeState) => TreeState) => {
     ref.current = fn(ref.current)
@@ -84,7 +91,12 @@ export function useFileTree(clusterId: string): FileTree {
       const token = (seq.current[path] = (seq.current[path] ?? 0) + 1)
       const live = () => epoch.current === mine && seq.current[path] === token
       const wanted = mode === 'refresh' ? (dir?.entries.length ?? 0) : 0
-      patchDir(path, (d) => ({ ...d, loading: true, error: null }))
+      busy.current[path] = token
+      const finish = () => {
+        if (busy.current[path] === token) delete busy.current[path]
+      }
+      // A refresh stays silent until its listing differs, so an idle one causes no state change.
+      if (mode !== 'refresh' || !dir) patchDir(path, (d) => ({ ...d, loading: true, error: null }))
       const run = async () => {
         let entries = mode === 'more' ? (dir?.entries ?? []) : []
         let offset: number | undefined = mode === 'more' ? (dir?.nextOffset ?? undefined) : undefined
@@ -93,13 +105,25 @@ export function useFileTree(clusterId: string): FileTree {
           if (!live()) return
           entries = offset === undefined ? page.entries : append(entries, page.entries)
           offset = page.next_offset ?? undefined
-          const settle = (done: boolean) =>
+          const settle = (done: boolean) => {
+            const cur = ref.current.dirs[path]
+            if (
+              done && mode === 'refresh' && cur && !cur.loading && cur.error === null && cur.nextOffset === page.next_offset &&
+              ref.current.root === page.root && !(path === '' && ref.current.missing) && sameEntries(cur.entries, entries)
+            )
+              return
             patchDir(path, () => ({ entries, nextOffset: page.next_offset, loading: !done, error: null }), { root: page.root, ...(path === '' ? { missing: false } : {}) })
-          if (offset === undefined || mode !== 'refresh' || entries.length >= wanted) return settle(true)
-          settle(false)
+          }
+          if (offset === undefined || mode !== 'refresh' || entries.length >= wanted) {
+            settle(true)
+            return finish()
+          }
+          // A multi-page refresh commits once, at the end, so an idle poll never shrinks the list.
+          if (mode !== 'refresh') settle(false)
         }
       }
       run().catch((e: unknown) => {
+        finish()
         if (!live()) return
         const missing = path === '' && e instanceof ApiError && e.code === 'not_found'
         patchDir(path, (d) => ({ ...d, loading: false, error: missing ? null : errorText(e) }), path === '' ? { missing } : undefined)
@@ -111,6 +135,7 @@ export function useFileTree(clusterId: string): FileTree {
   useEffect(() => {
     epoch.current += 1
     seq.current = {}
+    busy.current = {}
     ref.current = initial()
     load('', 'first')
     return () => {
@@ -141,11 +166,19 @@ export function useFileTree(clusterId: string): FileTree {
   const refreshExpanded = useCallback(() => {
     for (const p of ['', ...ref.current.expanded]) load(p, ref.current.dirs[p] ? 'refresh' : 'first')
   }, [load])
+  const pollExpanded = useCallback(() => {
+    const { dirs, expanded, missing } = ref.current
+    for (const p of ['', ...expanded]) {
+      if (p in busy.current || dirs[p]?.loading) continue
+      const retry = p === '' && (missing || !dirs[p] || dirs[p].error !== null)
+      load(p, dirs[p] && !retry ? 'refresh' : 'first')
+    }
+  }, [load])
   const isLoaded = useCallback((path: string) => path in ref.current.dirs, [])
   const root = useCallback(() => ref.current.root, [])
 
   return useMemo(
-    () => ({ state, expand, collapse, setExpanded, loadMore, refresh, refreshExpanded, isLoaded, root }),
-    [state, expand, collapse, setExpanded, loadMore, refresh, refreshExpanded, isLoaded, root],
+    () => ({ state, expand, collapse, setExpanded, loadMore, refresh, refreshExpanded, pollExpanded, isLoaded, root }),
+    [state, expand, collapse, setExpanded, loadMore, refresh, refreshExpanded, pollExpanded, isLoaded, root],
   )
 }
