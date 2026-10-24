@@ -50,7 +50,7 @@ def test_defaults():
     assert s.log_level == "INFO"
     assert s.discard_hook_timeout_seconds == 120
     assert s.any_mcp_repo == "https://github.com/szymonrychu/any-mcp"
-    assert s.any_mcp_ref == "v0.1.0"
+    assert s.any_mcp_ref == "v0.2.0"
     assert s.on_start_timeout_seconds == 600
     assert s.discard_hook() is None
 

@@ -52,10 +52,10 @@
       \ give\n    your recommended answer, worded so that replying \"yes\" accepts\
       \ it. Then stop and\n    wait for the reply. Never wait on an interactive question\
       \ tool.'\nlimits:\n  shutdown_timeout_seconds: 80\n"
-    on-start.sh: "#!/bin/sh\nset -eu\nREF=v0.1.0\nif ! grep -qxF -- \"$REF\" /opt/any-mcp/.ref\
+    on-start.sh: "#!/bin/sh\nset -eu\nREF=v0.2.0\nif ! grep -qxF -- \"$REF\" /opt/any-mcp/.ref\
       \ 2>/dev/null; then\n  rm -rf /opt/any-mcp/* /opt/any-mcp/.ref\n  python3 -m\
       \ venv /opt/any-mcp\n  /opt/any-mcp/bin/pip install --no-cache-dir 'any-mcp\
-      \ @ git+https://github.com/szymonrychu/any-mcp@v0.1.0'\n  printf '%s\\n' \"\
+      \ @ git+https://github.com/szymonrychu/any-mcp@v0.2.0'\n  printf '%s\\n' \"\
       $REF\" > /opt/any-mcp/.ref\nfi\nmkdir -p /opt/any-mcp/etc\ncat > /opt/any-mcp/etc/any-mcp.yaml\
       \ <<'ANY_MCP_CONFIG_EOF'\n{}\nANY_MCP_CONFIG_EOF\n/opt/any-mcp/bin/any-mcp --help\
       \ >/dev/null\n"
@@ -99,7 +99,7 @@
           agents.szymonrichert.pl/cluster: solo
           app.kubernetes.io/managed-by: agent-orchestrator
         annotations:
-          agents.szymonrichert.pl/config-hash: 0a4f6a797f1642a8b1654a55948da6b85265198f136716dab8562456c6db6c46
+          agents.szymonrichert.pl/config-hash: e064c1d2247bd67ad1153a93dd928854e9b724e1c80e7d554ef0dd10be606387
       spec:
         imagePullSecrets:
         - name: regcred

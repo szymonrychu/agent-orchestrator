@@ -209,7 +209,7 @@ def test_config_hash_rolls_pods():
     assert hash_of(make_cluster()) == base
     assert hash_of(make_cluster(any_mcp_config={"a": 1})) != base
     assert hash_of(make_cluster(model="opus")) != base
-    assert hash_of(make_cluster(), any_mcp_ref="v0.2.0") != base
+    assert hash_of(make_cluster(), any_mcp_ref="v9.9.9") != base
 
 
 def test_all_objects_in_namespace():
