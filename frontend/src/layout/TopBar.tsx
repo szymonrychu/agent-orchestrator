@@ -1,4 +1,4 @@
-/** Top bar: hamburger menu, one tab per cluster (state mark, slug, context gauge) and a New cluster button. */
+/** Top bar: hamburger menu, one tab per cluster (state mark, slug with its preset name, context gauge) and a New cluster button. */
 import { useState } from 'react'
 import AddIcon from '@mui/icons-material/Add'
 import MenuIcon from '@mui/icons-material/Menu'
@@ -12,6 +12,7 @@ import MenuItem from '@mui/material/MenuItem'
 import Tab from '@mui/material/Tab'
 import Tabs from '@mui/material/Tabs'
 import Tooltip from '@mui/material/Tooltip'
+import Typography from '@mui/material/Typography'
 import { ContextGauge } from '../ribbon/ContextGauge'
 import { StateMark } from '../ribbon/stateMark'
 import type { ClusterEntry } from '../ribbon/useClusters'
@@ -55,7 +56,10 @@ export function TopBar({ clusters, selectedId, onSelect, onNew, onDiscard, setti
             label={
               <Box component="span" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                 <StateMark state={cluster.summary.state} />
-                <Box component="span" sx={{ fontWeight: TOKENS.fontWeights.medium }}>{cluster.slug}</Box>
+                <Box component="span" sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', textAlign: 'left' }}>
+                  <Box component="span" sx={{ fontWeight: TOKENS.fontWeights.medium }}>{cluster.slug}</Box>
+                  {cluster.preset_name ? <Typography variant="caption" color="text.secondary" noWrap sx={{ maxWidth: 160, textTransform: 'none' }}>{cluster.preset_name}</Typography> : null}
+                </Box>
                 {cluster.status.discard_hook_failed ? (
                   <Tooltip title="discard hook failed">
                     <ErrorOutlineIcon fontSize="small" color="error" role="img" aria-label="discard hook failed" />

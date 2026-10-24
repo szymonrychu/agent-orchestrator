@@ -2,8 +2,8 @@ import { useState } from 'react'
 import Box from '@mui/material/Box'
 import Typography from '@mui/material/Typography'
 import { ChatView } from './chat/ChatView'
-import { ClusterForm } from './clusters/ClusterForm'
 import { DiscardClusterDialog } from './clusters/DiscardClusterDialog'
+import { NewClusterDialog } from './clusters/NewClusterDialog'
 import { FilesPanel } from './files/FilesPanel'
 import type { ClusterView } from './api/client'
 import { TopBar } from './layout/TopBar'
@@ -43,7 +43,7 @@ export default function App() {
           state.loaded && !state.error && <Typography color="text.secondary">No clusters yet</Typography>
         )}
       </Box>
-      <ClusterForm open={creating} mode="create" onClose={() => setCreating(false)} onSaved={(c) => { setCreating(false); select(c.id) }} />
+      <NewClusterDialog open={creating} onClose={() => setCreating(false)} onCreated={(c) => { setCreating(false); select(c.id) }} />
       {discarding && <DiscardClusterDialog open cluster={discarding} onClose={() => setDiscarding(null)} onDiscarded={() => setDiscarding(null)} />}
     </Box>
   )

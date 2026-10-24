@@ -2,12 +2,12 @@
 import { ThemeProvider } from '@mui/material/styles'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
-import type { AgentView, ClusterView, Meta } from './api/client'
+import type { AgentView, ClusterView, Meta, PresetView } from './api/client'
 import type { StreamOptions } from './api/stream'
 import App from './App'
 import { theme } from './theme'
 
-const api = vi.hoisted(() => ({ listClusters: vi.fn(), listAgents: vi.fn(), getMeta: vi.fn(), createCluster: vi.fn(), deleteCluster: vi.fn() }))
+const api = vi.hoisted(() => ({ listClusters: vi.fn(), listAgents: vi.fn(), getMeta: vi.fn(), listPresets: vi.fn(), createCluster: vi.fn(), deleteCluster: vi.fn() }))
 const stream = vi.hoisted(() => ({ opts: null as null | StreamOptions, close: vi.fn() }))
 
 vi.mock('./api/client', async (orig) => ({ ...(await orig<typeof import('./api/client')>()), ...api, statusStreamUrl: () => '/api/v1/stream' }))
@@ -53,6 +53,9 @@ const meta = (): Meta => ({
   discard_hook: 'none', models: ['opus', 'sonnet', 'haiku'], efforts: ['low', 'medium', 'high', 'max'],
 }) as Meta
 
+const preset = (id: string, name: string, is_default = false): PresetView => ({ created_at: '2026-01-01T00:00:00Z', id, is_default, name, spec: {}, updated_at: '2026-01-01T00:00:00Z' })
+const PRESETS = [preset('p-default', 'Default', true), preset('p-big', 'Big box')]
+
 function emit(type: string, data: unknown) {
   act(() => stream.opts!.onEvent(data, { type, id: '1' }))
 }
@@ -76,6 +79,7 @@ beforeEach(() => {
   api.listClusters.mockResolvedValue([cluster('c2', 'beta', { state: 'waiting', ready: 1, replicas: 1, context_pct_max: 10 }), cluster('c1', 'alpha')])
   api.listAgents.mockImplementation(async (id: string) => (id === 'c1' ? [agent('a0', 0), agent('a1', 1)] : []))
   api.getMeta.mockResolvedValue(meta())
+  api.listPresets.mockResolvedValue(PRESETS)
 })
 afterEach(() => {
   cleanup()
@@ -189,20 +193,23 @@ describe('App', () => {
     mount()
     await waitFor(() => expect(tabs()).toHaveLength(2))
     fireEvent.click(screen.getByRole('button', { name: 'New cluster' }))
-    expect(await screen.findByLabelText('Slug')).toBeTruthy()
+    expect(await screen.findByRole('combobox', { name: 'Preset' })).toBeTruthy()
+    expect(screen.queryByLabelText('Max attempts')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(screen.queryByLabelText('Slug')).toBeNull())
+    expect(api.createCluster).not.toHaveBeenCalled()
 
-    const created = cluster('c5', 'zeta')
+    const created = { ...cluster('c5', 'zeta'), preset_id: 'p-default', preset_name: 'Default' }
     api.createCluster.mockResolvedValue(created)
     fireEvent.click(screen.getByRole('button', { name: 'New cluster' }))
     const slug = (await screen.findByLabelText('Slug')) as HTMLInputElement
-    await waitFor(() => expect((screen.getByLabelText('Max attempts') as HTMLInputElement).value).toBe('5'))
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Preset' }).textContent).toBe('Default'))
     fireEvent.change(slug, { target: { value: 'zeta' } })
-    fireEvent.click(screen.getByRole('button', { name: /^(Create|Save)/ }))
-    await waitFor(() => expect(api.createCluster).toHaveBeenCalled())
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    await waitFor(() => expect(api.createCluster).toHaveBeenCalledWith({ preset_id: 'p-default', slug: 'zeta' }))
     emit('cluster_status', { cluster: created })
     await waitFor(() => expect(selectedTab()?.textContent).toContain('zeta'))
+    expect(selectedTab()?.textContent).toContain('Default')
     await waitFor(() => expect(screen.queryByLabelText('Slug')).toBeNull())
 
     fireEvent.click(screen.getAllByRole('button', { name: 'Cluster actions' })[0])

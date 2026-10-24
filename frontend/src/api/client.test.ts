@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, deleteCluster, listEvents, retryMessage } from './client';
+import { ApiError, copyPreset, createCluster, createPreset, deleteCluster, deletePreset, getPreset, listEvents, listPresets, retryMessage, updatePreset } from './client';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -30,5 +30,34 @@ describe('client', () => {
     expect(calls[1][0]).toBe('/api/v1/messages/m1/retry');
     expect(calls[2][0]).toBe('/api/v1/clusters/c1');
     expect(calls[2][1].method).toBe('DELETE');
+  });
+});
+
+describe('preset client', () => {
+  it('calls the documented preset routes', async () => {
+    const f = vi.fn(async () => new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', f);
+    await listPresets();
+    await getPreset('p 1');
+    await createPreset({ name: 'n', spec: { env: {}, max_attempts: 5, peers: true, replicas: 1, workdir: 'w' } });
+    await updatePreset('p1', { name: 'n2', spec: { env: {}, max_attempts: 5, peers: true, replicas: 2, workdir: 'w' } });
+    await deletePreset('p1');
+    await copyPreset('p1');
+    await copyPreset('p1', { name: 'dup' });
+    await createCluster({ preset_id: 'p1', slug: 's' });
+    const calls = f.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls.map(([url, init]) => `${init.method} ${url}`)).toEqual([
+      'GET /api/v1/presets',
+      'GET /api/v1/presets/p%201',
+      'POST /api/v1/presets',
+      'PUT /api/v1/presets/p1',
+      'DELETE /api/v1/presets/p1',
+      'POST /api/v1/presets/p1/copy',
+      'POST /api/v1/presets/p1/copy',
+      'POST /api/v1/clusters',
+    ]);
+    expect(calls[5][1].body).toBeUndefined();
+    expect(calls[6][1].body).toBe('{"name":"dup"}');
+    expect(calls[7][1].body).toBe('{"preset_id":"p1","slug":"s"}');
   });
 });

@@ -48,6 +48,17 @@ describe('TopBar', () => {
     expect(within(tabs[0]).getByText('1/1')).toBeTruthy()
   })
 
+  test('tab_shows_preset_name', () => {
+    const named = cluster('c3', 'charlie', 'working', 10)
+    named.cluster = { ...named.cluster, preset_id: 'p1', preset_name: 'Big box' } as ClusterView
+    setup({ clusters: [...CLUSTERS, named] })
+    const tabs = screen.getAllByRole('tab')
+    expect(within(tabs[2]).getByText('Big box')).toBeTruthy()
+    expect(tabs[2].textContent).toContain('charlie')
+    expect(tabs[0].textContent).toBe('alpha1/140%')
+    expect(tabs[1].textContent).toBe('bravo1/190%')
+  })
+
   test('tab_actions_offer_discard_only', () => {
     const { onDiscard } = setup()
     fireEvent.click(screen.getAllByRole('button', { name: 'Cluster actions' })[0])
