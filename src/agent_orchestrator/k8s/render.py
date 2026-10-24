@@ -13,11 +13,10 @@ from agent_orchestrator.db.clusters import Cluster
 from agent_orchestrator.k8s.labels import cluster_labels, object_names, prefix, selector
 from agent_orchestrator.k8s.on_start import render_on_start
 from agent_orchestrator.settings import Settings
-from agent_orchestrator.spec import ClusterSpec
+from agent_orchestrator.spec import WORKDIR_ROOT, ClusterSpec
 from agent_orchestrator.tokens import ClusterTokens
 
 HASH_ANNOTATION = "agents.szymonrichert.pl/config-hash"
-WORKDIR_ROOT = "/workdir"
 SESSIONS_ROOT = "/sessions"
 WORKSPACE_VOLUME = "workspace"
 PROBE_PERIOD = 5

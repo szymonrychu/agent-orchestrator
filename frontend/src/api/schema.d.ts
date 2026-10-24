@@ -24,6 +24,94 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/agent/v1/locks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** File locks held by live agents */
+        get: operations["locks_list_agent_v1_locks_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/v1/locks/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * onAgentToolCall webhook: warn when another agent holds the file
+         * @description Never denies and never fails on a body it cannot use.
+         */
+        post: operations["locks_check_agent_v1_locks_check_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/v1/locks/claim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Claim files with advisory locks */
+        post: operations["locks_claim_agent_v1_locks_claim_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/v1/locks/reassign": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reassign or discard a file lock (leader only) */
+        post: operations["locks_reassign_agent_v1_locks_reassign_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/v1/locks/release": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Release own file locks */
+        post: operations["locks_release_agent_v1_locks_release_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/agent/v1/me": {
         parameters: {
             query?: never;
@@ -843,6 +931,71 @@ export interface components {
             /** Request Id */
             request_id: number;
         };
+        /** LockCheckOut */
+        LockCheckOut: {
+            /** Additional Context */
+            additional_context?: string | null;
+            /**
+             * Decision
+             * @default allow
+             */
+            decision: string;
+        };
+        /** LockHeld */
+        LockHeld: {
+            /** Agent */
+            agent: string;
+            /** Path */
+            path: string;
+        };
+        /** LockOut */
+        LockOut: {
+            /** Agent */
+            agent: string;
+            /**
+             * Claimed At
+             * Format: date-time
+             */
+            claimed_at: string;
+            /** Path */
+            path: string;
+        };
+        /** LockPaths */
+        LockPaths: {
+            /** Paths */
+            paths: string[];
+        };
+        /** LockReassignIn */
+        LockReassignIn: {
+            /** Path */
+            path: string;
+            /** To */
+            to?: string | null;
+        };
+        /** LockReassigned */
+        LockReassigned: {
+            /** Agent */
+            agent: string | null;
+            /** Path */
+            path: string;
+        };
+        /** LocksClaimed */
+        LocksClaimed: {
+            /** Claimed */
+            claimed: string[];
+            /** Held */
+            held: components["schemas"]["LockHeld"][];
+        };
+        /** LocksOut */
+        LocksOut: {
+            /** Locks */
+            locks: components["schemas"]["LockOut"][];
+        };
+        /** LocksReleased */
+        LocksReleased: {
+            /** Released */
+            released: string[];
+        };
         /** MakeLeaderIn */
         MakeLeaderIn: {
             /**
@@ -1182,6 +1335,178 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LeadershipRequested"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    locks_list_agent_v1_locks_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-orch-cluster"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocksOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    locks_check_agent_v1_locks_check_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-orch-cluster"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LockCheckOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    locks_claim_agent_v1_locks_claim_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-orch-cluster"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LockPaths"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocksClaimed"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    locks_reassign_agent_v1_locks_reassign_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-orch-cluster"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LockReassignIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LockReassigned"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    locks_release_agent_v1_locks_release_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-orch-cluster"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LockPaths"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocksReleased"];
                 };
             };
             /** @description Validation Error */

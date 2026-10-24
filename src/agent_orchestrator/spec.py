@@ -117,6 +117,10 @@ class Resources(BaseModel):
         return v
 
 
+# Mount point of the shared workspace; a cluster works in WORKDIR_ROOT/<spec.workdir>.
+WORKDIR_ROOT = "/workdir"
+
+
 class ClusterSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
