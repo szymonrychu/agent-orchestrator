@@ -1,7 +1,8 @@
 """agents table repository. The reconciler is the writer (D3).
 
 `last_dispatched_at` is written only by the dispatch claim (db/queue.py, D23). Every change
-that the ribbon shows (pod readiness, gone, session) NOTIFYs `status {cluster_id}`.
+that the cluster tabs and agents strip show (pod readiness, gone, session) NOTIFYs
+`status {cluster_id}`.
 """
 
 from __future__ import annotations

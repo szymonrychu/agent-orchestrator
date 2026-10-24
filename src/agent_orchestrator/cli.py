@@ -70,7 +70,9 @@ def build_uvicorn_config(settings):
     """uvicorn config for `orch api`.
 
     Proxy headers are off and no forwarded-allow-ips is set, so the direct TCP peer is what
-    the source allowlist sees and X-Forwarded-For cannot spoof it (D22).
+    the source allowlist sees and X-Forwarded-For cannot spoof it (D22). WebSocket frames are
+    capped at the wrapper's terminal frame size so a client cannot make the api buffer
+    uvicorn's 16 MiB default before the relay forwards them.
     """
     import uvicorn
 
@@ -83,6 +85,7 @@ def build_uvicorn_config(settings):
         proxy_headers=False,
         forwarded_allow_ips=None,
         log_config=None,
+        ws_max_size=65536,
         timeout_graceful_shutdown=int(settings.shutdown_grace_seconds),
     )
 
