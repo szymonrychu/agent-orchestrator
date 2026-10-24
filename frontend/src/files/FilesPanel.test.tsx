@@ -402,6 +402,23 @@ describe('useFileTree', () => {
     expect(result.current.state.dirs[''].entries).toHaveLength(2)
   })
 
+  test('an unchanged listing refresh of a multi-page directory causes no state change', async () => {
+    api.listFiles.mockImplementation(async (_c: string, _p: string, offset?: number) =>
+      offset === undefined ? listing('', [entry('a.txt')], 1) : listing('', [entry('b.txt')]),
+    )
+    const { result } = renderHook(() => useFileTree('c1'))
+    await waitFor(() => expect(result.current.state.dirs['']?.loading).toBe(false))
+    act(() => result.current.loadMore(''))
+    await waitFor(() => expect(result.current.state.dirs[''].entries).toHaveLength(2))
+    const before = result.current.state
+    await act(async () => {
+      result.current.refresh('')
+      await new Promise((r) => setTimeout(r, 10))
+    })
+    expect(api.listFiles).toHaveBeenCalledTimes(4)
+    expect(result.current.state).toBe(before)
+  })
+
   test('pollExpanded skips a directory whose load is in flight', async () => {
     let release: (l: FileListing) => void = () => {}
     api.listFiles.mockImplementation(async (_c: string, path: string) => {

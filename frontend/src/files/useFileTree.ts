@@ -118,7 +118,8 @@ export function useFileTree(clusterId: string): FileTree {
             settle(true)
             return finish()
           }
-          settle(false)
+          // A multi-page refresh commits once, at the end, so an idle poll never shrinks the list.
+          if (mode !== 'refresh') settle(false)
         }
       }
       run().catch((e: unknown) => {
