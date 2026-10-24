@@ -225,6 +225,42 @@ async def test_observe_pods_upserts_agents(env):
     assert (await env.get(c.id)).status["phase"] == "ready"
 
 
+async def test_observe_stores_pod_ip(env):
+    c = await env.cluster("alpha", replicas=2)
+    await env.rec.reconcile_once()
+    env.kube.set_pod("agent-alpha-0", pod_ip="10.1.2.3")
+    del env.kube.objects[("Pod", "agents", "agent-alpha-1")]["status"]["podIP"]  # no IP yet
+    env.kube.controller_paused = True
+    await env.rec.reconcile_once()
+    agents = {a.ordinal: a for a in await env.agents(c.id)}
+    assert agents[0].pod_ip == "10.1.2.3"
+    assert agents[1].pod_ip is None
+
+
+async def test_observe_updates_pod_ip(env):
+    c = await env.cluster("alpha", replicas=1)
+    await env.rec.reconcile_once()
+    env.kube.set_pod("agent-alpha-0", pod_ip="10.1.2.3")
+    await env.rec.reconcile_once()
+    assert (await env.agents(c.id))[0].pod_ip == "10.1.2.3"
+    env.kube.set_pod("agent-alpha-0", pod_ip="10.9.9.9")  # restarted pod, new IP
+    await env.rec.reconcile_once()
+    assert (await env.agents(c.id))[0].pod_ip == "10.9.9.9"
+
+
+async def test_gone_agent_clears_pod_ip(env):
+    c = await env.cluster("alpha", replicas=2)
+    await env.rec.reconcile_once()
+    env.kube.set_pod("agent-alpha-1", pod_ip="10.1.2.4")
+    await env.rec.reconcile_once()
+    assert (await env.agents(c.id))[1].pod_ip == "10.1.2.4"
+    await env.update(c.id, replicas=1)
+    await env.rec.reconcile_once()
+    agents = {a.ordinal: a for a in await env.agents(c.id)}
+    assert agents[1].gone_at is not None and agents[1].pod_ip is None
+    assert agents[0].pod_ip is not None
+
+
 async def test_scale_down_marks_gone(env):
     c = await env.cluster("alpha", replicas=3)
     await env.rec.reconcile_once()

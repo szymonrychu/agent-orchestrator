@@ -19,7 +19,7 @@ from agent_orchestrator.db.pool import notify
 
 _COLUMNS = (
     "id, cluster_id, ordinal, pod_name, url, pod_phase, ready, session_id,"
-    " session_created_at, gone_at, last_dispatched_at"
+    " session_created_at, gone_at, last_dispatched_at, pod_ip"
 )
 
 
@@ -36,6 +36,7 @@ class Agent:
     session_created_at: datetime | None
     gone_at: datetime | None
     last_dispatched_at: datetime | None
+    pod_ip: str | None = None
 
 
 async def _one(conn: psycopg.AsyncConnection, query: str, params: Any) -> dict | None:
@@ -56,6 +57,7 @@ async def upsert_agent(
     url: str | None,
     pod_phase: str | None,
     ready: bool,
+    pod_ip: str | None = None,
 ) -> Agent:
     """Insert or update the agent of one ordinal; an observed pod is never gone.
 
@@ -70,12 +72,13 @@ async def upsert_agent(
         )
         row = await _one(
             conn,
-            "INSERT INTO agents (id, cluster_id, ordinal, pod_name, url, pod_phase, ready)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s)"
+            "INSERT INTO agents (id, cluster_id, ordinal, pod_name, url, pod_phase, ready, pod_ip)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
             " ON CONFLICT (cluster_id, ordinal) DO UPDATE SET pod_name = EXCLUDED.pod_name,"
             " url = EXCLUDED.url, pod_phase = EXCLUDED.pod_phase, ready = EXCLUDED.ready,"
+            " pod_ip = EXCLUDED.pod_ip,"
             f" gone_at = NULL RETURNING {_COLUMNS}",
-            (uuid.uuid4(), cluster_id, ordinal, pod_name, url, pod_phase, ready),
+            (uuid.uuid4(), cluster_id, ordinal, pod_name, url, pod_phase, ready, pod_ip),
         )
         assert row is not None
         await conn.execute(
@@ -88,11 +91,11 @@ async def upsert_agent(
 
 
 async def mark_gone(conn: psycopg.AsyncConnection, agent_id: uuid.UUID) -> bool:
-    """Its pod vanished for good (scaled away): never picked again. False when already gone."""
+    """Its pod vanished for good (scaled away): never picked, no IP. False when already gone."""
     async with conn.transaction():
         row = await _one(
             conn,
-            "UPDATE agents SET gone_at = now(), ready = false"
+            "UPDATE agents SET gone_at = now(), ready = false, pod_ip = NULL"
             " WHERE id = %s AND gone_at IS NULL RETURNING cluster_id",
             (agent_id,),
         )

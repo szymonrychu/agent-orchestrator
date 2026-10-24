@@ -295,6 +295,7 @@ class Reconciler:
                     pod_url(slug, name, self.settings),
                     (pod.get("status") or {}).get("phase"),
                     is_ready,
+                    (pod.get("status") or {}).get("podIP"),
                 )
             for agent in await agents_repo.list_agents(conn, cluster.id):
                 if agent.ordinal in seen or agent.gone_at is not None:

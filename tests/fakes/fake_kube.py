@@ -130,8 +130,17 @@ class FakeKube:
     def heal(self, kind: str, name: str) -> None:
         self._failures.pop((kind, name), None)
 
-    def set_pod(self, name: str, *, ready: bool | None = None, phase: str | None = None) -> None:
+    def set_pod(
+        self,
+        name: str,
+        *,
+        ready: bool | None = None,
+        phase: str | None = None,
+        pod_ip: str | None = None,
+    ) -> None:
         pod = self.objects[("Pod", self.namespace, name)]
+        if pod_ip is not None:
+            pod["status"]["podIP"] = pod_ip
         if phase is not None:
             pod["status"]["phase"] = phase
         if ready is not None:
@@ -380,6 +389,9 @@ def _set_ready(pod: dict[str, Any], ready: bool) -> None:
 def _pod(name: str, labels: dict[str, str], *, ready: bool) -> dict[str, Any]:
     pod = _obj("v1", "Pod", name, labels)
     pod["metadata"]["uid"] = f"{next(_seq)}-{uuid.uuid4()}"
-    pod["status"] = {"phase": "Running" if ready else "Pending"}
+    pod["status"] = {
+        "phase": "Running" if ready else "Pending",
+        "podIP": f"10.0.{next(_seq) // 250}.{next(_seq) % 250 + 1}",
+    }
     _set_ready(pod, ready)
     return pod
