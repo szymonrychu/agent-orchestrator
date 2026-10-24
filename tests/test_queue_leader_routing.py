@@ -124,3 +124,21 @@ async def test_new_leader_after_handover(pool):
     second = await _claim(pool)
     assert second is not None
     assert second.agent_id == new["id"]
+
+
+async def test_held_untargeted_backoff_does_not_starve_targeted(pool):
+    c = await insert_cluster(pool)
+    member = await _agent(pool, c["id"], free_ago=10, ordinal=0)
+    leader = await _agent(pool, c["id"], free_ago=10, ordinal=1, state="busy")
+    await _lead(pool, c["id"], leader["id"])
+    await _enqueue(pool, c["id"], "u1")
+    waiting = await _enqueue(pool, c["id"], "u2")
+    await _exec(
+        pool,
+        "UPDATE messages SET not_before = now() + interval '1 hour' WHERE id=%s",
+        (waiting,),
+    )
+    targeted = await _enqueue(pool, c["id"], "t", target=member["id"])
+    claim = await _claim(pool)
+    assert claim is not None
+    assert claim.message_id == targeted

@@ -266,7 +266,10 @@ async def _claim_in_cluster(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID
             target = row["target_agent_id"]
             if target is None:
                 if row["waiting"]:
-                    return None  # an untargeted head in backoff holds its cluster (FIFO, D4)
+                    if leader_id is None:
+                        return None  # an untargeted head in backoff holds its cluster (FIFO, D4)
+                    held = True  # leader routing: hold untargeted, targeted messages still flow
+                    continue
                 if leader_id is not None:
                     # Leader-only routing: an untargeted message is the leader's. A gone leader
                     # does not fail it; it waits for the leadership pass to elect a successor.
