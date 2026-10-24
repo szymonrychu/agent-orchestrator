@@ -99,6 +99,8 @@ export const retryMessage = (messageId: string) =>
 
 export const agentCommand = (agentId: string, command: AgentCommand) =>
   request<CommandAccepted>('POST', `/agents/${id(agentId)}/${command}`);
+export const makeLeader = (clusterId: string, agentId: string) =>
+  request<S['LeadershipRequested']>('POST', `/clusters/${id(clusterId)}/leader`, { agent_id: agentId });
 export const getCommand = (commandId: string) => request<CommandView>('GET', `/commands/${id(commandId)}`);
 export const postCheck = (clusterId: string, body: PostCheck) =>
   request<CheckAccepted>('POST', `/clusters/${id(clusterId)}/checks`, body);

@@ -35,7 +35,13 @@ export function ChatView({ cluster, agents, maxItems }: ChatViewProps) {
         <Typography variant="caption" sx={{ color: 'text.secondary' }}>
           {cluster.desired === 'deleting' ? 'deleting' : cluster.summary.state}
         </Typography>
-        <AgentsStrip agents={agents} selected={selected} onToggle={toggle} autoCompactPct={cluster.summary.auto_compact_pct} />
+        <AgentsStrip
+          agents={agents}
+          selected={selected}
+          onToggle={toggle}
+          autoCompactPct={cluster.summary.auto_compact_pct}
+          hive={cluster.hive ? { clusterId: cluster.id, leaderEpoch: cluster.leader_epoch } : undefined}
+        />
       </Box>
       {chat.error ? <Alert severity="error">{chat.error}</Alert> : null}
       {chat.loading ? (

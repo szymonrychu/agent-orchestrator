@@ -42,7 +42,7 @@ const summary = (o: Partial<ClusterView['summary']> = {}): ClusterView['summary'
 const cluster = (id: string, slug: string, s: Partial<ClusterView['summary']> = {}): ClusterView =>
   ({ created_at: '2026-01-01T00:00:00Z', desired: 'active', generation: 1, id, observed_generation: 1, slug, spec: {} as ClusterView['spec'], status: {}, summary: summary(s) }) as ClusterView
 const agent = (id: string, ordinal: number): AgentView => ({
-  context: { used_percentage: 25, used_tokens: 1, window_tokens: 4 }, current_turn_id: null, free_since: null, gone: false, id, ordinal, peers: 0, pod_name: `alpha-${ordinal}`, ready: true, state: 'busy',
+  context: { used_percentage: 25, used_tokens: 1, window_tokens: 4 }, current_turn_id: null, free_since: null, gone: false, id, ordinal, leader: false, context_pct: null, peers: 0, pod_name: `alpha-${ordinal}`, ready: true, state: 'busy',
 })
 const meta = (): Meta => ({
   agent_image: 'img', agent_images: ['img'], caps: { max_clusters: 8, max_pvc_size: '100Gi', max_replicas: 16 },

@@ -23,6 +23,7 @@ export type ClustersAction =
   | { type: 'snapshot'; clusters: { cluster: ClusterView; agents: AgentView[] }[] }
   | { type: 'cluster_status'; cluster: ClusterView }
   | { type: 'agent_status'; clusterId: string; agent: AgentView }
+  | { type: 'leader_changed'; clusterId: string; agentId: string; epoch: number }
   | { type: 'message_status'; clusterId: string; queued: number; failed: number }
   | { type: 'cluster_removed'; clusterId: string }
   | { type: 'select'; id: string | null }
@@ -61,6 +62,13 @@ export function clustersReducer(state: ClustersState, action: ClustersAction): C
       if (!prev) return state
       return { ...state, clusters: { ...state.clusters, [action.clusterId]: { ...prev, agents: { ...prev.agents, [action.agent.id]: action.agent } } } }
     }
+    case 'leader_changed': {
+      const prev = state.clusters[action.clusterId]
+      if (!prev) return state
+      const agents = Object.fromEntries(Object.entries(prev.agents).map(([id, a]) => [id, { ...a, leader: id === action.agentId }]))
+      const cluster = { ...prev.cluster, leader_agent_id: action.agentId, leader_epoch: action.epoch }
+      return { ...state, clusters: { ...state.clusters, [action.clusterId]: { cluster, agents } } }
+    }
     case 'message_status': {
       const prev = state.clusters[action.clusterId]
       if (!prev) return state
@@ -88,7 +96,7 @@ export const sortedAgents = (entry: ClusterEntry): AgentView[] =>
     .filter((a) => !a.gone)
     .sort((a, b) => a.ordinal - b.ordinal)
 
-const STREAM_EVENTS = ['snapshot', 'cluster_status', 'agent_status', 'message_status', 'cluster_removed']
+const STREAM_EVENTS = ['snapshot', 'cluster_status', 'agent_status', 'leader_changed', 'message_status', 'cluster_removed']
 
 /** Maps one decoded stream frame to a reducer action; null for frames the app ignores. */
 export function actionFromEvent(type: string, data: unknown): ClustersAction | null {
@@ -101,6 +109,8 @@ export function actionFromEvent(type: string, data: unknown): ClustersAction | n
       return { type: 'cluster_status', cluster: d.cluster as ClusterView }
     case 'agent_status':
       return { type: 'agent_status', clusterId: d.cluster_id as string, agent: d.agent as AgentView }
+    case 'leader_changed':
+      return { type: 'leader_changed', clusterId: d.cluster_id as string, agentId: d.agent_id as string, epoch: d.epoch as number }
     case 'message_status':
       return { type: 'message_status', clusterId: d.cluster_id as string, queued: d.queued as number, failed: d.failed as number }
     case 'cluster_removed':
