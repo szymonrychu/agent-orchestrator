@@ -311,6 +311,7 @@ The rule "services talk only through the queue or HTTP APIs, with no shared stat
 | Table | Writer |
 |---|---|
 | `clusters` | api; the reconciler writes only `status` and `observed_generation` and deletes the row when a discard completes |
+| `presets` | api |
 | `agents` | reconciler; `last_dispatched_at` is written by the dispatch claim |
 | `agent_status` | ingester |
 | `messages` | api inserts and cancels while queued; the dispatcher does the rest |
@@ -383,7 +384,8 @@ Plain SQL migrations (`src/agent_orchestrator/db/migrations`), psycopg 3, no ORM
 
 | Table | Holds |
 |---|---|
-| `clusters` | id, unique slug, `spec` (jsonb ClusterSpec), `generation` / `observed_generation` (the reconcile queue), `desired` (`active`, `deleting`), `status` |
+| `clusters` | id, unique slug, `spec` (jsonb ClusterSpec), `generation` / `observed_generation` (the reconcile queue), `desired` (`active`, `deleting`), `status`, `preset_id` (nullable, set null when the preset is deleted) and `preset_name` (the name at create, kept) |
+| `presets` | named ClusterSpec templates: unique case-insensitive `name` (1 to 40 characters), `spec` (jsonb, only what the user set), `is_default`; migration `0002` seeds `Default` with `{"replicas": 1}`, which can be edited but not renamed or deleted |
 | `agents` | one row per pod: ordinal, pod name, url, readiness, session id, `last_dispatched_at`, `gone_at` |
 | `agent_status` | wrapper state (`unknown`, `booting`, `idle`, `busy`, `dead`), `free_since`, current turn, context tokens and percentage, last seq, peers |
 | `messages` | queue: text, status (`queued`, `dispatching`, `verifying`, `sent`, `failed`, `cancelled`), target and chosen agent, turn id, attempts, error, `not_before`, `ambiguous_at` |

@@ -26,6 +26,7 @@ TABLES = {
     "events",
     "commands",
     "checks",
+    "presets",
     "schema_migrations",
 }
 
@@ -49,7 +50,7 @@ def test_fresh_database_gets_all_tables(empty_dsn):
         }
         versions = [r[0] for r in c.execute("SELECT version FROM schema_migrations")]
     assert tables >= TABLES
-    assert versions == ["0001"]
+    assert versions == ["0001", "0002"]
 
 
 def test_rerun_is_noop(empty_dsn):
@@ -76,9 +77,9 @@ def test_concurrent_migrate_serialises(empty_dsn):
     [t.start() for t in threads]
     [t.join() for t in threads]
     assert not errors
-    assert sorted(len(r) for r in results) == [0, 1]
+    assert sorted(len(r) for r in results) == [0, 2]
     with psycopg.connect(empty_dsn) as c:
-        assert c.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 1
+        assert c.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 2
 
 
 async def test_events_unique_agent_session_seq(pool):
@@ -198,3 +199,60 @@ async def test_retry_columns_verifying_status_and_no_purge_columns(pool):
     ccols = _columns(pool.conninfo, "clusters")
     assert "deleted_at" not in ccols
     assert not any("purge" in c for c in ccols)
+
+
+DEFAULT_PRESET_ID = "00000000-0000-0000-0000-000000000001"
+
+
+def test_default_preset_seeded(dsn):
+    with psycopg.connect(dsn) as c:
+        rows = c.execute("SELECT id::text, name, spec, is_default FROM presets").fetchall()
+        assert rows == [(DEFAULT_PRESET_ID, "Default", {"replicas": 1}, True)]
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            c.execute("INSERT INTO presets (id, name) VALUES (gen_random_uuid(), 'default')")
+    with psycopg.connect(dsn) as c, pytest.raises(psycopg.errors.UniqueViolation):
+        c.execute(
+            "INSERT INTO presets (id, name, is_default) VALUES (gen_random_uuid(), 'x', true)"
+        )
+    with psycopg.connect(dsn) as c, pytest.raises(psycopg.errors.CheckViolation):
+        c.execute("INSERT INTO presets (id, name) VALUES (gen_random_uuid(), '')")
+    with psycopg.connect(dsn) as c, pytest.raises(psycopg.errors.CheckViolation):
+        c.execute("INSERT INTO presets (id, name) VALUES (gen_random_uuid(), %s)", ("x" * 41,))
+
+
+def test_presets_migration_reapply_keeps_edited_default(empty_dsn):
+    run_migrations(empty_dsn)
+    with psycopg.connect(empty_dsn, autocommit=True) as c:
+        c.execute("UPDATE presets SET spec = '{\"replicas\": 4}' WHERE is_default")
+        c.execute("DELETE FROM schema_migrations WHERE version = '0002'")
+    assert run_migrations(empty_dsn) == ["0002"]
+    with psycopg.connect(empty_dsn) as c:
+        assert c.execute("SELECT name, spec FROM presets").fetchall() == [
+            ("Default", {"replicas": 4})
+        ]
+        assert c.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 2
+
+
+async def test_preset_delete_keeps_cluster_provenance(pool):
+    cols = _columns(pool.conninfo, "clusters")
+    assert {"preset_id", "preset_name"} <= cols
+    cl = await insert_cluster(pool)
+    async with pool.connection() as conn:
+        assert await (
+            await conn.execute(
+                "SELECT preset_id, preset_name FROM clusters WHERE id=%s", (cl["id"],)
+            )
+        ).fetchone() == (None, None)
+        await conn.execute(
+            "INSERT INTO presets (id, name) VALUES (%s, 'Big')",
+            ("00000000-0000-0000-0000-0000000000aa",),
+        )
+        await conn.execute(
+            "UPDATE clusters SET preset_id=%s, preset_name='Big' WHERE id=%s",
+            ("00000000-0000-0000-0000-0000000000aa", cl["id"]),
+        )
+        await conn.execute("DELETE FROM presets WHERE name='Big'")
+        cur = await conn.execute(
+            "SELECT preset_id, preset_name FROM clusters WHERE id=%s", (cl["id"],)
+        )
+        assert await cur.fetchone() == (None, "Big")
