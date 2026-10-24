@@ -216,27 +216,6 @@ async def get_cluster(
         return await _one_view(conn, cluster, settings)
 
 
-@router.patch("/clusters/{cluster_id}", response_model=schemas.ClusterView)
-async def patch_cluster(
-    cluster_id: uuid.UUID,
-    body: schemas.PatchCluster,
-    pool: Pool,
-    settings: Cfg,
-) -> schemas.ClusterView:
-    async with pool.connection() as conn:
-        stored = await repo.get(conn, cluster_id)
-        if stored is None:
-            raise not_found("cluster")
-        spec = check_spec(body.spec, settings, stored.spec)
-        try:
-            cluster = await repo.update_spec(conn, cluster_id, spec)
-        except repo.ClusterNotFound:
-            raise not_found("cluster") from None
-        except repo.ClusterDeleting:
-            raise ApiError(409, "cluster_deleting", "cluster is being discarded") from None
-        return await _one_view(conn, cluster, settings)
-
-
 @router.delete("/clusters/{cluster_id}", status_code=202, response_model=schemas.ClusterView)
 async def discard_cluster(
     cluster_id: uuid.UUID,

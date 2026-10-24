@@ -19,12 +19,6 @@ class CreateCluster(BaseModel):
     preset_id: uuid.UUID | None = None
 
 
-class PatchCluster(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    spec: ClusterSpec
-
-
 class PresetIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

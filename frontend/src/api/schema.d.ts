@@ -145,8 +145,7 @@ export interface paths {
         delete: operations["discard_cluster_api_v1_clusters__cluster_id__delete"];
         options?: never;
         head?: never;
-        /** Patch Cluster */
-        patch: operations["patch_cluster_api_v1_clusters__cluster_id__patch"];
+        patch?: never;
         trace?: never;
     };
     "/api/v1/clusters/{cluster_id}/agents": {
@@ -883,10 +882,6 @@ export interface components {
                 [key: string]: string;
             };
         };
-        /** PatchCluster */
-        PatchCluster: {
-            spec: components["schemas"]["ClusterSpec"];
-        };
         /** PostCheck */
         PostCheck: {
             /** Command */
@@ -1322,41 +1317,6 @@ export interface operations {
         responses: {
             /** @description Successful Response */
             202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ClusterView"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    patch_cluster_api_v1_clusters__cluster_id__patch: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                cluster_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PatchCluster"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
                 headers: {
                     [name: string]: unknown;
                 };

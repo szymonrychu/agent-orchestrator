@@ -1263,19 +1263,6 @@
         "title": "MetaResources",
         "type": "object"
       },
-      "PatchCluster": {
-        "additionalProperties": false,
-        "properties": {
-          "spec": {
-            "$ref": "#/components/schemas/ClusterSpec"
-          }
-        },
-        "required": [
-          "spec"
-        ],
-        "title": "PatchCluster",
-        "type": "object"
-      },
       "PostCheck": {
         "additionalProperties": false,
         "properties": {
@@ -2005,54 +1992,6 @@
           }
         },
         "summary": "Get Cluster"
-      },
-      "patch": {
-        "operationId": "patch_cluster_api_v1_clusters__cluster_id__patch",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "cluster_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Cluster Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PatchCluster"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ClusterView"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Patch Cluster"
       }
     },
     "/api/v1/clusters/{cluster_id}/agents": {

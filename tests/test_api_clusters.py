@@ -85,15 +85,27 @@ async def test_duplicate_slug_409(http):
     assert_error(await http.post("/api/v1/clusters", json=body), 409, "conflict")
 
 
-async def test_patch_bumps_generation(http):
+def _walk_routes(router, prefix: str = ""):
+    """(path, methods) of every route; included routers are lazy, so descend into them."""
+    for route in router.routes:
+        if hasattr(route, "original_router"):
+            yield from _walk_routes(route.original_router, prefix + route.include_context.prefix)
+        elif hasattr(route, "methods"):
+            yield prefix + route.path, route.methods
+
+
+async def test_patch_cluster_retired_405(http):
     cid = (await http.post("/api/v1/clusters", json={"slug": "p", "spec": {}})).json()["id"]
     r = await http.patch(f"/api/v1/clusters/{cid}", json={"spec": {"replicas": 3}})
-    assert r.status_code == 200, r.text
-    assert r.json()["generation"] == 2
-    assert r.json()["spec"]["replicas"] == 3
-    assert_error(
-        await http.patch(f"/api/v1/clusters/{uuid.uuid4()}", json={"spec": {}}), 404, "not_found"
-    )
+    assert r.status_code == 405, r.text
+    assert (await http.get(f"/api/v1/clusters/{cid}")).json()["generation"] == 1
+    assert not [
+        path
+        for path, methods in _walk_routes(http._transport.app)  # type: ignore[attr-defined]
+        if path.startswith("/api/v1") and "PATCH" in methods
+    ]
+    spec = (await http.get("/api/v1/openapi.json")).json()
+    assert not [p for p, ops in spec["paths"].items() if "patch" in ops]
 
 
 async def test_delete_is_discard_without_purge(http, pool):
@@ -106,9 +118,6 @@ async def test_delete_is_discard_without_purge(http, pool):
     assert again.status_code == 202
     assert again.json()["desired"] == "deleting"
     assert_error(await http.delete(f"/api/v1/clusters/{cid}?purge=true"), 422, "invalid_request")
-    assert_error(
-        await http.patch(f"/api/v1/clusters/{cid}", json={"spec": {}}), 409, "cluster_deleting"
-    )
     async with pool.connection() as conn:
         await repo.purge(conn, uuid.UUID(cid))
     assert_error(await http.get(f"/api/v1/clusters/{cid}"), 404, "not_found")
@@ -360,7 +369,7 @@ async def test_openapi_and_docs_paths(http):
         {"any_mcp_config": {"plugins": "nope"}},
     ],
 )
-async def test_spec_hardening_enforced_on_create_and_patch(pool, dsn, spec):
+async def test_spec_hardening_enforced_on_create(pool, dsn, spec):
     app = create_app(make_settings(dsn, max_replicas=4, max_pvc_size="100Gi"), pool)
     async with client_for(app) as c:
         assert_error(
@@ -368,11 +377,6 @@ async def test_spec_hardening_enforced_on_create_and_patch(pool, dsn, spec):
             422,
             "invalid_request",
         )
-        cid = (await c.post("/api/v1/clusters", json={"slug": "ok", "spec": {}})).json()["id"]
-        assert_error(
-            await c.patch(f"/api/v1/clusters/{cid}", json={"spec": spec}), 422, "invalid_request"
-        )
-        assert (await c.get(f"/api/v1/clusters/{cid}")).json()["generation"] == 1
         ok = await c.post("/api/v1/clusters", json={"slug": "fine", "spec": {"image": "img:1"}})
         assert ok.status_code == 201
 
@@ -459,35 +463,12 @@ async def test_write_fills_default_resources_per_key(pool, dsn):
             "requests": {"cpu": "8"},
             "limits": {"memory": "512Mi"},
         }
-        cid = r.json()["id"]
-        r = await c.patch(f"/api/v1/clusters/{cid}", json={"spec": {"replicas": 2}})
-        assert r.json()["spec"]["resources"] == {
-            "requests": {"cpu": "500m", "memory": "1Gi"},
-            "limits": {"cpu": "4", "memory": "8Gi"},
-        }
 
 
-async def test_patch_keeps_stored_legacy_model_and_effort(pool, dsn):
+async def test_create_high_request_without_limit(pool, dsn):
     app = create_app(make_settings(dsn), pool)
     async with client_for(app) as c:
-        cluster = await insert_cluster(pool, spec={"model": "legacy-1", "effort": "turbo"})
-        url = f"/api/v1/clusters/{cluster['id']}"
-        same = {"model": "legacy-1", "effort": "turbo", "replicas": 2}
-        assert (await c.patch(url, json={"spec": same})).status_code == 200
-        for bad in ({"model": "gpt-9", "effort": "turbo"}, {"model": "legacy-1", "effort": "x"}):
-            assert_error(await c.patch(url, json={"spec": bad}), 422, "invalid_request")
-        assert (
-            await c.post("/api/v1/clusters", json={"slug": "n", "spec": same})
-        ).status_code == 422
-
-
-async def test_patch_high_request_without_limit(pool, dsn):
-    app = create_app(make_settings(dsn), pool)
-    async with client_for(app) as c:
-        cluster = await insert_cluster(pool, spec={"resources": {"requests": {"cpu": "8"}}})
-        r = await c.patch(
-            f"/api/v1/clusters/{cluster['id']}",
-            json={"spec": {"resources": {"requests": {"cpu": "8"}}, "replicas": 2}},
-        )
-        assert r.status_code == 200, r.text
+        spec = {"resources": {"requests": {"cpu": "8"}}, "replicas": 2}
+        r = await c.post("/api/v1/clusters", json={"slug": "hi", "spec": spec})
+        assert r.status_code == 201, r.text
         assert "cpu" not in r.json()["spec"]["resources"]["limits"]

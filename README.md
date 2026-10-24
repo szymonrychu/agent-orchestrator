@@ -29,10 +29,10 @@ Every process reads `ORCH_*` variables (the contract `agent-orchestrator-setting
 | `ORCH_DEFAULT_EFFORT` | empty | api, reconciler | default effort; empty means the Claude Code default |
 | `ORCH_MODELS` | `claude-opus-5-5,claude-sonnet-5-5,claude-haiku-5-5,claude-fable-5-1` | api | comma-separated model choices; a spec naming another model is rejected |
 | `ORCH_EFFORTS` | `low,medium,high,xhigh,max` | api | comma-separated effort choices; a spec naming another effort is rejected (empty effort is allowed) |
-| `ORCH_DEFAULT_CPU_REQUEST` | `500m` | api, reconciler | agent container CPU request filled into the stored spec when a cluster is created or edited and the key is empty (Kubernetes quantity) |
-| `ORCH_DEFAULT_CPU_LIMIT` | `4` | api, reconciler | agent container CPU limit filled in when a cluster is created or edited and the key is empty |
-| `ORCH_DEFAULT_MEMORY_REQUEST` | `1Gi` | api, reconciler | agent container memory request filled in when a cluster is created or edited and the key is empty |
-| `ORCH_DEFAULT_MEMORY_LIMIT` | `8Gi` | api, reconciler | agent container memory limit filled in when a cluster is created or edited and the key is empty |
+| `ORCH_DEFAULT_CPU_REQUEST` | `500m` | api, reconciler | agent container CPU request filled into the stored spec when a cluster is created and the key is empty (Kubernetes quantity) |
+| `ORCH_DEFAULT_CPU_LIMIT` | `4` | api, reconciler | agent container CPU limit filled in when a cluster is created and the key is empty |
+| `ORCH_DEFAULT_MEMORY_REQUEST` | `1Gi` | api, reconciler | agent container memory request filled in when a cluster is created and the key is empty |
+| `ORCH_DEFAULT_MEMORY_LIMIT` | `8Gi` | api, reconciler | agent container memory limit filled in when a cluster is created and the key is empty |
 | `ORCH_DEFAULT_REPLICAS` | `1` | api | default agents per cluster |
 | `ORCH_DEFAULT_AUTO_COMPACT_PCT` | `95` | api | auto-compact threshold percent (gauge tick and CLAUDE_AUTOCOMPACT_PCT_OVERRIDE) |
 | `ORCH_PVC_STORAGE_CLASS` | `rook-ceph-rwx` | api, reconciler | RWX storage class |
@@ -400,6 +400,8 @@ Base path `/api/v1`. JSON in and out. There is no authentication; access is rest
 
 Versioning: `/api/v1` is additive only. New routes, new optional request fields and new response fields may appear; existing routes, fields and error codes are never removed or changed in meaning. A breaking change is a new `/api/v2`.
 
+Documented exception, 2026-10-23: `PATCH /api/v1/clusters/{cluster_id}` was removed (it now answers 405), and `POST /api/v1/clusters` requires exactly one of `spec` and `preset_id`. Why: a live spec edit rolled every agent pod of a running cluster; clusters now snapshot their preset at create and the spec is fixed from then on. To change it, discard the cluster and schedule again from a preset.
+
 Source allowlist: the api checks the direct socket peer against `ORCH_ALLOWED_CIDRS` (default `192.168.1.0/24`). `Forwarded`, `X-Forwarded-For` and `X-Real-IP` are never read. A caller outside the list gets `403 forbidden`. `/healthz` and `/readyz` are exempt.
 
 Error codes: `bad_request` (400), `forbidden` (403), `forbidden_origin` (403, `Origin` not in `ORCH_ALLOWED_ORIGINS` on a terminal POST or DELETE or a WebSocket upgrade), `not_found` (404), `conflict` (409, slug or preset name exists), `preset_default` (409, renaming or deleting the default preset), `last_preset` (409, deleting the only preset), `cluster_deleting` (409), `cluster_limit` (409, `ORCH_MAX_CLUSTERS` reached), `not_queued` (409), `not_failed` (409), `agent_gone` (409), `agent_not_ready` (409, no ready agent for a file or terminal proxy), `invalid_path` (400, a file path is absolute, holds a NUL byte or leaves the workdir), `not_a_directory` (400, listing a file), `not_a_file` (400, reading a directory or special file), `terminal_limit` (409, the wrapper's per-pod terminal cap is reached), `session_not_active` (409, the agent's wrapper session is not active), `terminal_not_found` (404, no such shell on that agent), `invalid_size` (422, rows or cols outside 1..1000), `invalid_request` (422, also a terminal id that is not `term_` plus 12 lowercase hex digits), `target_gone` (422), `internal` (500, 503 on `/readyz`), `wrapper_error` (502, the wrapper answered 5xx), `wrapper_unreachable` (502, the wrapper pod could not be reached), `unavailable` (503, no master key for the proxies).
@@ -448,10 +450,6 @@ Response 201 with the cluster view. Errors: 422 `invalid_request` (bad slug, bot
 ### `GET /api/v1/clusters/{cluster_id}`
 
 One cluster view: `id`, `slug`, `spec`, `desired`, `status`, `generation`, `observed_generation`, `created_at`, `preset_id` (null for a raw-spec cluster or once the preset is deleted), `preset_name` and `summary` (`state` of `working`, `waiting`, `booting`, `error`, `deleting`; `ready`, `replicas`, `context_pct_max`, `auto_compact_pct`, `queued`, `failed`). Response 200. Errors: 404 `not_found`.
-
-### `PATCH /api/v1/clusters/{cluster_id}`
-
-Body `{"spec": {...}}` replaces the spec and bumps `generation`. Response 200 with the cluster view. Errors: 404 `not_found`, 409 `cluster_deleting`, 422 `invalid_request`.
 
 ### `DELETE /api/v1/clusters/{cluster_id}`
 
