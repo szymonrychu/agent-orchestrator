@@ -4,6 +4,26 @@
  */
 
 export interface paths {
+    "/agent/v1/leadership/handover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Hand leadership over (leader only)
+         * @description Queue a handover. The checks here fail fast; the dispatcher re-checks at apply time.
+         */
+        post: operations["handover_agent_v1_leadership_handover_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/agent/v1/me": {
         parameters: {
             query?: never;
@@ -267,6 +287,26 @@ export interface paths {
         get: operations["file_content_api_v1_clusters__cluster_id__files_content_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/clusters/{cluster_id}/leader": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Make Leader
+         * @description Queue a user leadership override; the dispatcher decides at apply time.
+         */
+        post: operations["make_leader_api_v1_clusters__cluster_id__leader_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -789,6 +829,28 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /** HandoverIn */
+        HandoverIn: {
+            /** Epoch */
+            epoch: number;
+            /** Reason */
+            reason: string;
+            /** To */
+            to?: string | null;
+        };
+        /** LeadershipRequested */
+        LeadershipRequested: {
+            /** Request Id */
+            request_id: number;
+        };
+        /** MakeLeaderIn */
+        MakeLeaderIn: {
+            /**
+             * Agent Id
+             * Format: uuid
+             */
+            agent_id: string;
+        };
         /** Me */
         Me: {
             /**
@@ -1097,6 +1159,42 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    handover_agent_v1_leadership_handover_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-orch-cluster"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HandoverIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LeadershipRequested"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     me_agent_v1_me_get: {
         parameters: {
             query?: never;
@@ -1627,6 +1725,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FileContent"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    make_leader_api_v1_clusters__cluster_id__leader_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cluster_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MakeLeaderIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LeadershipRequested"];
                 };
             };
             /** @description Validation Error */

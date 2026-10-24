@@ -13,10 +13,12 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, Request
 from pydantic import BaseModel
 
+from agent_orchestrator.api import schemas
 from agent_orchestrator.api.clusters import Cfg, Pool
 from agent_orchestrator.api.errors import ApiError
 from agent_orchestrator.db import agents as agents_repo
 from agent_orchestrator.db import clusters as clusters_repo
+from agent_orchestrator.db import leadership
 from agent_orchestrator.tokens import tokens_for
 
 router = APIRouter(prefix="/agent/v1", tags=["agent"])
@@ -108,3 +110,44 @@ async def me(agent: Caller, pool: Pool) -> Me:
             for m in members
         ],
     )
+
+
+@router.post(
+    "/leadership/handover",
+    status_code=202,
+    response_model=schemas.LeadershipRequested,
+    summary="Hand leadership over (leader only)",
+)
+async def handover(
+    body: schemas.HandoverIn, agent: Caller, pool: Pool
+) -> schemas.LeadershipRequested:
+    """Queue a handover. The checks here fail fast; the dispatcher re-checks at apply time."""
+    async with pool.connection() as conn:
+        cluster = await clusters_repo.get(conn, agent.cluster_id)
+        assert cluster is not None
+        if cluster.spec.alone:
+            raise ApiError(409, "alone", "a single-agent cluster has no leader to change")
+        leader = await leadership.current_leader(conn, agent.cluster_id)
+        if leader is None or leader.agent_id != agent.id:
+            raise ApiError(409, "not_leader", "only the current leader can hand leadership over")
+        if body.epoch != leader.epoch:
+            raise ApiError(
+                409, "stale_epoch", f"epoch {body.epoch} is not the current epoch {leader.epoch}"
+            )
+        to_id = None
+        if body.to is not None:
+            member = next(
+                (
+                    m
+                    for m in await agents_repo.list_members(conn, agent.cluster_id)
+                    if m["pod_name"] == body.to
+                ),
+                None,
+            )
+            if member is None:
+                raise ApiError(404, "not_found", f"agent {body.to} not found in this cluster")
+            to_id = member["id"]
+        request_id = await leadership.insert_request(
+            conn, agent.cluster_id, "handover", agent.id, to_id, body.reason, body.epoch
+        )
+    return schemas.LeadershipRequested(request_id=request_id)

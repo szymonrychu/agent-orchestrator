@@ -248,3 +248,21 @@ class TerminalView(BaseModel):
 class TerminalList(BaseModel):
     terminals: list[TerminalView]
     unavailable_agents: list[uuid.UUID]
+
+
+class HandoverIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    to: str | None = None
+    reason: str = Field(min_length=1, max_length=500)
+    epoch: int
+
+
+class MakeLeaderIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: uuid.UUID
+
+
+class LeadershipRequested(BaseModel):
+    request_id: int

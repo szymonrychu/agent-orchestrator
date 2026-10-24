@@ -952,6 +952,66 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "HandoverIn": {
+        "additionalProperties": false,
+        "properties": {
+          "epoch": {
+            "title": "Epoch",
+            "type": "integer"
+          },
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To"
+          }
+        },
+        "required": [
+          "reason",
+          "epoch"
+        ],
+        "title": "HandoverIn",
+        "type": "object"
+      },
+      "LeadershipRequested": {
+        "properties": {
+          "request_id": {
+            "title": "Request Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "request_id"
+        ],
+        "title": "LeadershipRequested",
+        "type": "object"
+      },
+      "MakeLeaderIn": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_id": {
+            "format": "uuid",
+            "title": "Agent Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_id"
+        ],
+        "title": "MakeLeaderIn",
+        "type": "object"
+      },
       "Me": {
         "properties": {
           "agent_id": {
@@ -1730,6 +1790,82 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/agent/v1/leadership/handover": {
+      "post": {
+        "description": "Queue a handover. The checks here fail fast; the dispatcher re-checks at apply time.",
+        "operationId": "handover_agent_v1_leadership_handover_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-orch-cluster",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Orch-Cluster"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HandoverIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeadershipRequested"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hand leadership over (leader only)",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
     "/agent/v1/me": {
       "get": {
         "operationId": "me_agent_v1_me_get",
@@ -2640,6 +2776,57 @@
           }
         },
         "summary": "File Content"
+      }
+    },
+    "/api/v1/clusters/{cluster_id}/leader": {
+      "post": {
+        "description": "Queue a user leadership override; the dispatcher decides at apply time.",
+        "operationId": "make_leader_api_v1_clusters__cluster_id__leader_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cluster_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Cluster Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MakeLeaderIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeadershipRequested"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Make Leader"
       }
     },
     "/api/v1/clusters/{cluster_id}/messages": {

@@ -339,6 +339,7 @@ NOTIFY payloads are wake-up hints that carry ids only. Every loop also polls, be
 | `agent_free` | `{cluster_id, agent_id}` | ingester | dispatcher |
 | `events` | `{cluster_id, max_id}` | ingester | events stream |
 | `status` | `{cluster_id}` | ingester, dispatcher, reconciler | status stream |
+| `leadership_requested` | `{cluster_id}` | api (leadership routes) | dispatcher |
 
 Polling fallbacks: dispatcher `ORCH_DISPATCH_POLL_SECONDS` (2 s), reconciler `ORCH_RECONCILE_POLL_SECONDS` (10 s), ingester stream refresh `ORCH_INGEST_REFRESH_SECONDS` (5 s); the api SSE streams re-read on a 5 s poll when no NOTIFY arrives.
 
@@ -401,6 +402,7 @@ Plain SQL migrations (`src/agent_orchestrator/db/migrations`), psycopg 3, no ORM
 | `turns` | one row per wrapper turn: origin, start, completion, status, final text, usage |
 | `events` | every stored wrapper event; UNIQUE(agent_id, session_id, seq); the global bigserial id is the SSE id and the page cursor |
 | `commands` | queue: `interrupt`, `compact`, `restart`, `rebootstrap` with status and result |
+| `leadership_requests` | queue: `handover` (from the leader) or `user` requests with target agent, epoch, status (`queued`, `applied`, `rejected`); the api inserts, the dispatcher decides |
 | `checks` | queue: a shell command run as a Kubernetes Job; exit code and log tail |
 
 ## API
@@ -463,6 +465,10 @@ One cluster view: `id`, `slug`, `spec`, `desired`, `status`, `generation`, `obse
 ### `DELETE /api/v1/clusters/{cluster_id}`
 
 Discards the cluster: after the optional history-export hook, deletes every Kubernetes object, the PVC and the chat history. Takes no query parameters. Response 202 with the cluster view (`desired: deleting`). Errors: 404 `not_found`, 422 `invalid_request` (any query parameter).
+
+### `POST /api/v1/clusters/{cluster_id}/leader`
+
+Queues a user leadership override (the UI "Make leader"): body `{agent_id}`, any agent of the cluster. A user request overrides the handover-only rule; the dispatcher applies it and bumps the epoch. Response 202 `{request_id}`. Errors: 404 `not_found` (unknown cluster, or an agent that is not in this cluster), 409 `alone` (a single-agent cluster has no leader).
 
 ### `GET /api/v1/clusters/{cluster_id}/agents`
 
@@ -695,6 +701,10 @@ The caller's identity, the leader and the hive members.
 ```
 
 `leader` and `epoch` come from the cluster's leader record and are null while there is none. `members` are the not-gone agents by ordinal; `state` is the stored agent state and `context_pct` is null when unknown.
+
+### `POST /agent/v1/leadership/handover`
+
+The current leader hands leadership away. Body `{to?, reason, epoch}`: `to` is the pod name of a member (omitted: any agent), `reason` is 1 to 500 characters, `epoch` is the epoch the caller read from `GET /agent/v1/me`. Queues a `handover` request and sends `NOTIFY leadership_requested {cluster_id}`; the dispatcher re-checks everything at apply time. There is no takeover route. Response 202 `{request_id}`. Errors, checked in this order: 409 `alone` (a single-agent cluster), 409 `not_leader` (the caller is not the current leader, or there is none), 409 `stale_epoch` (`epoch` differs from the current epoch), 404 `not_found` (unknown `to`), 422 `invalid_request`.
 
 ## Bench
 
