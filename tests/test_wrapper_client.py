@@ -394,3 +394,34 @@ async def test_request_json_transport_failure():
 
     with pytest.raises(WrapperUnreachable):
         await client(handler).request_json("GET", "/files/x")
+
+
+async def test_post_note_body_and_outcomes():
+    seen = []
+
+    def h(r):
+        seen.append((r.method, r.url.path, json.loads(r.content), r.extensions["timeout"]["read"]))
+        return httpx.Response(202, json={"key": "hive_state", "pending": 1})
+
+    c = client(h)
+    assert await c.post_note("s1", "hello", key="hive_state") == "ok"
+    assert await c.post_note("s1", "more", source="peer") == "ok"
+    assert seen[0][:3] == (
+        "POST",
+        "/v1/sessions/s1/notes",
+        {"text": "hello", "key": "hive_state", "source": "orchestrator"},
+    )
+    assert seen[1][2] == {"text": "more", "source": "peer"}
+    assert seen[0][3] == 3.0
+
+    def err(status, code):
+        return lambda r: httpx.Response(status, json={"error": {"code": code, "message": "m"}})
+
+    assert await client(err(409, "notes_disabled")).post_note("s", "x") == "disabled"
+    assert await client(err(409, "invalid_state")).post_note("s", "x") == "failed"
+    assert await client(err(404, "not_found")).post_note("s", "x") == "failed"
+
+    def boom(r):
+        raise httpx.ConnectError("down")
+
+    assert await client(boom).post_note("s", "x") == "failed"

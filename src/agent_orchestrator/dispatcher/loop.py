@@ -16,6 +16,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from agent_orchestrator.db import leadership, queue
 from agent_orchestrator.db.pool import listen
+from agent_orchestrator.dispatcher import hive
 from agent_orchestrator.dispatcher.verify import Verifier, cluster_max_attempts
 from agent_orchestrator.settings import Settings
 from agent_orchestrator.tokens import tokens_for
@@ -33,7 +34,7 @@ from agent_orchestrator.wrapper.models import (
 log = logging.getLogger(__name__)
 
 MAX_IN_FLIGHT = 8
-CHANNELS = ("agent_free", "message_queued", leadership.CHANNEL)
+CHANNELS = ("agent_free", "message_queued", leadership.CHANNEL, leadership.LEADER_CHANGED_CHANNEL)
 COMMAND_KINDS = ("interrupt", "compact")
 
 
@@ -43,6 +44,8 @@ class Dispatcher:
         self.settings = settings
         self._http: httpx.AsyncClient | None = None
         self.verifier = Verifier(pool, settings, self._wrapper)
+        self.hive = hive.HiveState()
+        self._push_wake = asyncio.Event()
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -69,10 +72,13 @@ class Dispatcher:
         wake = asyncio.Event()
 
         async def listener() -> None:
-            async for _channel, _payload in listen(self.pool.conninfo, CHANNELS):
+            async for channel, _payload in listen(self.pool.conninfo, CHANNELS):
                 wake.set()
+                if channel == leadership.LEADER_CHANGED_CHANNEL:
+                    self._push_wake.set()
 
         listener_task = asyncio.create_task(listener())
+        push_task = asyncio.create_task(self._push_loop(stop))
         stop_wait = asyncio.create_task(stop.wait())
         try:
             while not stop.is_set():
@@ -94,10 +100,29 @@ class Dispatcher:
                     wake_wait.cancel()
         finally:
             listener_task.cancel()
+            push_task.cancel()
             stop_wait.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await listener_task
+            for task in (listener_task, push_task):
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
             await self.aclose()
+
+    async def _push_loop(self, stop: asyncio.Event) -> None:
+        """Hive state and feed pushes: their own task, so a slow wrapper never delays drain.
+
+        Wakes on `leader_changed` (from any dispatcher), after a local leader change and every
+        PUSH_INTERVAL_SECONDS; `push_once` throttles each cluster itself.
+        """
+        while not stop.is_set():
+            self._push_wake.clear()
+            try:
+                await hive.push_once(self.pool, self.settings, self._client, self.hive)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("hive push failed")
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._push_wake.wait(), hive.PUSH_INTERVAL_SECONDS)
 
     # ------------------------------------------------------------------ one wake
 
@@ -123,6 +148,7 @@ class Dispatcher:
                     log.exception("leadership pass for cluster %s failed", cluster_id)
                     continue
                 if change is not None:
+                    self._push_wake.set()
                     log.info(
                         "cluster %s leader %s epoch %s (%s)",
                         cluster_id,

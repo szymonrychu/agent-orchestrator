@@ -122,6 +122,16 @@ async def leadership_candidates(conn: psycopg.AsyncConnection) -> list[uuid.UUID
     return [r["id"] for r in await _all(conn, _CANDIDATES)]
 
 
+async def hive_clusters(conn: psycopg.AsyncConnection) -> list[dict]:
+    """Active hive clusters that have a leader row: id, slug, spec (the push loop's set)."""
+    return await _all(
+        conn,
+        "SELECT c.id, c.slug, c.spec FROM clusters c"
+        " JOIN cluster_leaders l ON l.cluster_id = c.id"
+        f" WHERE c.desired = 'active' AND {_HIVE} ORDER BY c.id",
+    )
+
+
 async def _leader(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID) -> dict | None:
     return await _one(
         conn,

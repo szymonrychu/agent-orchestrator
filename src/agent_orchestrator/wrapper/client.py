@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
@@ -25,6 +26,10 @@ from agent_orchestrator.wrapper.models import (
     WrapperUnreachable,
 )
 from agent_orchestrator.wrapper.sse import SSEParser
+
+log = logging.getLogger(__name__)
+
+NoteOutcome = Literal["ok", "disabled", "failed"]
 
 DEFAULT_TIMEOUT = 30.0
 
@@ -193,6 +198,33 @@ class WrapperClient:
     async def command(self, session_id: str, name: str) -> dict[str, Any]:
         resp = await self._request("POST", f"/sessions/{session_id}/commands", json={"name": name})
         return resp.json()
+
+    async def post_note(
+        self,
+        session_id: str,
+        text: str,
+        key: str | None = None,
+        source: str = "orchestrator",
+        timeout: float = 3.0,
+    ) -> NoteOutcome:
+        """Push a note into the session's inbox: keyed notes replace, the rest are appended.
+
+        "ok" when the wrapper accepted it, "disabled" for 409 notes_disabled (the cluster's
+        wrapper runs without a notes inbox: nothing to retry), "failed" for anything else
+        (unreachable, unknown or stopped session, refusal). Never raises; every miss is logged.
+        """
+        body: dict[str, Any] = {"text": text, "source": source}
+        if key is not None:
+            body["key"] = key
+        try:
+            await self._request("POST", f"/sessions/{session_id}/notes", json=body, timeout=timeout)
+        except WrapperError as exc:
+            log.info("note to session %s not delivered: %s", session_id, exc)
+            return "disabled" if exc.code == "notes_disabled" else "failed"
+        except WrapperUnreachable as exc:
+            log.info("note to session %s not delivered: %s", session_id, exc)
+            return "failed"
+        return "ok"
 
     async def peers(self) -> PeersView:
         return PeersView.model_validate((await self._request("GET", "/peers")).json())
