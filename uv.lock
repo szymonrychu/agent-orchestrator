@@ -49,7 +49,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "claude-code-wrapper", git = "https://github.com/szymonrychu/claude-code-wrapper?rev=ca2ddf39f134533e9767f6f1c1793f2472043eea" },
+    { name = "claude-code-wrapper", git = "https://github.com/szymonrychu/claude-code-wrapper?rev=1ced7750483ee3eecdda5b6b26adc87405680ab1" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
@@ -419,8 +419,9 @@ wheels = [
 [[package]]
 name = "claude-code-wrapper"
 version = "0.1.0"
-source = { git = "https://github.com/szymonrychu/claude-code-wrapper?rev=ca2ddf39f134533e9767f6f1c1793f2472043eea#ca2ddf39f134533e9767f6f1c1793f2472043eea" }
+source = { git = "https://github.com/szymonrychu/claude-code-wrapper?rev=1ced7750483ee3eecdda5b6b26adc87405680ab1#1ced7750483ee3eecdda5b6b26adc87405680ab1" }
 dependencies = [
+    { name = "anyio" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "prometheus-client" },
