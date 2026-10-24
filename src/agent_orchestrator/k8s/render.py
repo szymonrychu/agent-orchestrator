@@ -57,6 +57,23 @@ def _shutdown_timeout(grace: int) -> int:
     return max(grace - 10, grace // 2)
 
 
+def _lock_check_hook() -> dict[str, Any]:
+    """Advisory file-lock warning; the wrapper interpolates ${VAR} from the pod env."""
+    return {
+        "type": "webhook",
+        "url": "${ORCH_AGENT_URL}/agent/v1/locks/check",
+        "headers": {
+            "Authorization": "Bearer ${ORCH_AGENT_TOKEN}",
+            "X-Orch-Cluster": "${ORCH_CLUSTER_ID}",
+        },
+        "matcher": "^(Write|Edit|MultiEdit|NotebookEdit)$",
+        "blocking": True,
+        "on_error": "allow",
+        "timeout_seconds": 2,
+        "retries": 0,
+    }
+
+
 def _ccw_config(cluster: Cluster, settings: Settings) -> dict[str, Any]:
     spec, slug = cluster.spec, cluster.slug
     claude: dict[str, Any] = {
@@ -74,6 +91,7 @@ def _ccw_config(cluster: Cluster, settings: Settings) -> dict[str, Any]:
         claude["model"] = model
     if effort:
         claude["effort"] = effort
+    claude["main_agent_only_tools"] = ["mcp__any-mcp__orchestrator_*"]
     claude["permissions"] = {"deny": ["EnterPlanMode", "ExitPlanMode", "AskUserQuestion"]}
     claude["mcp_servers"] = {
         "any-mcp": {
@@ -108,14 +126,18 @@ def _ccw_config(cluster: Cluster, settings: Settings) -> dict[str, Any]:
             "shutdown_timeout_seconds": _shutdown_timeout(settings.agent_termination_grace_seconds)
         },
     }
-    if spec.peers:
+    cfg["notes"] = {"enabled": spec.hive}
+    if spec.hive and settings.agent_api_url:
+        cfg["hooks"]["onAgentToolCall"] = [_lock_check_hook()]
+    if spec.peers and spec.hive:
         cfg["peers"] = {
             "enabled": True,
             "name": "${POD_NAME}",
             "advertise_url": "${CCW_PEER_URL}",
             "token": "${CCW_PEER_TOKEN}",
             "static": [
-                pod_url(slug, f"{prefix(slug)}-{i}", settings) for i in range(spec.replicas)
+                pod_url(slug, f"{prefix(slug)}-{i}", settings)
+                for i in range(spec.max_replicas or spec.replicas)
             ],
         }
     return cfg

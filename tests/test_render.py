@@ -462,3 +462,71 @@ def test_agent_token_trust_domain_documented():
     assert "ORCH_AGENT_TOKEN" in config_of(objs)["claude"]["passthrough_env"]
     readme = (Path(__file__).parent.parent / "README.md").read_text().lower()
     assert "best-effort" in readme and "orch_agent_token" in readme
+
+
+def _render(cluster, **settings):
+    return render.render_cluster(
+        cluster, make_settings(agent_api_url=AGENT_URL, **settings), TOKENS
+    )
+
+
+def test_peer_seeds_from_cap():
+    cfg = config_of(_render(make_cluster(replicas=1, max_replicas=3)))
+    assert cfg["peers"]["static"] == [
+        f"http://agent-alpha-{i}.agent-alpha.agents.svc.cluster.local:8080" for i in range(3)
+    ]
+    assert cfg["peers"]["name"] == "${POD_NAME}"
+    assert cfg["peers"]["advertise_url"] == "${CCW_PEER_URL}"
+
+
+def test_alone_cluster_no_hive_config():
+    cfg = config_of(_render(make_cluster(replicas=1, static=True)))
+    assert not cfg.get("peers", {}).get("enabled")
+    assert cfg["notes"]["enabled"] is False
+    assert "onAgentToolCall" not in cfg["hooks"]
+    cfg = config_of(_render(make_cluster(replicas=3, max_replicas=3, peers=False)))
+    assert not cfg.get("peers", {}).get("enabled")
+    assert cfg["notes"]["enabled"] is True
+
+
+def test_hive_cluster_config():
+    cfg = config_of(_render(make_cluster(replicas=2)))
+    assert cfg["peers"]["enabled"] is True
+    assert cfg["notes"]["enabled"] is True
+    assert cfg["hooks"]["onAgentToolCall"] == [
+        {
+            "type": "webhook",
+            "url": "${ORCH_AGENT_URL}/agent/v1/locks/check",
+            "headers": {
+                "Authorization": "Bearer ${ORCH_AGENT_TOKEN}",
+                "X-Orch-Cluster": "${ORCH_CLUSTER_ID}",
+            },
+            "matcher": "^(Write|Edit|MultiEdit|NotebookEdit)$",
+            "blocking": True,
+            "on_error": "allow",
+            "timeout_seconds": 2,
+            "retries": 0,
+        }
+    ]
+    no_url = render.render_cluster(make_cluster(replicas=2), make_settings(), TOKENS)
+    assert "onAgentToolCall" not in config_of(no_url)["hooks"]
+
+
+def test_main_agent_only_tools_rendered():
+    for cluster in (make_cluster(replicas=1, static=True), make_cluster(replicas=3)):
+        cfg = config_of(_render(cluster))
+        assert cfg["claude"]["main_agent_only_tools"] == ["mcp__any-mcp__orchestrator_*"]
+
+
+@pytest.mark.parametrize(
+    "low,high",
+    [({"replicas": 1}, {"replicas": 3}), ({"replicas": 2}, {"replicas": 4})],
+)
+def test_runtime_fields_change_only_statefulset_replicas(low, high):
+    a = _render(make_cluster(max_replicas=4, **low))
+    b = _render(make_cluster(max_replicas=4, **high))
+    assert sts_of(a)["spec"]["replicas"] == low["replicas"]
+    assert sts_of(b)["spec"]["replicas"] == high["replicas"]
+    for objs in (a, b):
+        sts_of(objs)["spec"]["replicas"] = 0
+    assert a == b
