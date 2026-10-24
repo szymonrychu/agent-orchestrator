@@ -31,11 +31,7 @@ def token(cluster_id) -> str:
 
 
 def client_for(app, ip: str = IP0) -> httpx.AsyncClient:
-    transport = (
-        httpx.ASGITransport(app=app, client=(ip, 4321), raw_path=None)
-        if False
-        else httpx.ASGITransport(app=app, client=(ip, 4321))
-    )
+    transport = httpx.ASGITransport(app=app, client=(ip, 4321))
     return httpx.AsyncClient(transport=transport, base_url=f"http://orch:{AGENT_PORT}")
 
 
