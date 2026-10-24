@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from psycopg_pool import AsyncConnectionPool
 
 from agent_orchestrator import __version__
-from agent_orchestrator.api import clusters, errors, messages, presets, streams, workspace
+from agent_orchestrator.api import agent, clusters, errors, messages, presets, streams, workspace
 from agent_orchestrator.api.allowlist import PortGate, SourceAllowlist
 from agent_orchestrator.api.errors import error_response
 from agent_orchestrator.api.listener import Listener
@@ -57,6 +57,7 @@ def create_app(
     app.state.stream_poll_seconds = stream_poll_seconds
     errors.install(app)
     app.include_router(clusters.router)
+    app.include_router(agent.router)
     app.include_router(presets.router)
     app.include_router(messages.router)
     app.include_router(streams.router)

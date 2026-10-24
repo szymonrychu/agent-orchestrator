@@ -4,6 +4,23 @@
  */
 
 export interface paths {
+    "/agent/v1/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Identity, leader and members of the caller */
+        get: operations["me_agent_v1_me_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agents/{agent_id}/compact": {
         parameters: {
             query?: never;
@@ -772,6 +789,46 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /** Me */
+        Me: {
+            /**
+             * Agent Id
+             * Format: uuid
+             */
+            agent_id: string;
+            /**
+             * Cluster Id
+             * Format: uuid
+             */
+            cluster_id: string;
+            /** Epoch */
+            epoch: number | null;
+            /** Leader */
+            leader: string | null;
+            /** Max Replicas */
+            max_replicas: number;
+            /** Members */
+            members: components["schemas"]["Member"][];
+            /** Ordinal */
+            ordinal: number;
+            /** Pod Name */
+            pod_name: string;
+            /** Static */
+            static: boolean;
+        };
+        /** Member */
+        Member: {
+            /** Context Pct */
+            context_pct: number | null;
+            /** Leader */
+            leader: boolean;
+            /** Pod Name */
+            pod_name: string;
+            /** Ready */
+            ready: boolean;
+            /** State */
+            state: string;
+        };
         /** MessageAccepted */
         MessageAccepted: {
             /** Message Id */
@@ -1040,6 +1097,38 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    me_agent_v1_me_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-orch-cluster"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Me"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     compact_agent_api_v1_agents__agent_id__compact_post: {
         parameters: {
             query?: never;

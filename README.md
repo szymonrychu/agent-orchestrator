@@ -663,6 +663,39 @@ The `/clusters/{cluster_id}/events/stream` frames are named by the stored wrappe
 | `message_status` | `/stream` | `{"cluster_id", "queued", "failed", "messages": [<changed message views>]}` |
 | `cluster_removed` | `/stream` | `{"cluster_id"}` when a discard completed |
 
+## Agent API
+
+Agent pods call the orchestrator on `/agent/v1`. It is served only on the agent port (`ORCH_AGENT_PORT`, default 8001, reached through the agents Service); the main port answers 404 for it, and the agent port serves nothing else except `/healthz` and `/readyz`. The pod env carries `ORCH_AGENT_URL`, `ORCH_CLUSTER_ID` and `ORCH_AGENT_TOKEN`.
+
+Every request needs:
+
+- `Authorization: Bearer <ORCH_AGENT_TOKEN>`, the cluster's derived agent token.
+- `X-Orch-Cluster: <cluster id>`.
+
+The caller's identity is its socket peer: the direct peer IP must be the `pod_ip` of a not-gone agent of that cluster. Forwarded headers are never read.
+
+Errors use the usual `{"error": {"code", "message"}}` shape:
+
+- `401 unauthorized`: a header is missing, the cluster is unknown or the token is wrong. One shared message for every case.
+- `403 forbidden`: the peer IP is not a live agent pod of that cluster (including the former IP of a gone agent).
+
+### `GET /agent/v1/me`
+
+The caller's identity, the leader and the hive members.
+
+```json
+{
+  "cluster_id": "uuid", "agent_id": "uuid", "pod_name": "string", "ordinal": 0,
+  "leader": "pod name or null", "epoch": "int or null",
+  "max_replicas": 4, "static": false,
+  "members": [
+    {"pod_name": "string", "ready": true, "state": "idle", "context_pct": 12.5, "leader": true}
+  ]
+}
+```
+
+`leader` and `epoch` come from the cluster's leader record and are null while there is none. `members` are the not-gone agents by ordinal; `state` is the stored agent state and `context_pct` is null when unknown.
+
 ## Bench
 
 `orch bench SPEC --api URL --out FILE [--keep]` runs the experiment: does round-robin with several peered agents finish faster, fail less and verify more often? It talks only to the public `/api/v1` through httpx. See `examples/bench.yaml` (arms 1/off, 3/off and 3/on).

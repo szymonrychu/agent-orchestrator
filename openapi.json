@@ -952,6 +952,118 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "Me": {
+        "properties": {
+          "agent_id": {
+            "format": "uuid",
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "cluster_id": {
+            "format": "uuid",
+            "title": "Cluster Id",
+            "type": "string"
+          },
+          "epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Epoch"
+          },
+          "leader": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leader"
+          },
+          "max_replicas": {
+            "title": "Max Replicas",
+            "type": "integer"
+          },
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/Member"
+            },
+            "title": "Members",
+            "type": "array"
+          },
+          "ordinal": {
+            "title": "Ordinal",
+            "type": "integer"
+          },
+          "pod_name": {
+            "title": "Pod Name",
+            "type": "string"
+          },
+          "static": {
+            "title": "Static",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "cluster_id",
+          "agent_id",
+          "pod_name",
+          "ordinal",
+          "leader",
+          "epoch",
+          "max_replicas",
+          "static",
+          "members"
+        ],
+        "title": "Me",
+        "type": "object"
+      },
+      "Member": {
+        "properties": {
+          "context_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Pct"
+          },
+          "leader": {
+            "title": "Leader",
+            "type": "boolean"
+          },
+          "pod_name": {
+            "title": "Pod Name",
+            "type": "string"
+          },
+          "ready": {
+            "title": "Ready",
+            "type": "boolean"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pod_name",
+          "ready",
+          "state",
+          "context_pct",
+          "leader"
+        ],
+        "title": "Member",
+        "type": "object"
+      },
       "MessageAccepted": {
         "properties": {
           "message_id": {
@@ -1618,6 +1730,71 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/agent/v1/me": {
+      "get": {
+        "operationId": "me_agent_v1_me_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-orch-cluster",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Orch-Cluster"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Me"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Identity, leader and members of the caller",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
     "/api/v1/agents/{agent_id}/compact": {
       "post": {
         "operationId": "compact_agent_api_v1_agents__agent_id__compact_post",

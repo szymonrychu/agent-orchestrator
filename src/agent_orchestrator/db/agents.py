@@ -162,3 +162,39 @@ async def list_states(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID) -> d
         (cluster_id,),
     )
     return {agent_id: state for agent_id, state in await cur.fetchall()}
+
+
+async def by_pod_ip(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID, ip: str) -> Agent | None:
+    """The not-gone agent of the cluster whose pod has this IP, or None."""
+    row = await _one(
+        conn,
+        f"SELECT {_COLUMNS} FROM agents"
+        " WHERE cluster_id = %s AND pod_ip = %s AND gone_at IS NULL"
+        " ORDER BY ordinal LIMIT 1",
+        (cluster_id, ip),
+    )
+    return Agent(**row) if row is not None else None
+
+
+async def leader_of(
+    conn: psycopg.AsyncConnection, cluster_id: uuid.UUID
+) -> tuple[uuid.UUID, int] | None:
+    """(agent id, epoch) of the cluster's current leader row, or None."""
+    row = await _one(
+        conn,
+        "SELECT agent_id, epoch FROM cluster_leaders WHERE cluster_id = %s",
+        (cluster_id,),
+    )
+    return (row["agent_id"], row["epoch"]) if row is not None else None
+
+
+async def list_members(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID) -> list[dict]:
+    """Not-gone agents by ordinal with their stored state and context percentage."""
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "SELECT a.id, a.pod_name, a.ready, coalesce(s.state, 'unknown') AS state,"
+            " s.context_pct FROM agents a LEFT JOIN agent_status s ON s.agent_id = a.id"
+            " WHERE a.cluster_id = %s AND a.gone_at IS NULL ORDER BY a.ordinal",
+            (cluster_id,),
+        )
+        return list(await cur.fetchall())
