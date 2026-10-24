@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 import { ThemeProvider } from '@mui/material/styles'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { ApiError } from '../api/client'
 import type { FileContent, FileListing } from '../api/files'
 import type { StreamOptions } from '../api/stream'
 import { theme } from '../theme'
 import { FilesPanel } from './FilesPanel'
+import { useFileTree } from './useFileTree'
 
 const api = vi.hoisted(() => ({ listFiles: vi.fn(), readFile: vi.fn() }))
 const stream = vi.hoisted(() => ({ opened: [] as { url: string; opts: StreamOptions }[], close: vi.fn() }))
@@ -186,8 +187,7 @@ describe('FilesPanel', () => {
       expect(await screen.findByText('new.py')).toBeTruthy()
       expect(calls().slice(before)).toEqual([['c1', 'src']])
 
-      // Not loaded (lib), outside the root, wrong tool, a missing path and an unknown result id are all ignored.
-      await result(await call('Write', { file_path: '/work/lib/y.py' }))
+      // Outside the root, wrong tool, a missing path and an unknown result id are all ignored.
       await result(await call('Write', { file_path: '/elsewhere/src/z.py' }))
       await result(await call('Write', { file_path: '/workshop/src/z.py' }))
       await result(await call('Read', { file_path: '/work/src/main.py' }))
@@ -201,6 +201,29 @@ describe('FilesPanel', () => {
       await result(alt)
       await result(await call('NotebookEdit', { file_path: '/work/src/n.ipynb' }))
       expect(calls().slice(before + 1)).toEqual([['c1', ''], ['c1', 'src']])
+    })
+
+    test('event_driven_refresh a Write into a new directory refreshes the nearest loaded ancestor so the new directory appears', async () => {
+      let version = 0
+      serve({ '': () => listing('', version++ ? [entry('src', 'dir'), entry('fresh', 'dir')] : [entry('src', 'dir')]), src: listing('src', []) })
+      mount()
+      await screen.findByText('src')
+      const before = calls().length
+      await result(await call('Write', { file_path: '/work/fresh/deep/a.py' }))
+      expect(await screen.findByText('fresh')).toBeTruthy()
+      expect(calls().slice(before)).toEqual([['c1', '']])
+    })
+
+    test('event_driven_refresh a NotebookEdit with notebook_path refreshes its parent directory', async () => {
+      let version = 0
+      serve({ '': listing('', [entry('src', 'dir')]), src: () => listing('src', version++ ? [entry('a.ipynb'), entry('b.ipynb')] : [entry('a.ipynb')]) })
+      mount()
+      fireEvent.click(await screen.findByText('src'))
+      await screen.findByText('a.ipynb')
+      const before = calls().length
+      await result(await call('NotebookEdit', { notebook_path: '/work/src/a.ipynb' }))
+      expect(await screen.findByText('b.ipynb')).toBeTruthy()
+      expect(calls().slice(before)).toEqual([['c1', 'src']])
     })
 
     test('event_driven_refresh a written file open in the preview is refetched on the result', async () => {
@@ -352,5 +375,63 @@ describe('FilesPanel', () => {
       </ThemeProvider>,
     )
     await waitFor(() => expect(screen.queryByTestId('file-preview-text')).toBeNull())
+  })
+})
+
+describe('useFileTree', () => {
+  test('an unchanged listing refresh keeps the tree state object', async () => {
+    serve({ '': listing('', [entry('a.txt')]) })
+    const { result } = renderHook(() => useFileTree('c1'))
+    await waitFor(() => expect(result.current.state.dirs[''] && !result.current.state.dirs[''].loading).toBe(true))
+    const before = result.current.state
+    let renders = 0
+    renderHook(() => void renders++)
+    await act(async () => {
+      result.current.refresh('')
+      await new Promise((r) => setTimeout(r, 10))
+    })
+    expect(api.listFiles).toHaveBeenCalledTimes(2)
+    expect(result.current.state).toBe(before)
+    // A changed listing does commit.
+    serve({ '': listing('', [entry('a.txt'), entry('b.txt')]) })
+    await act(async () => {
+      result.current.refresh('')
+      await new Promise((r) => setTimeout(r, 10))
+    })
+    expect(result.current.state).not.toBe(before)
+    expect(result.current.state.dirs[''].entries).toHaveLength(2)
+  })
+
+  test('pollExpanded skips a directory whose load is in flight', async () => {
+    let release: (l: FileListing) => void = () => {}
+    api.listFiles.mockImplementation(async (_c: string, path: string) => {
+      if (path === 'src') return new Promise<FileListing>((r) => (release = r))
+      return listing('', [entry('src', 'dir')])
+    })
+    const { result } = renderHook(() => useFileTree('c1'))
+    await waitFor(() => expect(result.current.state.dirs['']?.loading).toBe(false))
+    act(() => result.current.expand('src'))
+    const before = api.listFiles.mock.calls.length
+    act(() => result.current.pollExpanded())
+    expect(api.listFiles.mock.calls.slice(before).map((c) => c[1])).toEqual([''])
+    await act(async () => release(listing('src', [entry('x.py')])))
+    await waitFor(() => expect(result.current.state.dirs.src?.entries).toHaveLength(1))
+  })
+
+  test('pollExpanded retries a root in error or missing state', async () => {
+    let fail: ApiError | null = new ApiError(409, 'agent_not_ready', 'not ready')
+    api.listFiles.mockImplementation(async () => {
+      if (fail) throw fail
+      return listing('', [entry('a.txt')])
+    })
+    const { result } = renderHook(() => useFileTree('c1'))
+    await waitFor(() => expect(result.current.state.dirs['']?.error).toContain('agent_not_ready'))
+    fail = new ApiError(404, 'not_found', 'gone')
+    await act(async () => result.current.pollExpanded())
+    await waitFor(() => expect(result.current.state.missing).toBe(true))
+    fail = null
+    await act(async () => result.current.pollExpanded())
+    await waitFor(() => expect(result.current.state.dirs[''].entries).toHaveLength(1))
+    expect(result.current.state.missing).toBe(false)
   })
 })

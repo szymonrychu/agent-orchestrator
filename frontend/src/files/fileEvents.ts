@@ -31,6 +31,13 @@ export function parentInRoot(filePath: string, root: string): string | null {
   return parts.slice(0, -1).join('/')
 }
 
+/** The directory itself when loaded, else the closest loaded ancestor, ending at the root. */
+function nearestLoaded(dir: string, isLoaded: (path: string) => boolean): string {
+  let p = dir
+  while (p !== '' && !isLoaded(p)) p = p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : ''
+  return p
+}
+
 /** Root-relative path of an absolute file path already known to be inside `root`. */
 function relativeInRoot(filePath: string, root: string): string {
   return filePath.slice(root.replace(/\/+$/, '').length + 1)
@@ -73,12 +80,13 @@ export function createFileEvents(targets: FileEventTargets, bashMs: number = BAS
         if (root === null) return
         const parent = parentInRoot(path, root)
         if (parent === null) return
-        if (targets.isLoaded(parent)) targets.refresh(parent)
+        targets.refresh(nearestLoaded(parent, targets.isLoaded))
         targets.written?.(relativeInRoot(path, root))
         return
       }
       if (event.type !== 'tool_call' || typeof name !== 'string' || !WRITE_TOOLS.has(name)) return
-      const filePath = record(data.tool_input ?? data.input)?.file_path
+      const input = record(data.tool_input ?? data.input)
+      const filePath = input?.file_path ?? input?.notebook_path
       if (typeof filePath === 'string' && typeof data.tool_use_id === 'string') writes.set(data.tool_use_id, filePath)
     },
     dispose() {
