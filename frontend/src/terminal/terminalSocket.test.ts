@@ -212,6 +212,7 @@ describe('openTerminalSocket', () => {
 
   it('refused_after_ten_attempts', () => {
     const { statuses } = setup()
+    last().open()
     last().drop(1006)
     for (let i = 0; i < 10; i++) {
       expect(statuses[statuses.length - 1]).toBe('reconnecting')
@@ -222,6 +223,41 @@ describe('openTerminalSocket', () => {
     expect(statuses[statuses.length - 1]).toBe('refused')
     vi.advanceTimersByTime(120000)
     expect(FakeWebSocket.all).toHaveLength(11)
+  })
+
+  it('refuses after two closes before open', () => {
+    const reasons: (string | undefined)[] = []
+    const statuses: TerminalStatus[] = []
+    openTerminalSocket('ws://h/attach', {
+      onData: () => {},
+      onExit: () => {},
+      onStatus: (s, reason) => {
+        statuses.push(s)
+        reasons.push(reason)
+      },
+      WebSocketImpl: impl,
+    })
+    last().drop(1006)
+    expect(statuses[statuses.length - 1]).toBe('reconnecting')
+    vi.advanceTimersByTime(1000)
+    expect(FakeWebSocket.all).toHaveLength(2)
+    last().drop(1006)
+    expect(statuses[statuses.length - 1]).toBe('refused')
+    expect(reasons[reasons.length - 1]).toBe('connection refused before open (check ORCH_ALLOWED_ORIGINS)')
+    vi.advanceTimersByTime(120000)
+    expect(FakeWebSocket.all).toHaveLength(2)
+  })
+
+  it('a socket that opened keeps the backoff after closes', () => {
+    const { statuses } = setup()
+    last().open()
+    last().drop(1006)
+    vi.advanceTimersByTime(1000)
+    last().drop(1006)
+    vi.advanceTimersByTime(2000)
+    last().drop(1006)
+    expect(statuses[statuses.length - 1]).toBe('reconnecting')
+    expect(statuses).not.toContain('refused')
   })
 
   it('exit_frame', () => {

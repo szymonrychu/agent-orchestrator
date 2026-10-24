@@ -13,7 +13,8 @@ export interface TerminalSocketOptions {
   onData: (bytes: Uint8Array) => void
   /** The shell exited with this code (null when the wrapper did not know it). */
   onExit: (code: number | null) => void
-  onStatus: (status: TerminalStatus) => void
+  /** `reason` accompanies a 'refused' the socket decided on its own (not a close code). */
+  onStatus: (status: TerminalStatus, reason?: string) => void
   /** Injectable for tests. */
   WebSocketImpl?: typeof WebSocket
 }
@@ -32,6 +33,12 @@ export const MAX_FRAME_BYTES = 65536
 export const PING_INTERVAL_MS = 20000
 /** Reconnect attempts after one failure before the tab is refused. */
 export const MAX_RECONNECT_ATTEMPTS = 10
+/**
+ * A refused WebSocket upgrade (an Origin the api does not allow is an HTTP 403) reaches the browser as a
+ * plain 1006 close, indistinguishable from a network fault except that the socket never opened.
+ */
+export const REFUSED_BEFORE_OPEN_REASON = 'connection refused before open (check ORCH_ALLOWED_ORIGINS)'
+const MAX_CLOSES_BEFORE_OPEN = 2
 
 const OPEN = 1
 const NORMAL = 1000
@@ -45,6 +52,8 @@ export function openTerminalSocket(url: string, opts: TerminalSocketOptions): Te
   let ws: WebSocket | null = null
   let finished = false
   let attempts = 0
+  let everOpened = false
+  let closesBeforeOpen = 0
   let delay = BACKOFF_START_MS
   let size: { cols: number; rows: number } | null = null
   let retryTimer: ReturnType<typeof setTimeout> | null = null
@@ -56,12 +65,12 @@ export function openTerminalSocket(url: string, opts: TerminalSocketOptions): Te
     if (pingTimer !== null) clearInterval(pingTimer)
     pingTimer = null
   }
-  const finish = (status: TerminalStatus) => {
+  const finish = (status: TerminalStatus, reason?: string) => {
     finished = true
     stopPing()
     if (retryTimer !== null) clearTimeout(retryTimer)
     retryTimer = null
-    opts.onStatus(status)
+    opts.onStatus(status, reason)
   }
 
   const onFrame = (e: MessageEvent) => {
@@ -90,6 +99,7 @@ export function openTerminalSocket(url: string, opts: TerminalSocketOptions): Te
     stopPing()
     if (finished) return
     if (code === NORMAL) return finish('closed')
+    if (!everOpened && ++closesBeforeOpen >= MAX_CLOSES_BEFORE_OPEN) return finish('refused', REFUSED_BEFORE_OPEN_REASON)
     if (REFUSED_CODES.has(code) || attempts >= MAX_RECONNECT_ATTEMPTS) return finish('refused')
     attempts += 1
     opts.onStatus('reconnecting')
@@ -104,6 +114,7 @@ export function openTerminalSocket(url: string, opts: TerminalSocketOptions): Te
     socket.binaryType = 'arraybuffer'
     socket.onopen = () => {
       if (finished || ws !== socket) return
+      everOpened = true
       opts.onStatus('open')
       if (size) control({ type: 'resize', ...size })
       pingTimer = setInterval(() => control({ type: 'ping' }), PING_INTERVAL_MS)

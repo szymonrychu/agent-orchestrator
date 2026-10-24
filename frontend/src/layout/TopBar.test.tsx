@@ -25,7 +25,7 @@ describe('TopBar', () => {
   test('tabs_one_per_cluster_in_slug_order', () => {
     const { onSelect } = setup()
     const tabs = screen.getAllByRole('tab')
-    expect(tabs.map((t) => t.textContent)).toEqual(['alpha40%', 'bravo90%'])
+    expect(tabs.map((t) => t.textContent)).toEqual(['alpha1/140%', 'bravo1/190%'])
     expect(tabs[0].getAttribute('aria-selected')).toBe('false')
     expect(tabs[1].getAttribute('aria-selected')).toBe('true')
     expect(within(tabs[0]).getByRole('img', { name: 'state working' })).toBeTruthy()
@@ -35,6 +35,17 @@ describe('TopBar', () => {
     expect(within(tabs[0]).getByTestId('context-gauge-tick')).toBeTruthy()
     fireEvent.click(tabs[0])
     expect(onSelect).toHaveBeenCalledWith('c1')
+  })
+
+  test('tab shows hook failed mark and ready count', () => {
+    const failed = cluster('c3', 'charlie', 'error', null)
+    failed.cluster = { ...failed.cluster, status: { discard_hook_failed: true }, summary: { ...failed.cluster.summary, ready: 2, replicas: 3 } } as ClusterView
+    setup({ clusters: [...CLUSTERS, failed] })
+    const tabs = screen.getAllByRole('tab')
+    expect(within(tabs[2]).getByText('2/3')).toBeTruthy()
+    expect(within(tabs[2]).getByLabelText('discard hook failed')).toBeTruthy()
+    expect(within(tabs[0]).queryByLabelText('discard hook failed')).toBeNull()
+    expect(within(tabs[0]).getByText('1/1')).toBeTruthy()
   })
 
   test('tab_actions_offer_discard_only', () => {

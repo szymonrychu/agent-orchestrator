@@ -11,7 +11,7 @@ import type { TerminalStatus } from './terminalSocket'
 export interface XtermViewProps {
   /** The attach WebSocket of the shell. A new url (or a remount) attaches afresh. */
   url: string
-  onStatus?: (status: TerminalStatus) => void
+  onStatus?: (status: TerminalStatus, reason?: string) => void
 }
 
 /** Fills its parent; refits whenever the parent changes size (panel drag, minimize, maximize, tab shown). */
@@ -34,10 +34,10 @@ export function XtermView({ url, onStatus }: XtermViewProps) {
     const socket = openTerminalSocket(url, {
       onData: (bytes) => term.write(bytes),
       onExit: (code) => term.writeln(`\r\n[process exited with code ${code ?? 'unknown'}]`),
-      onStatus: (status) => {
+      onStatus: (status, reason) => {
         // every open after the first is a reconnect, and the wrapper replays the scrollback into it
         if (status === 'open' && ++opens > 1) term.reset()
-        onStatusRef.current?.(status)
+        onStatusRef.current?.(status, reason)
       },
     })
     term.onData((data) => socket.send(data))

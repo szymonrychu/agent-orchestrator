@@ -32,11 +32,13 @@ interface Tab {
   /** Bumped by Retry to attach afresh. */
   attempt: number
   refused: boolean
+  /** Why the socket gave up, when it said. */
+  refusedReason: string | null
 }
 
 const SHORT_ID = 6
 
-const toTab = (t: TerminalView): Tab => ({ agentId: t.agent_id, terminalId: t.terminal_id, label: `${t.pod_name} ${t.terminal_id.slice(0, SHORT_ID)}`, attempt: 0, refused: false })
+const toTab = (t: TerminalView): Tab => ({ agentId: t.agent_id, terminalId: t.terminal_id, label: `${t.pod_name} ${t.terminal_id.slice(0, SHORT_ID)}`, attempt: 0, refused: false, refusedReason: null })
 
 function errorText(e: unknown): string {
   if (e instanceof ApiError) return `${e.code}: ${e.message}`
@@ -53,6 +55,9 @@ function ClusterTerminals({ clusterId, agents }: { clusterId: string; agents: Ag
   const [active, setActive] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null)
+  const [unavailable, setUnavailable] = useState<string[]>([])
+  // The listing covers ready agents only: it is repeated whenever that set changes, so shells of a late agent show up.
+  const readyKey = agents.filter((a) => a.ready).map((a) => a.id).sort().join(',')
 
   // Shells outlive the panel (tab switches, reloads): reopen every alive one of the cluster.
   useEffect(() => {
@@ -60,16 +65,21 @@ function ClusterTerminals({ clusterId, agents }: { clusterId: string; agents: Ag
     listTerminals(clusterId).then(
       (list) => {
         if (!live) return
-        const opened = list.terminals.filter((t) => t.alive).map(toTab)
-        setTabs(opened)
-        setActive(opened[0]?.terminalId ?? null)
+        setError(null)
+        setUnavailable(list.unavailable_agents)
+        const alive = list.terminals.filter((t) => t.alive).map(toTab)
+        setTabs((prev) => {
+          const known = new Set(prev.map((t) => t.terminalId))
+          return [...prev, ...alive.filter((t) => !known.has(t.terminalId))]
+        })
+        setActive((current) => current ?? alive[0]?.terminalId ?? null)
       },
       (e) => live && setError(errorText(e)),
     )
     return () => {
       live = false
     }
-  }, [clusterId])
+  }, [clusterId, readyKey])
 
   const preselected = agents.find((a) => a.ready)?.id
 
@@ -106,7 +116,8 @@ function ClusterTerminals({ clusterId, agents }: { clusterId: string; agents: Ag
   }, [])
 
   const onStatus = useCallback(
-    (terminalId: string, status: TerminalStatus) => patch(terminalId, { refused: status === 'refused' }),
+    (terminalId: string, status: TerminalStatus, reason?: string) =>
+      patch(terminalId, { refused: status === 'refused', refusedReason: status === 'refused' ? (reason ?? null) : null }),
     [patch],
   )
 
@@ -155,6 +166,11 @@ function ClusterTerminals({ clusterId, agents }: { clusterId: string; agents: Ag
           {error}
         </Box>
       )}
+      {unavailable.length > 0 && (
+        <Box data-testid="terminal-unavailable" sx={{ px: 2, py: 1, fontSize: `${TOKENS.fontSizes.sm / 16}rem`, color: 'warning.main' }}>
+          {`shells on ${unavailable.map((id) => agents.find((a) => a.id === id)?.pod_name ?? id).join(', ')} unavailable`}
+        </Box>
+      )}
       {tabs.length === 0 && !error && (
         <Typography color="text.secondary" sx={{ p: 2 }}>
           No terminals
@@ -165,8 +181,8 @@ function ClusterTerminals({ clusterId, agents }: { clusterId: string; agents: Ag
           <Box key={t.terminalId} role="tabpanel" hidden={t.terminalId !== active} sx={{ position: 'absolute', inset: 0, display: t.terminalId === active ? 'flex' : 'none', flexDirection: 'column' }}>
             {t.refused && (
               <Box data-testid="terminal-refused" sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 2, py: 1, fontSize: `${TOKENS.fontSizes.sm / 16}rem`, color: 'error.main' }}>
-                <span>Connection refused: the terminal could not be reached.</span>
-                <Button size="small" onClick={() => patch(t.terminalId, (p) => ({ attempt: p.attempt + 1, refused: false }))}>
+                <span>{`Connection refused: the terminal could not be reached${t.refusedReason ? ` (${t.refusedReason})` : ''}.`}</span>
+                <Button size="small" onClick={() => patch(t.terminalId, (p) => ({ attempt: p.attempt + 1, refused: false, refusedReason: null }))}>
                   Retry
                 </Button>
                 <Button size="small" onClick={() => void close(t)}>
@@ -175,7 +191,7 @@ function ClusterTerminals({ clusterId, agents }: { clusterId: string; agents: Ag
               </Box>
             )}
             <Box sx={{ flexGrow: 1, minHeight: 0 }}>
-              <XtermView key={t.attempt} url={terminalSocketUrl(t.agentId, t.terminalId)} onStatus={(s) => onStatus(t.terminalId, s)} />
+              <XtermView key={t.attempt} url={terminalSocketUrl(t.agentId, t.terminalId)} onStatus={(s, reason) => onStatus(t.terminalId, s, reason)} />
             </Box>
           </Box>
         ))}

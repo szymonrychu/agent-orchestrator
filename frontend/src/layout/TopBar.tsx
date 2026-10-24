@@ -2,6 +2,7 @@
 import { useState } from 'react'
 import AddIcon from '@mui/icons-material/Add'
 import MenuIcon from '@mui/icons-material/Menu'
+import ErrorOutlineIcon from '@mui/icons-material/ErrorOutlineOutlined'
 import MoreVertIcon from '@mui/icons-material/MoreVert'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
@@ -10,6 +11,7 @@ import Menu from '@mui/material/Menu'
 import MenuItem from '@mui/material/MenuItem'
 import Tab from '@mui/material/Tab'
 import Tabs from '@mui/material/Tabs'
+import Tooltip from '@mui/material/Tooltip'
 import { ContextGauge } from '../ribbon/ContextGauge'
 import { StateMark } from '../ribbon/stateMark'
 import type { ClusterEntry } from '../ribbon/useClusters'
@@ -54,6 +56,14 @@ export function TopBar({ clusters, selectedId, onSelect, onNew, onDiscard, setti
               <Box component="span" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                 <StateMark state={cluster.summary.state} />
                 <Box component="span" sx={{ fontWeight: TOKENS.fontWeights.medium }}>{cluster.slug}</Box>
+                {cluster.status.discard_hook_failed ? (
+                  <Tooltip title="discard hook failed">
+                    <ErrorOutlineIcon fontSize="small" color="error" role="img" aria-label="discard hook failed" />
+                  </Tooltip>
+                ) : null}
+                <Tooltip title={`${cluster.summary.ready} of ${cluster.summary.replicas} pods ready`}>
+                  <Box component="span" sx={{ fontSize: `${TOKENS.fontSizes.sm / 16}rem`, color: 'text.secondary' }}>{`${cluster.summary.ready}/${cluster.summary.replicas}`}</Box>
+                </Tooltip>
                 <ContextGauge value={cluster.summary.context_pct_max} autoCompactPct={cluster.summary.auto_compact_pct} />
                 <IconButton
                   size="small"

@@ -368,4 +368,48 @@ describe('TerminalPanel', () => {
     expect(sockets.all[0].close).toHaveBeenCalled()
     expect(api.deleteTerminal).not.toHaveBeenCalled()
   })
+
+  test('relists when ready agents change and shows unavailable agents', async () => {
+    api.listTerminals.mockResolvedValueOnce({ terminals: [shell('aaaaaa111')], unavailable_agents: [] })
+    const view = mount()
+    await waitFor(() => expect(tabs()).toHaveLength(1))
+    expect(api.listTerminals).toHaveBeenCalledTimes(1)
+    // a status delta that leaves the ready set alone does not list again
+    view.rerender(
+      <ThemeProvider theme={theme}>
+        <TerminalPanel cluster={CLUSTER} agents={AGENTS.map((a) => ({ ...a }))} />
+      </ThemeProvider>,
+    )
+    await flush()
+    expect(api.listTerminals).toHaveBeenCalledTimes(1)
+    // agent a0 becomes ready late: its shells appear, existing tabs stay
+    api.listTerminals.mockResolvedValueOnce({ terminals: [shell('aaaaaa111'), shell('dddddd444', 'a0')], unavailable_agents: ['a2'] })
+    view.rerender(
+      <ThemeProvider theme={theme}>
+        <TerminalPanel cluster={CLUSTER} agents={[agent('a0', 0), agent('a1', 1), agent('a2', 2)]} />
+      </ThemeProvider>,
+    )
+    await waitFor(() => expect(tabs()).toHaveLength(2))
+    expect(api.listTerminals).toHaveBeenCalledTimes(2)
+    expect(tabs().map((t) => t.textContent)).toEqual(['alpha-1 aaaaaa', 'alpha-0 dddddd'])
+    expect(sockets.all).toHaveLength(2)
+    expect(screen.getByTestId('terminal-unavailable').textContent).toBe('shells on alpha-2 unavailable')
+    // the notice clears once the next listing has no unavailable agents
+    api.listTerminals.mockResolvedValueOnce({ terminals: [shell('aaaaaa111'), shell('dddddd444', 'a0')], unavailable_agents: [] })
+    view.rerender(
+      <ThemeProvider theme={theme}>
+        <TerminalPanel cluster={CLUSTER} agents={[agent('a0', 0), agent('a1', 1), agent('a2', 2, false)]} />
+      </ThemeProvider>,
+    )
+    await waitFor(() => expect(screen.queryByTestId('terminal-unavailable')).toBeNull())
+    expect(api.listTerminals).toHaveBeenCalledTimes(3)
+  })
+
+  test('refused tab shows the socket reason', async () => {
+    api.listTerminals.mockResolvedValue({ terminals: [shell('aaaaaa111')], unavailable_agents: [] })
+    mount()
+    await waitFor(() => expect(tabs()).toHaveLength(1))
+    act(() => lastSocket().opts.onStatus('refused', 'connection refused before open (check ORCH_ALLOWED_ORIGINS)'))
+    expect(screen.getByTestId('terminal-refused').textContent).toContain('check ORCH_ALLOWED_ORIGINS')
+  })
 })
