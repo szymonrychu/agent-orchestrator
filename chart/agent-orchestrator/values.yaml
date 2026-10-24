@@ -83,29 +83,35 @@ ingress:
 # `orch <component>`. The ingester and reconciler hold advisory locks, so a second replica
 # is a hot standby and replicas above 1 are safe. Probes given here replace the defaults;
 # the api defaults to /healthz (liveness) and /readyz (readiness), the others to none.
+# podAnnotations per component merge over the global podAnnotations (component wins), so a
+# sidecar-injecting webhook can target the api pod alone.
 components:
   api:
     replicas: 1
     resources: {}
     extraArgs: []
+    podAnnotations: {}
     livenessProbe: {}
     readinessProbe: {}
   dispatcher:
     replicas: 1
     resources: {}
     extraArgs: []
+    podAnnotations: {}
     livenessProbe: {}
     readinessProbe: {}
   ingester:
     replicas: 1
     resources: {}
     extraArgs: []
+    podAnnotations: {}
     livenessProbe: {}
     readinessProbe: {}
   reconciler:
     replicas: 1
     resources: {}
     extraArgs: []
+    podAnnotations: {}
     livenessProbe: {}
     readinessProbe: {}
 
