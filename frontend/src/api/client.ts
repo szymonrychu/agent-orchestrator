@@ -5,7 +5,6 @@ type S = components['schemas'];
 export type ClusterView = S['ClusterView'];
 export type ClusterSpec = S['ClusterSpec'];
 export type CreateCluster = S['CreateCluster'];
-export type PatchCluster = S['PatchCluster'];
 export type AgentView = S['AgentView'];
 export type MessageView = S['MessageView'];
 export type MessageAccepted = S['MessageAccepted'];
@@ -76,8 +75,6 @@ export const listClusters = () => request<ClusterView[]>('GET', '/clusters');
 export const getCluster = (clusterId: string) => request<ClusterView>('GET', `/clusters/${id(clusterId)}`);
 /** Body: exactly one of `spec` or `preset_id` (the server answers 422 otherwise); `slug` is optional with a preset. */
 export const createCluster = (body: CreateCluster) => request<ClusterView>('POST', '/clusters', body);
-export const patchCluster = (clusterId: string, body: PatchCluster) =>
-  request<ClusterView>('PATCH', `/clusters/${id(clusterId)}`, body);
 /** Discards the cluster; takes no purge parameter. */
 export const deleteCluster = (clusterId: string) => request<ClusterView>('DELETE', `/clusters/${id(clusterId)}`);
 export const listPresets = () => request<PresetView[]>('GET', '/presets');
