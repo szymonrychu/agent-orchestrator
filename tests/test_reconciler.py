@@ -521,7 +521,11 @@ async def test_secrets_only_created_patched_deleted(env):
         ("patch", "agent-alpha-ccw")
     }
     secret = env.kube.applied("Secret")[-1].obj
-    assert set(secret["stringData"]) == {"CCW_AUTH_TOKEN", "CCW_PEER_TOKEN"}
+    assert set(secret["stringData"]) == {
+        "CCW_AUTH_TOKEN",
+        "CCW_PEER_TOKEN",
+        "ORCH_AGENT_TOKEN",
+    }
     got = await env.get(c.id)
     assert got.status["phase"] == "pending" and got.observed_generation == 2
 
