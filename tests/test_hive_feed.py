@@ -130,7 +130,7 @@ def test_pending_bash_carried_over():
     out, pending = digest([c], now=T0 + timedelta(seconds=5))
     assert out == [] and pending == [1]
     out, pending = digest([c, result(2, "a-0", "u1", exit_code=0)], now=T0 + timedelta(seconds=9))
-    assert out == [("a-0", "a-0 ran: sleep 5 (exit 0)")] and pending == []
+    assert out == [("a-0", "a-0 ran: sleep 5 (ok)")] and pending == []
     late = T0 + timedelta(seconds=PENDING_BASH_TIMEOUT_SECONDS + 1)
     out, pending = digest([c], now=late)
     assert out == [("a-0", "a-0 ran: sleep 5")] and pending == []
