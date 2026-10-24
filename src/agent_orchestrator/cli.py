@@ -70,9 +70,10 @@ def bind_sockets(settings) -> list:
     """The main and agent listening sockets, bound here so one server can serve both."""
     import socket
 
+    family = socket.AF_INET6 if ":" in settings.http_host else socket.AF_INET
     socks = []
     for port in (settings.http_port, settings.agent_port):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock = socket.socket(family, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind((settings.http_host, port))
         sock.listen(2048)

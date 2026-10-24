@@ -112,3 +112,23 @@ def test_two_sockets_bound():
     finally:
         for s in socks:
             s.close()
+
+
+def test_bind_sockets_ipv6_host():
+    if not socket.has_ipv6:
+        pytest.skip("no ipv6")
+    with socket.socket(socket.AF_INET6) as probe:
+        try:
+            probe.bind(("::1", 0))
+        except OSError:
+            pytest.skip("ipv6 loopback unavailable")
+        a = probe.getsockname()[1]
+    with socket.socket(socket.AF_INET6) as probe:
+        probe.bind(("::1", 0))
+        b = probe.getsockname()[1]
+    socks = cli.bind_sockets(Settings(http_host="::1", http_port=a, agent_port=b))
+    try:
+        assert all(s.family == socket.AF_INET6 for s in socks)
+    finally:
+        for s in socks:
+            s.close()
