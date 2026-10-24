@@ -26,7 +26,7 @@ dev = [
     "pytest-asyncio",
     "testcontainers[postgres]",
     "ruff",
-    "claude-code-wrapper @ git+https://github.com/szymonrychu/claude-code-wrapper@1ced7750483ee3eecdda5b6b26adc87405680ab1",
+    "claude-code-wrapper @ git+https://github.com/szymonrychu/claude-code-wrapper@e9ffa62cb924799b8cd79b9d07595d490b53b920",
 ]
 
 [tool.hatch.metadata]
