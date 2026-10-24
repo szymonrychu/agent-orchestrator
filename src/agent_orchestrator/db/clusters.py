@@ -21,10 +21,6 @@ class ClusterExists(Exception):
     """A cluster with this slug already has a row."""
 
 
-class ClusterDeleting(Exception):
-    """The cluster is being discarded and cannot be changed."""
-
-
 class ClusterNotFound(Exception):
     pass
 
@@ -111,25 +107,6 @@ async def list_clusters(conn: psycopg.AsyncConnection) -> list[Cluster]:
 async def count_active(conn: psycopg.AsyncConnection) -> int:
     cur = await conn.execute("SELECT count(*) FROM clusters")
     return (await cur.fetchone())[0]
-
-
-async def update_spec(
-    conn: psycopg.AsyncConnection, cluster_id: uuid.UUID, spec: ClusterSpec
-) -> Cluster:
-    async with conn.transaction():
-        rows = await _fetch(
-            conn,
-            "UPDATE clusters SET spec = %s, generation = generation + 1"
-            " WHERE id = %s AND desired = 'active' RETURNING *",
-            (_dump(spec), cluster_id),
-        )
-        if not rows:
-            existing = await get(conn, cluster_id)
-            if existing is None:
-                raise ClusterNotFound(str(cluster_id))
-            raise ClusterDeleting(existing.slug)
-        await _notify(conn, cluster_id)
-    return rows[0]
 
 
 async def request_delete(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID) -> Cluster:

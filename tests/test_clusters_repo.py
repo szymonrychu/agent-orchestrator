@@ -1,3 +1,5 @@
+import inspect
+
 import pytest
 from factories import (
     insert_agent,
@@ -10,8 +12,7 @@ from factories import (
 from pydantic import ValidationError
 
 from agent_orchestrator.db import clusters
-from agent_orchestrator.db.clusters import ClusterDeleting, ClusterExists
-from agent_orchestrator.db.pool import listen
+from agent_orchestrator.db.clusters import ClusterExists
 from agent_orchestrator.settings import Settings
 from agent_orchestrator.spec import ClusterSpec, SpecInvalid, validate_slug, validate_spec
 
@@ -40,27 +41,6 @@ def test_slug_rules():
             validate_slug(bad)
 
 
-async def test_update_bumps_generation_and_notifies(pool, dsn):
-    async with pool.connection() as conn:
-        c = await clusters.create(conn, "alpha", ClusterSpec())
-    import asyncio
-
-    got: list = []
-
-    async def reader():
-        async for ch, payload in listen(dsn, ["cluster_changed"]):
-            got.append((ch, payload))
-            return
-
-    task = asyncio.create_task(reader())
-    await asyncio.sleep(0.5)
-    async with pool.connection() as conn:
-        u = await clusters.update_spec(conn, c.id, ClusterSpec(replicas=2))
-    await asyncio.wait_for(task, 5)
-    assert u.generation == 2 and u.spec.replicas == 2
-    assert got == [("cluster_changed", {"cluster_id": str(c.id)})]
-
-
 async def test_delete_marks_deleting(pool):
     async with pool.connection() as conn:
         c = await clusters.create(conn, "alpha", ClusterSpec())
@@ -68,8 +48,6 @@ async def test_delete_marks_deleting(pool):
         assert (d.desired, d.generation) == ("deleting", 2)
         again = await clusters.request_delete(conn, c.id)
         assert (again.desired, again.generation) == ("deleting", 2)
-        with pytest.raises(ClusterDeleting):
-            await clusters.update_spec(conn, c.id, ClusterSpec())
         listed = await clusters.list_clusters(conn)
         assert [x.slug for x in listed] == ["alpha"]
         s = await clusters.set_status(conn, c.id, {"phase": "x"}, 2)
@@ -214,3 +192,24 @@ def test_trailing_newline_rejected():
         ClusterSpec(workdir="wd\n")
     with pytest.raises(ValidationError):
         ClusterSpec(env={"FOO\n": "x"})
+
+
+def test_live_edit_code_retired():
+    # names are split so the retired symbols never appear as a literal in the tree
+    for name in ("update_" + "spec", "Cluster" + "Deleting"):
+        assert not hasattr(clusters, name), name
+    assert "stored" in inspect.signature(validate_spec).parameters
+
+
+def test_validate_spec_stored_exception_kept():
+    settings = _settings(models="sonnet,opus", efforts="low,high")
+    stored = ClusterSpec(model="legacy-model", effort="legacy-effort")
+    # unchanged out-of-list values pass only against the stored spec
+    validate_spec(stored, settings, stored)
+    with pytest.raises(SpecInvalid):
+        validate_spec(stored, settings)
+    # a changed out-of-list value is rejected even with a stored spec
+    with pytest.raises(SpecInvalid):
+        validate_spec(ClusterSpec(model="other-model", effort="legacy-effort"), settings, stored)
+    with pytest.raises(SpecInvalid):
+        validate_spec(ClusterSpec(model="legacy-model", effort="other-effort"), settings, stored)

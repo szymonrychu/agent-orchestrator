@@ -205,7 +205,12 @@ def _not_above(low: str, high: str) -> bool:
 
 
 def validate_spec(spec: ClusterSpec, settings: Settings, stored: ClusterSpec | None = None) -> None:
-    """Validate a spec; a model, effort or image equal to the stored one is not re-checked."""
+    """Validate a spec.
+
+    `stored` stays for the preset PUT: a model, effort or image that has since left the settings
+    lists is accepted only when unchanged from the stored preset spec. Scheduling a cluster passes
+    no `stored` and validates fully.
+    """
     from any_mcp.config import AnyMcpConfig
     from pydantic import ValidationError
 
