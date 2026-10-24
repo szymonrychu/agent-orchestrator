@@ -39,8 +39,8 @@ describe('preset client', () => {
     vi.stubGlobal('fetch', f);
     await listPresets();
     await getPreset('p 1');
-    await createPreset({ name: 'n', spec: { env: {}, max_attempts: 5, peers: true, replicas: 1, workdir: 'w' } });
-    await updatePreset('p1', { name: 'n2', spec: { env: {}, max_attempts: 5, peers: true, replicas: 2, workdir: 'w' } });
+    await createPreset({ name: 'n', spec: { env: {}, max_attempts: 5, peers: true, replicas: 1, static: false, workdir: 'w' } });
+    await updatePreset('p1', { name: 'n2', spec: { env: {}, max_attempts: 5, peers: true, replicas: 2, static: false, workdir: 'w' } });
     await deletePreset('p1');
     await copyPreset('p1');
     await copyPreset('p1', { name: 'dup' });
