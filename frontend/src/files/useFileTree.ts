@@ -178,6 +178,6 @@ export function useFileTree(clusterId: string): FileTree {
 
   return useMemo(
     () => ({ state, expand, collapse, setExpanded, loadMore, refresh, refreshExpanded, pollExpanded, isLoaded, root }),
-    [state, expand, collapse, setExpanded, loadMore, refresh, refreshExpanded, isLoaded, root],
+    [state, expand, collapse, setExpanded, loadMore, refresh, refreshExpanded, pollExpanded, isLoaded, root],
   )
 }
