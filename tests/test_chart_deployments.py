@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from helm_render import render
+from helm_render import render, render_text
 
 FULL = "agent-orchestrator"
 COMPONENTS = ["api", "dispatcher", "ingester", "reconciler"]
@@ -212,3 +212,12 @@ def test_agent_api_settings() -> None:
         if d["metadata"]["name"] == f"{FULL}-settings"
     ]
     assert cm["data"]["ORCH_AGENT_API_URL"] == "http://x:1"
+
+
+def test_agent_api_url_rendered_once_when_overridden() -> None:
+    text = render_text(
+        {**BASE, "env": {"ORCH_AGENT_API_URL": "http://x:1"}},
+        show_only=["templates/configmap.yaml"],
+    )
+    assert text.count("ORCH_AGENT_API_URL:") == 1
+    assert 'ORCH_AGENT_API_URL: "http://x:1"' in text

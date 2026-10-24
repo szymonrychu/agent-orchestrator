@@ -95,3 +95,10 @@ env:
         name: {{ include "agent-orchestrator.masterKeySecretName" . }}
         key: {{ .Values.masterKey.existingSecretKey | default "master-key" }}
 {{- end }}
+
+{{/*
+ORCH_AGENT_API_URL: the cluster-internal agents Service URL, unless env.ORCH_AGENT_API_URL overrides it.
+*/}}
+{{- define "agent-orchestrator.agentApiUrl" -}}
+{{- default (printf "http://%s-agents.%s.svc:%v" (include "agent-orchestrator.fullname" .) .Release.Namespace .Values.agentApi.port) (index .Values.env "ORCH_AGENT_API_URL") -}}
+{{- end }}
