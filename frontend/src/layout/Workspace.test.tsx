@@ -101,6 +101,13 @@ describe('Workspace', () => {
     expect(grow('terminal')).toBe(30)
   })
 
+  test('divider has a pixel flex-basis, not auto', () => {
+    mount()
+    const seps = screen.getAllByRole('separator')
+    expect(seps).toHaveLength(2)
+    for (const sep of seps) expect((sep as HTMLElement).style.flexBasis).toMatch(/^\d+px$/)
+  })
+
   test('at_most_two_minimized', () => {
     mount()
     click('Minimize Files')
