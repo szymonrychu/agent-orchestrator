@@ -1,7 +1,8 @@
 """agents table repository. The reconciler is the writer (D3).
 
 `last_dispatched_at` is written only by the dispatch claim (db/queue.py, D23). Every change
-that the ribbon shows (pod readiness, gone, session) NOTIFYs `status {cluster_id}`.
+that the cluster tabs and agents strip show (pod readiness, gone, session) NOTIFYs
+`status {cluster_id}`.
 """
 
 from __future__ import annotations
@@ -148,3 +149,13 @@ async def list_agents(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID) -> l
             (cluster_id,),
         )
         return [Agent(**r) for r in await cur.fetchall()]
+
+
+async def list_states(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID) -> dict[uuid.UUID, str]:
+    """The stored `agent_status.state` of each agent of the cluster that has a status row."""
+    cur = await conn.execute(
+        "SELECT s.agent_id, s.state FROM agent_status s JOIN agents a ON a.id = s.agent_id"
+        " WHERE a.cluster_id = %s",
+        (cluster_id,),
+    )
+    return {agent_id: state for agent_id, state in await cur.fetchall()}

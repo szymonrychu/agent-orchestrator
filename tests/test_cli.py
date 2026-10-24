@@ -35,3 +35,10 @@ def test_unknown_command_exits_2(argv, capsys):
     assert exc.value.code == 2
     captured = capsys.readouterr()
     assert "usage" in (captured.out + captured.err).lower()
+
+
+def test_uvicorn_config_caps_websocket_frames():
+    from agent_orchestrator.settings import Settings
+
+    config = cli.build_uvicorn_config(Settings(database_url="postgresql://u:p@localhost/db"))
+    assert config.ws_max_size == 65536

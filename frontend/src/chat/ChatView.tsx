@@ -1,10 +1,10 @@
-/** Header (slug, state), agent filter and the log of one cluster. */
+/** Header (slug, state, agents strip) and the log of one cluster. */
 import { useMemo, useState } from 'react'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import Typography from '@mui/material/Typography'
 import type { AgentView, ClusterView } from '../api/client'
-import { AgentFilter } from './AgentFilter'
+import { AgentsStrip } from './AgentsStrip'
 import { ChatLog } from './ChatLog'
 import { Composer } from './Composer'
 import { QueueStrip } from './QueueStrip'
@@ -28,14 +28,14 @@ export function ChatView({ cluster, agents, maxItems }: ChatViewProps) {
   const toggle = (id: string) => setFilter({ clusterId: cluster.id, ids: selected.includes(id) ? selected.filter((s) => s !== id) : [...selected, id] })
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, pb: 1, borderBottom: `${TOKENS.borderWidth}px solid ${TOKENS.border}` }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 2, pb: 1, borderBottom: `${TOKENS.borderWidth}px solid ${TOKENS.border}` }}>
         <Typography variant="h5" component="h2">
           {cluster.slug}
         </Typography>
         <Typography variant="caption" sx={{ color: 'text.secondary' }}>
           {cluster.desired === 'deleting' ? 'deleting' : cluster.summary.state}
         </Typography>
-        <AgentFilter agents={agents} selected={selected} onToggle={toggle} />
+        <AgentsStrip agents={agents} selected={selected} onToggle={toggle} autoCompactPct={cluster.summary.auto_compact_pct} />
       </Box>
       {chat.error ? <Alert severity="error">{chat.error}</Alert> : null}
       {chat.loading ? (
