@@ -26,6 +26,7 @@ const xterm = vi.hoisted(() => ({
     typed: ((data: string) => void) | null
   }[],
   fitSize: { cols: 100, rows: 30 },
+  hostSize: { width: 800, height: 600 },
   log: [] as string[],
 }))
 
@@ -134,6 +135,10 @@ beforeEach(() => {
   xterm.terminals = []
   xterm.log = []
   xterm.fitSize = { cols: 100, rows: 30 }
+  xterm.hostSize = { width: 800, height: 600 }
+  // jsdom has no layout: report the host's client size from the test (0 x 0 is a display:none host)
+  vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(() => xterm.hostSize.width)
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(() => xterm.hostSize.height)
   vi.stubGlobal('ResizeObserver', FakeResizeObserver)
   api.listTerminals.mockResolvedValue({ terminals: [], unavailable_agents: [] })
   api.deleteTerminal.mockResolvedValue(undefined)
@@ -141,6 +146,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
   vi.clearAllMocks()
 })
 
@@ -243,6 +249,29 @@ describe('TerminalPanel', () => {
     act(() => sock.opts.onData(new Uint8Array([2])))
     expect(term.resets).toBe(1)
     expect(xterm.log.slice(-2)).toEqual(['reset', 'write'])
+  })
+
+  test('fit_skipped_while_host_hidden', async () => {
+    api.listTerminals.mockResolvedValue({ terminals: [shell('aaaaaa111')], unavailable_agents: [] })
+    mount()
+    await waitFor(() => expect(tabs()).toHaveLength(1))
+    const term = xterm.terminals[0]
+    const sock = lastSocket()
+    const host = observers.find((o) => o.target?.getAttribute('data-testid') === 'xterm-host')!
+    // an inactive tab or a minimized panel is display:none: the host has no client size, so no fit and no resize
+    xterm.hostSize = { width: 0, height: 0 }
+    xterm.fitSize = { cols: 10, rows: 5 }
+    const fitsBefore = term.fits
+    const resizesBefore = sock.resize.mock.calls.length
+    act(() => host.cb())
+    expect(term.fits).toBe(fitsBefore)
+    expect(sock.resize.mock.calls).toHaveLength(resizesBefore)
+    // shown again: fitted and the size reported
+    xterm.hostSize = { width: 800, height: 600 }
+    xterm.fitSize = { cols: 120, rows: 36 }
+    act(() => host.cb())
+    expect(term.fits).toBe(fitsBefore + 1)
+    expect(sock.resize).toHaveBeenLastCalledWith(120, 36)
   })
 
   test('exit_prints_a_notice_and_keeps_the_tab', async () => {

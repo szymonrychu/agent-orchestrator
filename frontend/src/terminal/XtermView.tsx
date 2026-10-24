@@ -43,6 +43,9 @@ export function XtermView({ url, onStatus }: XtermViewProps) {
     term.onData((data) => socket.send(data))
 
     const fit = () => {
+      // a hidden host (inactive tab, minimized panel) has no client size; FitAddon would read its declared
+      // 100% as 100px and shrink the PTY to a few cells, so wait until the host is shown again
+      if (el.clientWidth === 0 || el.clientHeight === 0) return
       fitAddon.fit()
       socket.resize(term.cols, term.rows)
     }
