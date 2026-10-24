@@ -90,7 +90,8 @@ async def test_list_proxied_from_first_ready_agent(rig):
     assert set(body) == {"cluster_id", "agent_id", "root", "path", "entries", "next_offset"}
     assert body["cluster_id"] == str(rig.cluster["id"])
     assert body["agent_id"] == str(row["id"])
-    assert body["root"] == str(fake.workdir(sid))
+    assert body["root"] == fake.sessions[sid].workdir
+    assert body["root"] != str(fake.workdir(sid))  # reported (logical) vs backing directory
     assert body["path"] == "" and body["next_offset"] is None
     assert [(e["name"], e["type"]) for e in body["entries"]] == [
         (".git", "dir"),

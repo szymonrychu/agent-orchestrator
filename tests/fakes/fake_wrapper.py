@@ -124,8 +124,9 @@ class _Turn:
 class _Session:
     session_id: str
     name: str | None
-    workdir: str
+    workdir: str  # the path the real wrapper would report (logical)
     model: str | None
+    backing_dir: str = ""  # the real temp directory behind the file and terminal routes
     state: str = "creating"
     has_transcript: bool = False
     idle_since: str | None = None
@@ -221,7 +222,7 @@ class FakeWrapper:
         self._uv: uvicorn.Server | None = None
         self._task: asyncio.Task[None] | None = None
         self._port = 0
-        # file API: every session gets a temp workdir under this root (removed with the fake)
+        # file API: every session gets a backing temp dir under this root (removed with the fake)
         self._tmp = tempfile.TemporaryDirectory(prefix="fake-wrapper-")
         self.files_max_entries = 2000
         self.file_preview_max_bytes = 1048576
@@ -281,8 +282,8 @@ class FakeWrapper:
     # ------------------------------------------------------------------ test controls
 
     def workdir(self, session_id: str | None = None) -> Path:
-        """The real directory of a session workdir (default: the newest session)."""
-        return Path(self._session(session_id).workdir)
+        """The real backing directory of a session workdir (default: the newest session)."""
+        return Path(self._session(session_id).backing_dir)
 
     def terminal(self, terminal_id: str | None = None) -> _Terminal:
         """A terminal by id (default: the newest one)."""
@@ -494,9 +495,10 @@ class FakeWrapper:
                 raise _Err(429, "too_many_sessions")
             sid = self._new_id("ses_")
             name = body.get("name")
-            workdir = Path(self._tmp.name, sid).resolve()
-            workdir.mkdir(exist_ok=True)
-            ses = _Session(sid, name, str(workdir), None)
+            backing = Path(self._tmp.name, sid).resolve()
+            backing.mkdir(exist_ok=True)
+            workdir = f"/workdir/{body.get('workdir') or name or sid}"
+            ses = _Session(sid, name, workdir, None, backing_dir=str(backing))
             ses.model = body.get("model")
             self.sessions[sid] = ses
             self._set_state(ses, "creating")
@@ -525,7 +527,7 @@ class FakeWrapper:
                 q.put_nowait(_CLOSE)
             if purge:
                 del self.sessions[session_id]
-                shutil.rmtree(ses.workdir, ignore_errors=True)
+                shutil.rmtree(ses.backing_dir, ignore_errors=True)
             return snap
 
         @app.post("/v1/sessions/{session_id}/resume")
@@ -656,7 +658,7 @@ class FakeWrapper:
             more = offset + size < len(rows)
             return {
                 "session_id": session_id,
-                "root": str(root),
+                "root": ses.workdir,  # the reported (logical) workdir, as the real wrapper does
                 "path": "" if resolved == root else resolved.relative_to(root).as_posix(),
                 "entries": [row[2] for row in rows[offset : offset + size]],
                 "next_offset": offset + size if more else None,
@@ -901,10 +903,11 @@ class FakeWrapper:
 
     @staticmethod
     def _locate(ses: _Session, rel: str) -> tuple[Path, Path]:
-        """(root, resolved): a vanished workdir is not_found, an escape invalid_path."""
-        if not os.path.isdir(ses.workdir):
+        """(real root, resolved) inside the backing dir: a vanished workdir is not_found,
+        an escape invalid_path."""
+        if not os.path.isdir(ses.backing_dir):
             raise _Err(404, "not_found", "the session workdir does not exist")
-        return Path(os.path.realpath(ses.workdir)), _confine(Path(ses.workdir), rel)
+        return Path(os.path.realpath(ses.backing_dir)), _confine(Path(ses.backing_dir), rel)
 
     def _write_turn_files(self, ses: _Session, files: Any) -> None:
         """The turn `files` field: relative path to text, written into the workdir first."""
@@ -913,7 +916,7 @@ class FakeWrapper:
         if not isinstance(files, dict) or not all(isinstance(v, str) for v in files.values()):
             raise _Err(422, "invalid_request", "files must map paths to text")
         for rel, content in files.items():
-            target = _confine(Path(ses.workdir), rel)
+            target = _confine(Path(ses.backing_dir), rel)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
 
