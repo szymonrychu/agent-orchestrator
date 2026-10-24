@@ -180,10 +180,15 @@ def attach(api: httpx.Client, agent_id: str, terminal_id: str, **kwargs: Any) ->
 
 
 def read_until(ws: ClientConnection, pattern: str, timeout: float = SHELL_TIMEOUT) -> str:
-    """Collect PTY output (binary frames; text frames are control JSON) until `pattern` matches."""
+    """Collect PTY output (binary frames; text frames are control JSON) until `pattern` matches.
+
+    The pattern is matched per line against the output with every CR, CRLF or LF turned into one
+    newline: a pty echoes the typed command ending in CRLF and then prints the command's output
+    after a bare CR, so `^ok$` finds the output line and never the echoed `echo ok`.
+    """
     deadline = time.monotonic() + timeout
     seen = ""
-    while not re.search(pattern, seen, re.MULTILINE):
+    while not re.search(pattern, re.sub(r"\r\n?", "\n", seen), re.MULTILINE):
         left = deadline - time.monotonic()
         if left <= 0:
             raise AssertionError(f"no match for {pattern!r} within {timeout:.0f}s in {seen!r}")
@@ -550,7 +555,7 @@ def test_files_list_and_read_through_api(api: httpx.Client, cluster: dict[str, A
     with shell(api, agent_id) as term, attach(api, agent_id, term["terminal_id"]) as ws:
         ws.send(f"printf '%s\\n' {text} > {note}\n".encode())
         ws.send(b"echo written-$((6*7))\n")
-        read_until(ws, r"^written-42\r?$")
+        read_until(ws, r"^written-42$")
 
     listing = api.get(f"/clusters/{cid}/files")
     assert listing.status_code == 200, listing.text
@@ -590,7 +595,7 @@ def test_terminal_lifecycle_over_websocket(api: httpx.Client, cluster: dict[str,
             ws.send(b"pwd\n")
             read_until(ws, re.escape(root))
             ws.send(b"echo ok\n")
-            read_until(ws, r"^ok\r?$")
+            read_until(ws, r"^ok$")
             ws.send(json.dumps({"type": "ping"}))
             listed = wait_for(
                 "the terminal listed as attached",
@@ -608,10 +613,10 @@ def test_terminal_lifecycle_over_websocket(api: httpx.Client, cluster: dict[str,
 
         # reattach: the wrapper replays the shell's recent output before anything live
         with attach(api, agent_id, tid) as ws:
-            replay = read_until(ws, r"^ok\r?$")
+            replay = read_until(ws, r"^ok$")
             assert root in replay, replay
             ws.send(b"echo again\n")
-            read_until(ws, r"^again\r?$")
+            read_until(ws, r"^again$")
 
         deleted = api.delete(f"/agents/{agent_id}/terminals/{tid}")
         assert deleted.status_code == 204, deleted.text
@@ -646,7 +651,7 @@ def test_terminal_websocket_refuses_foreign_origin(
         # the refused attempts opened and closed nothing: the shell is still there and usable
         with attach(api, agent_id, term["terminal_id"]) as ws:
             ws.send(b"echo still-$((6*7))\n")
-            read_until(ws, r"^still-42\r?$")
+            read_until(ws, r"^still-42$")
 
 
 def test_discard_removes_objects_and_history(
