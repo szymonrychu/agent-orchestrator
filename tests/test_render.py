@@ -530,3 +530,15 @@ def test_runtime_fields_change_only_statefulset_replicas(low, high):
     for objs in (a, b):
         sts_of(objs)["spec"]["replicas"] = 0
     assert a == b
+
+
+def _on_start_plugins(cluster) -> list[str]:
+    objs = render.render_cluster(cluster, make_settings(agent_api_url=AGENT_URL), TOKENS)
+    script = by_kind(objs)["ConfigMap"]["data"]["on-start.sh"]
+    body = script.split("<<'ANY_MCP_CONFIG_EOF'\n")[1].split("\nANY_MCP_CONFIG_EOF")[0]
+    return [p["name"] for p in json.loads(body).get("plugins", [])]
+
+
+def test_on_start_orchestrator_entry_only_for_hive():
+    assert _on_start_plugins(make_cluster(replicas=2)) == ["orchestrator"]
+    assert _on_start_plugins(make_cluster(replicas=1)) == []

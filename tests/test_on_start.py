@@ -115,3 +115,15 @@ def test_invariant_to_replicas():
     a = on_start.render_on_start(ClusterSpec(replicas=2, max_replicas=4), make_settings(), "alpha")
     b = on_start.render_on_start(ClusterSpec(replicas=3, max_replicas=4), make_settings(), "alpha")
     assert a == b
+
+
+def test_user_orchestrator_entry_replaced():
+    user = {"plugins": [{"name": "orchestrator", "plugin": "x:Y"}, {"name": "gh", "plugin": "x:Z"}]}
+    spec = ClusterSpec(replicas=2, any_mcp_config=user)
+    cfg = written_config(on_start.render_on_start(spec, make_settings(), "alpha"))
+    names = [p["name"] for p in cfg["plugins"]]
+    assert names.count("orchestrator") == 1 and "gh" in names
+    assert next(p for p in cfg["plugins"] if p["name"] == "orchestrator")["plugin"] == (
+        "any_mcp.orchestrator:OrchestratorPlugin"
+    )
+    AnyMcpConfig.model_validate(cfg)

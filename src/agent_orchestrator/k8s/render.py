@@ -217,7 +217,7 @@ def render_cluster(
 
     config_data = {
         "config.yaml": yaml.safe_dump(_ccw_config(cluster, settings), sort_keys=False),
-        "on-start.sh": render_on_start(spec, settings),
+        "on-start.sh": render_on_start(spec, settings, slug),
     }
     config_hash = hashlib.sha256(json.dumps(config_data, sort_keys=True).encode()).hexdigest()
 

@@ -67,7 +67,8 @@ def any_mcp_config(
     entry = _orchestrator_entry(spec, settings, slug)
     if entry is None:
         return base
-    return {**base, "plugins": [*base.get("plugins", []), entry]}
+    kept = [p for p in base.get("plugins", []) if p.get("name") != PLUGIN_NAME]
+    return {**base, "plugins": [*kept, entry]}
 
 
 def render_on_start(spec: ClusterSpec, settings: Settings, slug: str | None = None) -> str:
