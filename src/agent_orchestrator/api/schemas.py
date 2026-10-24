@@ -14,8 +14,9 @@ from agent_orchestrator.spec import ClusterSpec
 class CreateCluster(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    slug: str
-    spec: ClusterSpec = ClusterSpec()
+    slug: str | None = None
+    spec: ClusterSpec | None = None
+    preset_id: uuid.UUID | None = None
 
 
 class PatchCluster(BaseModel):
@@ -65,6 +66,8 @@ class ClusterView(BaseModel):
     generation: int
     observed_generation: int
     created_at: datetime
+    preset_id: uuid.UUID | None
+    preset_name: str | None
     summary: ClusterSummary
 
 

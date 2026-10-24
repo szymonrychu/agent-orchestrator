@@ -39,6 +39,8 @@ class Cluster:
     desired: str
     status: dict[str, Any]
     created_at: datetime
+    preset_id: uuid.UUID | None = None
+    preset_name: str | None = None
 
 
 def _from_row(row: dict[str, Any]) -> Cluster:
@@ -51,6 +53,8 @@ def _from_row(row: dict[str, Any]) -> Cluster:
         desired=row["desired"],
         status=row["status"],
         created_at=row["created_at"],
+        preset_id=row["preset_id"],
+        preset_name=row["preset_name"],
     )
 
 
@@ -68,14 +72,21 @@ async def _notify(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID) -> None:
     await notify(conn, CHANNEL, {"cluster_id": str(cluster_id)})
 
 
-async def create(conn: psycopg.AsyncConnection, slug: str, spec: ClusterSpec) -> Cluster:
+async def create(
+    conn: psycopg.AsyncConnection,
+    slug: str,
+    spec: ClusterSpec,
+    preset_id: uuid.UUID | None = None,
+    preset_name: str | None = None,
+) -> Cluster:
     validate_slug(slug)
     try:
         async with conn.transaction():
             rows = await _fetch(
                 conn,
-                "INSERT INTO clusters (id, slug, spec) VALUES (%s, %s, %s) RETURNING *",
-                (uuid.uuid4(), slug, _dump(spec)),
+                "INSERT INTO clusters (id, slug, spec, preset_id, preset_name)"
+                " VALUES (%s, %s, %s, %s, %s) RETURNING *",
+                (uuid.uuid4(), slug, _dump(spec), preset_id, preset_name),
             )
             await _notify(conn, rows[0].id)
     except psycopg.errors.UniqueViolation:

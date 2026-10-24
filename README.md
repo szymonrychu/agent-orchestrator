@@ -438,11 +438,16 @@ All clusters as a list of cluster views. Response 200.
 
 ### `POST /api/v1/clusters`
 
-Body `{"slug": "<dns label>", "spec": {...}}`. `spec` fields (all optional): `replicas`, `image`, `model`, `effort`, `peers`, `workdir`, `pvc_size`, `resources`, `env`, `any_mcp_config`, `max_attempts`, `auto_compact_pct`, `discard_hook_url`. Response 201 with the cluster view. Errors: 422 `invalid_request` (bad slug, image outside `ORCH_AGENT_IMAGES`, reserved env key, replicas or PVC size above the caps, invalid `any_mcp_config`), 409 `conflict` (slug exists), 409 `cluster_limit`, 403 `forbidden`.
+Schedules a cluster. The body holds exactly one of `spec` and `preset_id`, else 422 `invalid_request` ("exactly one of spec or preset_id"):
+
+- From a preset: `{"preset_id": "<uuid>", "slug": "<dns label, optional>"}`. Without `slug` the API generates `<preset name as a dns label>-<4 random letters>` (for example `default-qkzt`) and retries a clash with a fresh suffix up to 5 times, then answers 409 `conflict`. The preset spec is validated against the current settings when you schedule (a preset that has become invalid is 422 `invalid_request` with a message starting `preset '<name>': `), empty resource keys and an unset `replicas` are filled from the current defaults (`ORCH_DEFAULT_*`, `ORCH_DEFAULT_REPLICAS`), and the result is stored as the cluster's own spec: a snapshot. Editing or deleting the preset afterwards never changes the cluster, its `spec` or its `generation`; the cluster view keeps `preset_name` and `preset_id` becomes null once the preset is deleted. An unknown `preset_id` is 404 `not_found`.
+- Raw spec, for headless callers: `{"slug": "<dns label>", "spec": {...}}`; `slug` is required with `spec` (422 otherwise). `spec` fields (all optional): `replicas`, `image`, `model`, `effort`, `peers`, `workdir`, `pvc_size`, `resources`, `env`, `any_mcp_config`, `max_attempts`, `auto_compact_pct`, `discard_hook_url`. Such a cluster has null `preset_id` and `preset_name`.
+
+Response 201 with the cluster view. Errors: 422 `invalid_request` (bad slug, both or neither of `spec` and `preset_id`, `spec` without `slug`, image outside `ORCH_AGENT_IMAGES`, reserved env key, replicas or PVC size above the caps, invalid `any_mcp_config`, an invalid preset), 404 `not_found` (unknown preset), 409 `conflict` (slug exists, or no free generated slug), 409 `cluster_limit`, 403 `forbidden`.
 
 ### `GET /api/v1/clusters/{cluster_id}`
 
-One cluster view: `id`, `slug`, `spec`, `desired`, `status`, `generation`, `observed_generation`, `created_at` and `summary` (`state` of `working`, `waiting`, `booting`, `error`, `deleting`; `ready`, `replicas`, `context_pct_max`, `auto_compact_pct`, `queued`, `failed`). Response 200. Errors: 404 `not_found`.
+One cluster view: `id`, `slug`, `spec`, `desired`, `status`, `generation`, `observed_generation`, `created_at`, `preset_id` (null for a raw-spec cluster or once the preset is deleted), `preset_name` and `summary` (`state` of `working`, `waiting`, `booting`, `error`, `deleting`; `ready`, `replicas`, `context_pct_max`, `auto_compact_pct`, `queued`, `failed`). Response 200. Errors: 404 `not_found`.
 
 ### `PATCH /api/v1/clusters/{cluster_id}`
 

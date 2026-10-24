@@ -7,16 +7,18 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
 from psycopg_pool import AsyncConnectionPool
+from pydantic import ValidationError
 
 from agent_orchestrator.api import schemas
 from agent_orchestrator.api.errors import ApiError, not_found
 from agent_orchestrator.db import clusters as repo
-from agent_orchestrator.db import views
+from agent_orchestrator.db import presets, views
 from agent_orchestrator.settings import Settings
 from agent_orchestrator.spec import (
     ClusterSpec,
     SpecInvalid,
     fill_resource_defaults,
+    generated_slug,
     validate_slug,
     validate_spec,
 )
@@ -48,6 +50,8 @@ def _view(cluster: repo.Cluster, agg: dict | None, settings: Settings) -> schema
         generation=cluster.generation,
         observed_generation=cluster.observed_generation,
         created_at=cluster.created_at,
+        preset_id=cluster.preset_id,
+        preset_name=cluster.preset_name,
         summary=views.summarize(cluster, agg, settings.default_auto_compact_pct),
     )
 
@@ -138,11 +142,17 @@ async def create_cluster(
     pool: Pool,
     settings: Cfg,
 ) -> schemas.ClusterView:
-    try:
-        validate_slug(body.slug)
-    except ValueError as exc:
-        raise ApiError(422, "invalid_request", str(exc)) from None
-    spec = check_spec(body.spec, settings)
+    if (body.spec is None) == (body.preset_id is None):
+        raise ApiError(422, "invalid_request", "exactly one of spec or preset_id")
+    if body.spec is not None:
+        if body.slug is None:
+            raise ApiError(422, "invalid_request", "slug is required with spec")
+        spec = check_spec(body.spec, settings)
+    if body.slug is not None:
+        try:
+            validate_slug(body.slug)
+        except ValueError as exc:
+            raise ApiError(422, "invalid_request", str(exc)) from None
     async with pool.connection() as conn:
         async with conn.transaction():
             await conn.execute("SELECT pg_advisory_xact_lock(%s)", (_CREATE_LOCK,))
@@ -150,11 +160,47 @@ async def create_cluster(
                 raise ApiError(
                     409, "cluster_limit", f"at most {settings.max_clusters} clusters are allowed"
                 )
-            try:
-                cluster = await repo.create(conn, body.slug, spec)
-            except repo.ClusterExists:
-                raise ApiError(409, "conflict", f"cluster {body.slug!r} already exists") from None
+            if body.preset_id is None:
+                cluster = await _insert(conn, body.slug, spec)
+            else:
+                cluster = await _create_from_preset(conn, body.preset_id, body.slug, settings)
         return await _one_view(conn, cluster, settings)
+
+
+_SLUG_ATTEMPTS = 5
+
+
+async def _insert(conn, slug: str, spec: ClusterSpec, **provenance) -> repo.Cluster:
+    try:
+        return await repo.create(conn, slug, spec, **provenance)
+    except repo.ClusterExists:
+        raise ApiError(409, "conflict", f"cluster {slug!r} already exists") from None
+
+
+async def _create_from_preset(
+    conn, preset_id: uuid.UUID, slug: str | None, settings: Settings
+) -> repo.Cluster:
+    """Snapshot the preset's spec, filled and validated against the current settings."""
+    preset = await presets.get_for_share(conn, preset_id)
+    if preset is None:
+        raise not_found("preset")
+    raw = dict(preset.spec)
+    raw.setdefault("replicas", settings.default_replicas)
+    try:
+        spec = check_spec(ClusterSpec.model_validate(raw), settings)
+    except ValidationError as exc:
+        raise ApiError(422, "invalid_request", f"preset '{preset.name}': {exc}") from None
+    except ApiError as exc:
+        raise ApiError(422, "invalid_request", f"preset '{preset.name}': {exc.message}") from None
+    provenance = {"preset_id": preset.id, "preset_name": preset.name}
+    if slug is not None:
+        return await _insert(conn, slug, spec, **provenance)
+    for _ in range(_SLUG_ATTEMPTS):
+        try:
+            return await repo.create(conn, generated_slug(preset.name), spec, **provenance)
+        except repo.ClusterExists:
+            continue
+    raise ApiError(409, "conflict", "could not generate a free cluster slug; retry")
 
 
 @router.get("/clusters/{cluster_id}", response_model=schemas.ClusterView)

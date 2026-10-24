@@ -439,6 +439,29 @@
             "title": "Observed Generation",
             "type": "integer"
           },
+          "preset_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preset Id"
+          },
+          "preset_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preset Name"
+          },
           "slug": {
             "title": "Slug",
             "type": "string"
@@ -464,6 +487,8 @@
           "generation",
           "observed_generation",
           "created_at",
+          "preset_id",
+          "preset_name",
           "summary"
         ],
         "title": "ClusterView",
@@ -574,24 +599,40 @@
       "CreateCluster": {
         "additionalProperties": false,
         "properties": {
+          "preset_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preset Id"
+          },
           "slug": {
-            "title": "Slug",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slug"
           },
           "spec": {
-            "$ref": "#/components/schemas/ClusterSpec",
-            "default": {
-              "env": {},
-              "max_attempts": 5,
-              "peers": true,
-              "replicas": 1,
-              "workdir": "workdir"
-            }
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClusterSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
-        "required": [
-          "slug"
-        ],
         "title": "CreateCluster",
         "type": "object"
       },

@@ -593,6 +593,10 @@ export interface components {
             id: string;
             /** Observed Generation */
             observed_generation: number;
+            /** Preset Id */
+            preset_id: string | null;
+            /** Preset Name */
+            preset_name: string | null;
             /** Slug */
             slug: string;
             spec: components["schemas"]["ClusterSpec"];
@@ -639,18 +643,11 @@ export interface components {
         };
         /** CreateCluster */
         CreateCluster: {
+            /** Preset Id */
+            preset_id?: string | null;
             /** Slug */
-            slug: string;
-            /**
-             * @default {
-             *       "env": {},
-             *       "max_attempts": 5,
-             *       "peers": true,
-             *       "replicas": 1,
-             *       "workdir": "workdir"
-             *     }
-             */
-            spec: components["schemas"]["ClusterSpec"];
+            slug?: string | null;
+            spec?: components["schemas"]["ClusterSpec"] | null;
         };
         /**
          * CreateTerminal
