@@ -27,6 +27,8 @@ class Arm(BaseModel):
     name: str = Field(pattern=_NAME, max_length=24)
     replicas: int = Field(ge=1, le=16)
     peers: bool
+    max_replicas: int | None = Field(default=None, ge=1, le=16)
+    static: bool | None = None
 
 
 class Task(BaseModel):

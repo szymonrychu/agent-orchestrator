@@ -1,6 +1,7 @@
 import io
 import json
 import random
+from pathlib import Path
 
 import httpx
 import pytest
@@ -43,6 +44,8 @@ class FakeApi:
             self.clusters[cid] = body["spec"]["replicas"]
             self.bodies[cid] = body
             return httpx.Response(201, json={"id": cid, "slug": body["slug"]})
+        if m == "GET" and path.startswith("/api/v1/clusters/") and path.count("/") == 4:
+            return httpx.Response(200, json={"id": path.rsplit("/", 1)[1], "leader_epoch": 4})
         if path.endswith("/agents"):
             n = self.clusters[path.split("/")[4]]
             return httpx.Response(
@@ -203,4 +206,73 @@ def test_clusters_discarded_unless_keep():
 
 def test_example_spec_parses():
     spec = load_spec("examples/bench.yaml")
-    assert [(a.replicas, a.peers) for a in spec.arms] == [(1, False), (3, False), (3, True)]
+    assert [(a.replicas, a.peers) for a in spec.arms] == [
+        (1, False),
+        (3, False),
+        (3, True),
+        (3, True),
+    ]
+
+
+def test_arm_cap_and_static_in_spec():
+    data = {
+        **SPEC,
+        "arms": [
+            {"name": "h", "replicas": 2, "peers": True, "max_replicas": 4},
+            {"name": "s", "replicas": 3, "peers": True, "static": True},
+            {"name": "plain", "replicas": 1, "peers": False},
+        ],
+    }
+    api = FakeApi()
+    run(api, data)
+    h, s, plain = (api.bodies[c]["spec"] for c in ("c0", "c1", "c2"))
+    assert h["max_replicas"] == 4 and "static" not in h
+    assert s["static"] is True and "max_replicas" not in s
+    assert "max_replicas" not in plain and "static" not in plain
+
+
+def test_report_leader_epoch():
+    recs, out = run(FakeApi())
+    assert all(r["leader_epoch"] == 4 for r in recs)
+    assert json.loads(out.splitlines()[0])["leader_epoch"] == 4
+    rows = summarize(
+        [
+            dict(
+                arm="a",
+                wall_seconds=1,
+                turn_status="completed",
+                input_tokens=1,
+                output_tokens=1,
+                verify_passed=True,
+                leader_epoch=2,
+            ),
+            dict(
+                arm="a",
+                wall_seconds=1,
+                turn_status="completed",
+                input_tokens=1,
+                output_tokens=1,
+                verify_passed=True,
+                leader_epoch=5,
+            ),
+            dict(
+                arm="b",
+                wall_seconds=1,
+                turn_status="completed",
+                input_tokens=1,
+                output_tokens=1,
+                verify_passed=True,
+            ),
+        ]
+    )
+    assert [r["leader_epoch"] for r in rows] == [5, None]
+    lines = format_table(rows).splitlines()
+    assert "leader_epoch" in lines[0]
+    assert lines[2].split()[-1] == "5" and lines[3].split()[-1] == "-"
+
+
+def test_example_has_hive_arm():
+    spec = load_spec("examples/bench.yaml")
+    hive = next(a for a in spec.arms if a.name == "hive3")
+    assert (hive.replicas, hive.peers) == (3, True)
+    assert "hive" in Path("examples/bench.yaml").read_text().split("arms:")[0]

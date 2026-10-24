@@ -105,9 +105,12 @@ class Bench:
         body = {
             "slug": arm_slug(arm.name, self.run_id),
             "spec": {
-                **self.spec.cluster.model_dump(exclude_none=True),
+                **self.spec.cluster.model_dump(
+                    exclude_none=True, exclude={"max_replicas", "static"}
+                ),
                 "replicas": arm.replicas,
                 "peers": arm.peers,
+                **arm.model_dump(include={"max_replicas", "static"}, exclude_none=True),
             },
         }
         cluster = self._call("POST", "/api/v1/clusters", json=body)
@@ -164,7 +167,15 @@ class Bench:
             "output_tokens": usage.get("output_tokens"),
             "verify_passed": verify["status"] == "passed",
             "exit_code": verify.get("exit_code"),
+            "leader_epoch": self._leader_epoch(cid),
         }
+
+    def _leader_epoch(self, cid: str) -> int | None:
+        try:
+            return self._call("GET", f"/api/v1/clusters/{cid}").get("leader_epoch")
+        except BenchError as exc:
+            log.warning("reading leader epoch of %s failed: %s", cid, exc)
+            return None
 
     def _record(self, rec: dict[str, Any]) -> None:
         self.records.append(rec)
