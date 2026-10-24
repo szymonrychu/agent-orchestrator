@@ -192,7 +192,7 @@ async def _read(
         start = max(state.watermark.get(cid, 0), cursor)
         await cur.execute(
             "SELECT e.id, e.type, e.data, e.ts, coalesce(a.pod_name, 'agent') AS agent,"
-            " e.ts <= now() - make_interval(secs => %s) AS settled"
+            " e.created_at <= now() - make_interval(secs => %s) AS settled"
             " FROM events e LEFT JOIN agents a ON a.id = e.agent_id"
             " WHERE e.cluster_id = %s AND e.id > %s AND e.type = ANY(%s)"
             " ORDER BY e.id LIMIT %s",
@@ -250,13 +250,13 @@ async def _note(
 
 
 async def _push_agent(
-    plan: _Plan, member: dict[str, Any], current: str, client_factory: ClientFactory
+    plan: _Plan, member: dict[str, Any], due: bool, client_factory: ClientFactory
 ) -> tuple[NoteOutcome | None, int]:
     """(outcome of the hive_state push or None when it was not due, notes accepted)."""
     state_outcome: NoteOutcome | None = None
     sent = 0
     client = client_factory(plan.cluster_id, member["url"])
-    if plan.hashes.get(str(member["id"])) != current:
+    if due:
         payload = hive_state_payload(
             member["pod_name"],
             plan.leader,
@@ -276,31 +276,49 @@ async def _push_agent(
     return state_outcome, sent
 
 
-async def _write(
-    conn: psycopg.AsyncConnection,
-    plan: _Plan,
-    accepted: dict[str, str],
-    all_current: bool,
-) -> None:
-    """Phase 3: under the lock, store the per-agent hashes and the advanced cursor."""
+async def _claim(conn: psycopg.AsyncConnection, plan: _Plan, current: str) -> list[dict[str, Any]]:
+    """Under the lock, before any push: record the work as taken, so a second dispatcher that
+    reads while this one is on the wire finds nothing left to push.
+
+    Advances the feed cursor and marks every receiver whose state is not current as holding
+    `current`; returns those receivers (the ones to push to). A failed push is undone in
+    `_release`; a failed feed push is not retried.
+    """
     live = {str(m["id"]) for m in plan.members}
-    async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(
-            "SELECT state_hash FROM cluster_leaders WHERE cluster_id = %s FOR UPDATE",
-            (plan.cluster_id,),
-        )
-        row = await cur.fetchone()
+    due = [m for m in plan.receivers if plan.hashes.get(str(m["id"])) != current]
+    hashes = {k: v for k, v in plan.hashes.items() if k in live}
+    hashes.update({str(m["id"]): current for m in due})
+    await conn.execute(
+        "UPDATE cluster_leaders SET state_hash = %s, feed_cursor = %s WHERE cluster_id = %s",
+        (json.dumps(hashes), plan.new_cursor, plan.cluster_id),
+    )
+    return due
+
+
+async def _release(
+    pool: AsyncConnectionPool, plan: _Plan, current: str, failed: set[str], all_ok: bool
+) -> None:
+    """After the pushes: take back the claim of failed receivers (they retry alone on the next
+    tick) and stamp `state_pushed_at` when every push of this tick was taken."""
+    async with pool.connection() as conn, conn.transaction():
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT state_hash FROM cluster_leaders WHERE cluster_id = %s FOR UPDATE",
+                (plan.cluster_id,),
+            )
+            row = await cur.fetchone()
         if row is None:
             return
-    hashes = {k: v for k, v in _load_hashes(row["state_hash"]).items() if k in live}
-    hashes.update(accepted)
-    await conn.execute(
-        "UPDATE cluster_leaders SET state_hash = %s,"
-        " state_pushed_at = CASE WHEN %s THEN now() ELSE state_pushed_at END,"
-        " feed_cursor = CASE WHEN feed_cursor = %s THEN %s ELSE feed_cursor END"
-        " WHERE cluster_id = %s",
-        (json.dumps(hashes), all_current, plan.feed_cursor, plan.new_cursor, plan.cluster_id),
-    )
+        hashes = _load_hashes(row["state_hash"])
+        for agent_id in failed:
+            if hashes.get(agent_id) == current:
+                del hashes[agent_id]
+        await conn.execute(
+            "UPDATE cluster_leaders SET state_hash = %s,"
+            " state_pushed_at = CASE WHEN %s THEN now() ELSE state_pushed_at END"
+            " WHERE cluster_id = %s",
+            (json.dumps(hashes), all_ok, plan.cluster_id),
+        )
 
 
 async def _push_cluster(
@@ -316,26 +334,23 @@ async def _push_cluster(
             return 0
         state.last_tick[cid] = clock()
         plan = await _read(conn, cluster, state)
-    if plan is None:
-        return 0
-    current = state_hash(plan.leader, plan.epoch, plan.members)
+        if plan is None:
+            return 0
+        current = state_hash(plan.leader, plan.epoch, plan.members)
+        due = {str(m["id"]) for m in await _claim(conn, plan, current)}
     receivers = plan.receivers
     results = await asyncio.gather(
-        *(_push_agent(plan, m, current, client_factory) for m in receivers)
+        *(_push_agent(plan, m, str(m["id"]) in due, client_factory) for m in receivers)
     )
     sent = sum(n for _outcome, n in results)
-    # disabled counts as taken (nothing to retry); a receiver already current stays current
-    accepted = {
-        str(m["id"]): current
+    # disabled counts as taken (nothing to retry)
+    failed = {
+        str(m["id"])
         for m, (outcome, _n) in zip(receivers, results, strict=True)
-        if outcome != "failed"
+        if outcome == "failed"
     }
-    all_current = len(accepted) == len(receivers) and any(o is not None for o, _ in results)
-    async with pool.connection() as conn, conn.transaction():
-        if await _try_lock(conn, cid):
-            await _write(conn, plan, accepted, all_current)
-        else:
-            log.debug("cluster %s lock held at write; hive push bookkeeping skipped", cid)
+    if due:
+        await _release(pool, plan, current, failed, all_ok=not failed)
     return sent
 
 

@@ -48,3 +48,8 @@ ALTER TABLE agents ADD COLUMN IF NOT EXISTS pod_ip text;
 -- Freeze the replica cap for stored specs so later in-place replicas edits never change it.
 UPDATE clusters SET spec = jsonb_set(spec, '{max_replicas}', spec -> 'replicas')
 WHERE spec ? 'replicas' AND NOT spec ? 'max_replicas';
+
+-- DB insert time of an event row, for the feed's settle window: events.ts is the wrapper's own
+-- timestamp (old for a replayed catch-up row), so it cannot tell a row that may still be
+-- committing. The ingester stays the only writer; the default fills it.
+ALTER TABLE events ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT clock_timestamp();

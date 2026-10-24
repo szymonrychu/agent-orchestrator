@@ -124,11 +124,20 @@ class Env:
         pushed = self.fake.notes.get(agent["session_id"], [])
         return [n["text"] for n in pushed if n["key"] == key]
 
-    async def write_event(self, cluster_id, agent, path: str, *, age: float = 60.0) -> dict:
+    async def write_event(
+        self, cluster_id, agent, path: str, *, age: float = 60.0, ts_age: float | None = None
+    ) -> dict:
+        """A Write call stored `age` s ago; its wrapper ts defaults to the same moment."""
         data = {"tool_use_id": uuid.uuid4().hex, "tool_name": "Write", "tool_input": {}}
         data["tool_input"] = {"file_path": path}
         return await insert_event(
-            self.pool, cluster_id, agent["id"], type="tool_call", data=data, ts=await self.ago(age)
+            self.pool,
+            cluster_id,
+            agent["id"],
+            type="tool_call",
+            data=data,
+            ts=await self.ago(age if ts_age is None else ts_age),
+            created_at=await self.ago(age),
         )
 
     async def ago(self, seconds: float):
@@ -245,7 +254,13 @@ async def test_feed_push_and_cursor(env):
     w1 = await env.write_event(c["id"], a1, "/work/a.py")
     bash = {"tool_use_id": "b1", "tool_name": "Bash", "tool_input": {"command": "make test"}}
     await insert_event(
-        env.pool, c["id"], a2["id"], type="tool_call", data=bash, ts=await env.ago(50)
+        env.pool,
+        c["id"],
+        a2["id"],
+        type="tool_call",
+        data=bash,
+        ts=await env.ago(50),
+        created_at=await env.ago(50),
     )
     res = await insert_event(
         env.pool,
@@ -254,6 +269,7 @@ async def test_feed_push_and_cursor(env):
         type="tool_result",
         data={"tool_use_id": "b1", "tool_name": "Bash", "exit_code": 2, "is_error": True},
         ts=await env.ago(49),
+        created_at=await env.ago(49),
     )
     await env.push()
     for me, others in ((a0, ("agent-1 wrote /work/a.py", "agent-2 ran: make test (exit 2)")),):
@@ -298,12 +314,14 @@ async def test_feed_cursor_settle_window(env):
             {"tool_use_id": "late", "tool_name": "Write", "tool_input": {"file_path": "/late.py"}}
         )
         cur = await slow.execute(
-            "INSERT INTO events (cluster_id, agent_id, session_id, seq, type, data)"
-            " VALUES (%s, %s, 's', 1, 'tool_call', %s::jsonb) RETURNING id",
+            "INSERT INTO events (cluster_id, agent_id, session_id, seq, ts, type, data)"
+            " VALUES (%s, %s, 's', 1, now() - interval '1 hour', 'tool_call', %s::jsonb)"
+            " RETURNING id",
             (c["id"], a1["id"], data),
         )
         low_id = (await cur.fetchone())[0]
-        high = await env.write_event(c["id"], a2, "/high.py", age=0)  # just committed
+        # the wrapper stamped both rows long ago (a catch-up replay): only the insert time counts
+        high = await env.write_event(c["id"], a2, "/high.py", age=0, ts_age=3600)
         assert high["id"] > low_id
         await env.push()
         assert env.notes(a0, key=None) == []  # inside the settle window: not consumed
@@ -311,7 +329,9 @@ async def test_feed_cursor_settle_window(env):
         await slow.commit()
     finally:
         await slow.close()
-    await env.run("UPDATE events SET ts = now() - interval '60 seconds' WHERE id >= %s", (low_id,))
+    await env.run(
+        "UPDATE events SET created_at = now() - interval '60 seconds' WHERE id >= %s", (low_id,)
+    )
     await env.push()
     (feed,) = env.notes(a0, key=None)
     assert "agent-1 wrote /late.py" in feed and "agent-2 wrote /high.py" in feed
@@ -322,7 +342,13 @@ async def test_feed_pending_bash_carried(env):
     c, (a0, a1, a2) = await env.hive()
     call = {"tool_use_id": "slow", "tool_name": "Bash", "tool_input": {"command": "sleep 30"}}
     pending = await insert_event(
-        env.pool, c["id"], a1["id"], type="tool_call", data=call, ts=await env.ago(10)
+        env.pool,
+        c["id"],
+        a1["id"],
+        type="tool_call",
+        data=call,
+        ts=await env.ago(10),
+        created_at=await env.ago(10),
     )
     await env.write_event(c["id"], a2, "/other.py", age=9)
     await env.push()
@@ -338,6 +364,7 @@ async def test_feed_pending_bash_carried(env):
         type="tool_result",
         data={"tool_use_id": "slow", "tool_name": "Bash", "exit_code": 0},
         ts=await env.ago(8),
+        created_at=await env.ago(8),
     )
     last = (await env.rows("SELECT max(id) AS m FROM events"))[0]["m"]
     await env.push()
@@ -440,3 +467,17 @@ async def test_dispatcher_run_pushes_on_leader_changed(env):
         stop.set()
         await task
     assert "Leader: agent-0 (epoch 1)" in env.notes(agents[2])[0]
+
+
+async def test_concurrent_pushes_claim_once(env):
+    c, (a0, a1, a2) = await env.hive()
+    await env.write_event(c["id"], a1, "/once.py")
+    env.fake.delay_notes(0.5)  # the second dispatcher reads during the first one's HTTP phase
+    first, second = hive.HiveState(), hive.HiveState()
+    task = asyncio.create_task(env.push(first))
+    await asyncio.sleep(0.25)  # the first is now in its HTTP phase, lock released
+    sent = [await env.push(second), await task]
+    assert sorted(sent) == [0, 5]  # 3 hive_state notes and 2 feed notes, once
+    for agent in (a0, a1, a2):
+        assert len(env.notes(agent)) == 1
+    assert len(env.notes(a0, key=None)) == 1 and len(env.notes(a2, key=None)) == 1
