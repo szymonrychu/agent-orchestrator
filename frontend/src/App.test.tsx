@@ -178,15 +178,40 @@ describe('App', () => {
     expect(tabs().map((t) => t.textContent?.match(/^[a-z]+/)?.[0])).toEqual(['omega'])
   })
 
-  test('hamburger_opens_sessions_menu_with_empty_settings', async () => {
+  test('hamburger_opens_sessions_menu_with_settings', async () => {
     mount()
     await waitFor(() => expect(tabs()).toHaveLength(2))
     fireEvent.click(screen.getByRole('button', { name: 'Open menu' }))
     const list = screen.getByRole('list', { name: 'Sessions' })
     expect(within(list).getAllByRole('button').map((b) => b.textContent)).toEqual(['alpha', 'beta'])
-    expect(screen.getByText('No settings yet')).toBeTruthy()
+    expect(within(screen.getByRole('region', { name: 'Settings' })).getAllByRole('button').map((b) => b.textContent)).toEqual(['Presets'])
     fireEvent.click(within(list).getAllByRole('button')[1])
     await waitFor(() => expect(selectedTab()?.textContent).toContain('beta'))
+  })
+
+  test('presets_from_settings_menu', async () => {
+    mount()
+    await waitFor(() => expect(tabs()).toHaveLength(2))
+    const main = screen.getByRole('main')
+    fireEvent.click(screen.getByRole('button', { name: 'Open menu' }))
+    fireEvent.click(within(screen.getByRole('region', { name: 'Settings' })).getByRole('button', { name: 'Presets' }))
+    expect(await within(main).findByRole('heading', { name: 'Presets' })).toBeTruthy()
+    expect(await within(main).findByText('Big box')).toBeTruthy()
+    expect(within(main).queryByTestId('workspace')).toBeNull()
+    // The top bar stays visible.
+    expect(tabs()).toHaveLength(2)
+    fireEvent.click(within(main).getByRole('button', { name: 'Back' }))
+    await waitFor(() => expect(within(main).queryByRole('heading', { name: 'Presets' })).toBeNull())
+    expect(within(main).getByRole('heading', { name: 'alpha' })).toBeTruthy()
+    expect(selectedTab()?.textContent).toContain('alpha')
+    // Choosing a session in the menu also leaves the page.
+    fireEvent.click(screen.getByRole('button', { name: 'Open menu' }))
+    fireEvent.click(within(screen.getByRole('region', { name: 'Settings' })).getByRole('button', { name: 'Presets' }))
+    expect(await within(main).findByRole('heading', { name: 'Presets' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Open menu' }))
+    fireEvent.click(within(screen.getByRole('list', { name: 'Sessions' })).getAllByRole('button')[1])
+    await waitFor(() => expect(within(main).queryByRole('heading', { name: 'Presets' })).toBeNull())
+    await waitFor(() => expect(within(main).getByRole('heading', { name: 'beta' })).toBeTruthy())
   })
 
   test('create_and_discard_from_top_bar', { timeout: 15000 }, async () => {
