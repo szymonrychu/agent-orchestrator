@@ -101,6 +101,19 @@ def labelled(kind: str, name: str, slug: str, *, api: str = "v1") -> dict:
 # ---------------------------------------------------------------- create, apply, guard
 
 
+async def test_no_agent_url_warns_once_per_cluster(env, caplog):
+    await env.cluster("alpha")
+    with caplog.at_level("WARNING", logger="agent_orchestrator.reconciler.loop"):
+        await env.rec.reconcile_once()
+        await env.rec.reconcile_once()
+        warned = [r for r in caplog.records if "ORCH_AGENT_URL" in r.getMessage()]
+        assert len(warned) == 1 and "alpha" in warned[0].getMessage()
+        await env.cluster("beta")
+        await env.rec.reconcile_once()
+    warned = [r for r in caplog.records if "ORCH_AGENT_URL" in r.getMessage()]
+    assert len(warned) == 2 and "beta" in warned[1].getMessage()
+
+
 async def test_create_applies_five_objects(env):
     c = await env.cluster("alpha", replicas=2)
     await env.rec.reconcile_once()

@@ -23,6 +23,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime
 from typing import Any
+from uuid import UUID
 
 import httpx
 from psycopg_pool import AsyncConnectionPool
@@ -69,7 +70,7 @@ class Reconciler:
         self.kube = kube
         self.settings = settings
         self.wrapper_factory = wrapper_factory
-        self._warned_no_agent_url: set[object] = set()
+        self._warned_no_agent_url: set[UUID] = set()
         self.hook_transport: httpx.AsyncBaseTransport | None = None
         self.checks = CheckRunner(pool, kube, settings)
         self.bootstrapper = (
