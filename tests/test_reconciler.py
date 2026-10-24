@@ -21,6 +21,7 @@ from factories import (
 from fakes.fake_kube import FakeKube
 from lightkube import AsyncClient, KubeConfig
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 from agent_orchestrator.db import agents as agents_repo
 from agent_orchestrator.db import clusters, queue
@@ -61,9 +62,13 @@ class Env:
         async with self.pool.connection() as conn:
             return await clusters.get(conn, cluster_id)
 
-    async def update(self, cluster_id, **spec) -> clusters.Cluster:
+    async def update(self, cluster_id, **spec) -> None:
+        """Change a stored spec the way an out-of-band write would: new spec, generation + 1."""
         async with self.pool.connection() as conn:
-            return await clusters.update_spec(conn, cluster_id, ClusterSpec(**spec))
+            await conn.execute(
+                "UPDATE clusters SET spec = %s, generation = generation + 1 WHERE id = %s",
+                (Jsonb(ClusterSpec(**spec).model_dump(mode="json", exclude_none=True)), cluster_id),
+            )
 
     async def delete(self, cluster_id) -> clusters.Cluster:
         async with self.pool.connection() as conn:

@@ -5,7 +5,6 @@ type S = components['schemas'];
 export type ClusterView = S['ClusterView'];
 export type ClusterSpec = S['ClusterSpec'];
 export type CreateCluster = S['CreateCluster'];
-export type PatchCluster = S['PatchCluster'];
 export type AgentView = S['AgentView'];
 export type MessageView = S['MessageView'];
 export type MessageAccepted = S['MessageAccepted'];
@@ -18,6 +17,9 @@ export type Meta = S['Meta'];
 export type CheckView = S['CheckView'];
 export type CheckAccepted = S['CheckAccepted'];
 export type PostCheck = S['PostCheck'];
+export type PresetView = S['PresetView'];
+export type PresetIn = S['PresetIn'];
+export type CopyPreset = S['CopyPreset'];
 
 export type AgentCommand = 'compact' | 'interrupt' | 'restart';
 
@@ -71,11 +73,18 @@ const id = encodeURIComponent;
 
 export const listClusters = () => request<ClusterView[]>('GET', '/clusters');
 export const getCluster = (clusterId: string) => request<ClusterView>('GET', `/clusters/${id(clusterId)}`);
+/** Body: exactly one of `spec` or `preset_id` (the server answers 422 otherwise); `slug` is optional with a preset. */
 export const createCluster = (body: CreateCluster) => request<ClusterView>('POST', '/clusters', body);
-export const patchCluster = (clusterId: string, body: PatchCluster) =>
-  request<ClusterView>('PATCH', `/clusters/${id(clusterId)}`, body);
 /** Discards the cluster; takes no purge parameter. */
 export const deleteCluster = (clusterId: string) => request<ClusterView>('DELETE', `/clusters/${id(clusterId)}`);
+export const listPresets = () => request<PresetView[]>('GET', '/presets');
+export const getPreset = (presetId: string) => request<PresetView>('GET', `/presets/${id(presetId)}`);
+export const createPreset = (body: PresetIn) => request<PresetView>('POST', '/presets', body);
+export const updatePreset = (presetId: string, body: PresetIn) => request<PresetView>('PUT', `/presets/${id(presetId)}`, body);
+export const deletePreset = (presetId: string) => request<void>('DELETE', `/presets/${id(presetId)}`);
+/** Copies a preset; the server names the copy when `body.name` is absent. */
+export const copyPreset = (presetId: string, body?: CopyPreset) => request<PresetView>('POST', `/presets/${id(presetId)}/copy`, body);
+
 export const listAgents = (clusterId: string) =>
   request<AgentView[]>('GET', `/clusters/${id(clusterId)}/agents`);
 

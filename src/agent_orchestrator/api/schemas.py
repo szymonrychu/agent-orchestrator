@@ -14,14 +14,31 @@ from agent_orchestrator.spec import ClusterSpec
 class CreateCluster(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    slug: str
+    slug: str | None = None
+    spec: ClusterSpec | None = None
+    preset_id: uuid.UUID | None = None
+
+
+class PresetIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
     spec: ClusterSpec = ClusterSpec()
 
 
-class PatchCluster(BaseModel):
+class CopyPreset(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    spec: ClusterSpec
+    name: str | None = None
+
+
+class PresetView(BaseModel):
+    id: uuid.UUID
+    name: str
+    is_default: bool
+    spec: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
 
 
 class ClusterSummary(BaseModel):
@@ -43,6 +60,8 @@ class ClusterView(BaseModel):
     generation: int
     observed_generation: int
     created_at: datetime
+    preset_id: uuid.UUID | None
+    preset_name: str | None
     summary: ClusterSummary
 
 

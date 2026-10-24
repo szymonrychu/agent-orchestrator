@@ -439,6 +439,29 @@
             "title": "Observed Generation",
             "type": "integer"
           },
+          "preset_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preset Id"
+          },
+          "preset_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preset Name"
+          },
           "slug": {
             "title": "Slug",
             "type": "string"
@@ -464,6 +487,8 @@
           "generation",
           "observed_generation",
           "created_at",
+          "preset_id",
+          "preset_name",
           "summary"
         ],
         "title": "ClusterView",
@@ -553,27 +578,61 @@
         "title": "CommandView",
         "type": "object"
       },
+      "CopyPreset": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "title": "CopyPreset",
+        "type": "object"
+      },
       "CreateCluster": {
         "additionalProperties": false,
         "properties": {
+          "preset_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preset Id"
+          },
           "slug": {
-            "title": "Slug",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slug"
           },
           "spec": {
-            "$ref": "#/components/schemas/ClusterSpec",
-            "default": {
-              "env": {},
-              "max_attempts": 5,
-              "peers": true,
-              "replicas": 1,
-              "workdir": "workdir"
-            }
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClusterSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
-        "required": [
-          "slug"
-        ],
         "title": "CreateCluster",
         "type": "object"
       },
@@ -1204,19 +1263,6 @@
         "title": "MetaResources",
         "type": "object"
       },
-      "PatchCluster": {
-        "additionalProperties": false,
-        "properties": {
-          "spec": {
-            "$ref": "#/components/schemas/ClusterSpec"
-          }
-        },
-        "required": [
-          "spec"
-        ],
-        "title": "PatchCluster",
-        "type": "object"
-      },
       "PostCheck": {
         "additionalProperties": false,
         "properties": {
@@ -1257,6 +1303,72 @@
           "text"
         ],
         "title": "PostMessage",
+        "type": "object"
+      },
+      "PresetIn": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/ClusterSpec",
+            "default": {
+              "env": {},
+              "max_attempts": 5,
+              "peers": true,
+              "replicas": 1,
+              "workdir": "workdir"
+            }
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "PresetIn",
+        "type": "object"
+      },
+      "PresetView": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_default": {
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "spec": {
+            "additionalProperties": true,
+            "title": "Spec",
+            "type": "object"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "is_default",
+          "spec",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "PresetView",
         "type": "object"
       },
       "Resources": {
@@ -1880,54 +1992,6 @@
           }
         },
         "summary": "Get Cluster"
-      },
-      "patch": {
-        "operationId": "patch_cluster_api_v1_clusters__cluster_id__patch",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "cluster_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Cluster Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PatchCluster"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ClusterView"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Patch Cluster"
       }
     },
     "/api/v1/clusters/{cluster_id}/agents": {
@@ -2705,6 +2769,240 @@
           }
         },
         "summary": "Meta"
+      }
+    },
+    "/api/v1/presets": {
+      "get": {
+        "operationId": "list_presets_api_v1_presets_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PresetView"
+                  },
+                  "title": "Response List Presets Api V1 Presets Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Presets"
+      },
+      "post": {
+        "operationId": "create_preset_api_v1_presets_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PresetIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PresetView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Preset"
+      }
+    },
+    "/api/v1/presets/{preset_id}": {
+      "delete": {
+        "operationId": "delete_preset_api_v1_presets__preset_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "preset_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Preset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Preset"
+      },
+      "get": {
+        "operationId": "get_preset_api_v1_presets__preset_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "preset_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Preset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PresetView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Preset"
+      },
+      "put": {
+        "operationId": "replace_preset_api_v1_presets__preset_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "preset_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Preset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PresetIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PresetView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Replace Preset"
+      }
+    },
+    "/api/v1/presets/{preset_id}/copy": {
+      "post": {
+        "operationId": "copy_preset_api_v1_presets__preset_id__copy_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "preset_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Preset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CopyPreset"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PresetView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Copy Preset"
       }
     },
     "/api/v1/stream": {

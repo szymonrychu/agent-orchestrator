@@ -13,9 +13,12 @@ ASSET_CACHE = "public, max-age=31536000, immutable"
 
 class SpaStaticFiles(StaticFiles):
     """index.html is never cached, hashed assets are immutable, unknown
-    non-API paths fall back to index.html, unknown /api/ paths stay 404."""
+    non-API paths fall back to index.html, unknown /api/ paths stay 404, and any
+    method other than GET/HEAD is 405 (the mount shadows partial route matches)."""
 
     async def get_response(self, path: str, scope: Scope) -> Response:
+        if scope["method"] not in ("GET", "HEAD"):
+            raise HTTPException(status_code=405, headers={"Allow": "GET, HEAD"})
         if path == "api" or path.startswith("api/"):
             raise HTTPException(status_code=404, detail="not found")
         try:

@@ -60,3 +60,23 @@ async def test_no_static_dir_no_mount(kind, tmp_path):
         r = await c.get("/")
         assert r.status_code == 404
         assert r.json()["error"]["code"] == "not_found"
+
+
+async def test_patch_cluster_405_with_spa_mounted(static_dir):
+    async with _client(str(static_dir)) as c:
+        r = await c.patch("/api/v1/clusters/6f1c2f0e-0000-4000-8000-000000000001", json={})
+        assert r.status_code == 405
+        assert r.headers["allow"] == "GET, HEAD"
+        r = await c.post("/api/v1/nope", json={})
+        assert r.status_code == 405
+
+
+async def test_unknown_api_get_404_and_index_served(static_dir):
+    async with _client(str(static_dir)) as c:
+        r = await c.get("/api/v1/unknown")
+        assert r.status_code == 404
+        r = await c.head("/api/v1/unknown")
+        assert r.status_code == 404
+        r = await c.get("/")
+        assert r.status_code == 200
+        assert "spa" in r.text

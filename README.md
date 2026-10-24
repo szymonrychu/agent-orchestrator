@@ -29,10 +29,10 @@ Every process reads `ORCH_*` variables (the contract `agent-orchestrator-setting
 | `ORCH_DEFAULT_EFFORT` | empty | api, reconciler | default effort; empty means the Claude Code default |
 | `ORCH_MODELS` | `claude-opus-5-5,claude-sonnet-5-5,claude-haiku-5-5,claude-fable-5-1` | api | comma-separated model choices; a spec naming another model is rejected |
 | `ORCH_EFFORTS` | `low,medium,high,xhigh,max` | api | comma-separated effort choices; a spec naming another effort is rejected (empty effort is allowed) |
-| `ORCH_DEFAULT_CPU_REQUEST` | `500m` | api, reconciler | agent container CPU request filled into the stored spec when a cluster is created or edited and the key is empty (Kubernetes quantity) |
-| `ORCH_DEFAULT_CPU_LIMIT` | `4` | api, reconciler | agent container CPU limit filled in when a cluster is created or edited and the key is empty |
-| `ORCH_DEFAULT_MEMORY_REQUEST` | `1Gi` | api, reconciler | agent container memory request filled in when a cluster is created or edited and the key is empty |
-| `ORCH_DEFAULT_MEMORY_LIMIT` | `8Gi` | api, reconciler | agent container memory limit filled in when a cluster is created or edited and the key is empty |
+| `ORCH_DEFAULT_CPU_REQUEST` | `500m` | api, reconciler | agent container CPU request filled into the stored spec when a cluster is created and the key is empty (Kubernetes quantity) |
+| `ORCH_DEFAULT_CPU_LIMIT` | `4` | api, reconciler | agent container CPU limit filled in when a cluster is created and the key is empty |
+| `ORCH_DEFAULT_MEMORY_REQUEST` | `1Gi` | api, reconciler | agent container memory request filled in when a cluster is created and the key is empty |
+| `ORCH_DEFAULT_MEMORY_LIMIT` | `8Gi` | api, reconciler | agent container memory limit filled in when a cluster is created and the key is empty |
 | `ORCH_DEFAULT_REPLICAS` | `1` | api | default agents per cluster |
 | `ORCH_DEFAULT_AUTO_COMPACT_PCT` | `95` | api | auto-compact threshold percent (gauge tick and CLAUDE_AUTOCOMPACT_PCT_OVERRIDE) |
 | `ORCH_PVC_STORAGE_CLASS` | `rook-ceph-rwx` | api, reconciler | RWX storage class |
@@ -310,7 +310,8 @@ The rule "services talk only through the queue or HTTP APIs, with no shared stat
 
 | Table | Writer |
 |---|---|
-| `clusters` | api; the reconciler writes only `status` and `observed_generation` and deletes the row when a discard completes |
+| `clusters` | api; the reconciler writes only `status` and `observed_generation` and deletes the row when a discard completes. `preset_id` is also set to null by the `ON DELETE SET NULL` cascade when the api deletes a preset, an api-originated write |
+| `presets` | api |
 | `agents` | reconciler; `last_dispatched_at` is written by the dispatch claim |
 | `agent_status` | ingester |
 | `messages` | api inserts and cancels while queued; the dispatcher does the rest |
@@ -383,7 +384,8 @@ Plain SQL migrations (`src/agent_orchestrator/db/migrations`), psycopg 3, no ORM
 
 | Table | Holds |
 |---|---|
-| `clusters` | id, unique slug, `spec` (jsonb ClusterSpec), `generation` / `observed_generation` (the reconcile queue), `desired` (`active`, `deleting`), `status` |
+| `clusters` | id, unique slug, `spec` (jsonb ClusterSpec), `generation` / `observed_generation` (the reconcile queue), `desired` (`active`, `deleting`), `status`, `preset_id` (nullable; the `ON DELETE SET NULL` cascade sets it to null when the api deletes the preset, an api-originated write, so `clusters` keeps a single writer) and `preset_name` (the name at create, kept) |
+| `presets` | named ClusterSpec templates: unique case-insensitive `name` (1 to 40 characters), `spec` (jsonb, only what the user set), `is_default`; migration `0002` seeds `Default` with `{"replicas": 1}`, which can be edited but not renamed or deleted |
 | `agents` | one row per pod: ordinal, pod name, url, readiness, session id, `last_dispatched_at`, `gone_at` |
 | `agent_status` | wrapper state (`unknown`, `booting`, `idle`, `busy`, `dead`), `free_since`, current turn, context tokens and percentage, last seq, peers |
 | `messages` | queue: text, status (`queued`, `dispatching`, `verifying`, `sent`, `failed`, `cancelled`), target and chosen agent, turn id, attempts, error, `not_before`, `ambiguous_at` |
@@ -398,13 +400,39 @@ Base path `/api/v1`. JSON in and out. There is no authentication; access is rest
 
 Versioning: `/api/v1` is additive only. New routes, new optional request fields and new response fields may appear; existing routes, fields and error codes are never removed or changed in meaning. A breaking change is a new `/api/v2`.
 
+Documented exception, 2026-10-23: `PATCH /api/v1/clusters/{cluster_id}` was removed (it now answers 405), and `POST /api/v1/clusters` requires exactly one of `spec` and `preset_id`. Why: a live spec edit rolled every agent pod of a running cluster; clusters now snapshot their preset at create and the spec is fixed from then on. To change it, discard the cluster and schedule again from a preset.
+
 Source allowlist: the api checks the direct socket peer against `ORCH_ALLOWED_CIDRS` (default `192.168.1.0/24`). `Forwarded`, `X-Forwarded-For` and `X-Real-IP` are never read. A caller outside the list gets `403 forbidden`. `/healthz` and `/readyz` are exempt.
 
-Error codes: `bad_request` (400), `forbidden` (403), `forbidden_origin` (403, `Origin` not in `ORCH_ALLOWED_ORIGINS` on a terminal POST or DELETE or a WebSocket upgrade), `not_found` (404), `conflict` (409, slug exists), `cluster_deleting` (409), `cluster_limit` (409, `ORCH_MAX_CLUSTERS` reached), `not_queued` (409), `not_failed` (409), `agent_gone` (409), `agent_not_ready` (409, no ready agent for a file or terminal proxy), `invalid_path` (400, a file path is absolute, holds a NUL byte or leaves the workdir), `not_a_directory` (400, listing a file), `not_a_file` (400, reading a directory or special file), `terminal_limit` (409, the wrapper's per-pod terminal cap is reached), `session_not_active` (409, the agent's wrapper session is not active), `terminal_not_found` (404, no such shell on that agent), `invalid_size` (422, rows or cols outside 1..1000), `invalid_request` (422, also a terminal id that is not `term_` plus 12 lowercase hex digits), `target_gone` (422), `internal` (500, 503 on `/readyz`), `wrapper_error` (502, the wrapper answered 5xx), `wrapper_unreachable` (502, the wrapper pod could not be reached), `unavailable` (503, no master key for the proxies).
+Error codes: `bad_request` (400), `forbidden` (403), `forbidden_origin` (403, `Origin` not in `ORCH_ALLOWED_ORIGINS` on a terminal POST or DELETE or a WebSocket upgrade), `not_found` (404), `conflict` (409, slug or preset name exists), `preset_default` (409, renaming or deleting the default preset), `last_preset` (409, deleting the only preset), `cluster_deleting` (409), `cluster_limit` (409, `ORCH_MAX_CLUSTERS` reached), `not_queued` (409), `not_failed` (409), `agent_gone` (409), `agent_not_ready` (409, no ready agent for a file or terminal proxy), `invalid_path` (400, a file path is absolute, holds a NUL byte or leaves the workdir), `not_a_directory` (400, listing a file), `not_a_file` (400, reading a directory or special file), `terminal_limit` (409, the wrapper's per-pod terminal cap is reached), `session_not_active` (409, the agent's wrapper session is not active), `terminal_not_found` (404, no such shell on that agent), `invalid_size` (422, rows or cols outside 1..1000), `invalid_request` (422, also a terminal id that is not `term_` plus 12 lowercase hex digits), `target_gone` (422), `internal` (500, 503 on `/readyz`), `wrapper_error` (502, the wrapper answered 5xx), `wrapper_unreachable` (502, the wrapper pod could not be reached), `unavailable` (503, no master key for the proxies).
 
 ### `GET /api/v1/meta`
 
 Defaults and limits for forms: `defaults` (model, effort, replicas, auto_compact_pct, pvc_size, storage_class, max_attempts), `agent_image`, `agent_images` (the image allowlist), `models`, `caps` (`max_replicas`, `max_pvc_size`, `max_clusters`, from `ORCH_MAX_REPLICAS`, `ORCH_MAX_PVC_SIZE`, `ORCH_MAX_CLUSTERS`) and `discard_hook` (`none`, `command`, `url`). Response 200.
+
+### `GET /api/v1/presets`
+
+All presets as a list of preset views `{id, name, is_default, spec, created_at, updated_at}`, the default first, then by name. `spec` holds only the keys the caller stored. A fresh database has one preset, `Default`, with spec `{"replicas": 1}`. Response 200.
+
+### `POST /api/v1/presets`
+
+Body `{"name": "<name>", "spec": {...}}`. The name is 1 to 40 characters of letters, digits, spaces, dots, dashes and underscores, with no leading or trailing space; the API never trims it. Names are unique ignoring case. `spec` takes the same fields as the cluster spec (all optional) and is checked against the current settings (models, efforts, image allowlist, caps) like a cluster create; only the keys sent are stored, no defaults are filled. Response 201 with the preset view. Errors: 422 `invalid_request` (bad name, or a spec the settings refuse), 409 `conflict` (name taken).
+
+### `GET /api/v1/presets/{preset_id}`
+
+One preset view. Response 200. Errors: 404 `not_found`.
+
+### `PUT /api/v1/presets/{preset_id}`
+
+Body `{"name": "<name>", "spec": {...}}` replaces the name and the whole spec, with the rules of the create. A model, effort or image that is no longer in the settings lists is accepted only when it equals the value already stored in this preset. The default preset can be edited but not renamed. Response 200 with the preset view. Errors: 404 `not_found`, 409 `conflict` (name taken), 409 `preset_default` (renaming the default), 422 `invalid_request`.
+
+### `DELETE /api/v1/presets/{preset_id}`
+
+Deletes the preset. Clusters made from it keep their spec; their `preset_id` becomes null. Response 204 with no body. Errors: 404 `not_found`, 409 `preset_default` (the default cannot be deleted), 409 `last_preset` (the only preset cannot be deleted).
+
+### `POST /api/v1/presets/{preset_id}/copy`
+
+Optional body `{"name": "<name>"}`. Creates a new, non-default preset holding the source's stored spec verbatim. Without a name it is `<source name> copy`, then `<source name> copy 2`, `copy 3` and so on until free; the source part is cut to fit 40 characters and right-trimmed before ` copy`. Response 201 with the new preset view. Errors: 404 `not_found` (unknown source), 409 `conflict` (an explicit name is taken), 422 `invalid_request` (bad explicit name).
 
 ### `GET /api/v1/clusters`
 
@@ -412,15 +440,16 @@ All clusters as a list of cluster views. Response 200.
 
 ### `POST /api/v1/clusters`
 
-Body `{"slug": "<dns label>", "spec": {...}}`. `spec` fields (all optional): `replicas`, `image`, `model`, `effort`, `peers`, `workdir`, `pvc_size`, `resources`, `env`, `any_mcp_config`, `max_attempts`, `auto_compact_pct`, `discard_hook_url`. Response 201 with the cluster view. Errors: 422 `invalid_request` (bad slug, image outside `ORCH_AGENT_IMAGES`, reserved env key, replicas or PVC size above the caps, invalid `any_mcp_config`), 409 `conflict` (slug exists), 409 `cluster_limit`, 403 `forbidden`.
+Schedules a cluster. The body holds exactly one of `spec` and `preset_id`, else 422 `invalid_request` ("exactly one of spec or preset_id"):
+
+- From a preset: `{"preset_id": "<uuid>", "slug": "<dns label, optional>"}`. Without `slug` the API generates `<preset name as a dns label>-<4 random letters>` (for example `default-qkzt`) and retries a clash with a fresh suffix up to 5 times, then answers 409 `conflict`. The preset spec is validated against the current settings when you schedule (a preset that has become invalid is 422 `invalid_request` with a message starting `preset '<name>': `), empty resource keys and an unset `replicas` are filled from the current defaults (`ORCH_DEFAULT_*`, `ORCH_DEFAULT_REPLICAS`), and the result is stored as the cluster's own spec: a snapshot. Editing or deleting the preset afterwards never changes the cluster, its `spec` or its `generation`; the cluster view keeps `preset_name` and `preset_id` becomes null once the preset is deleted. An unknown `preset_id` is 404 `not_found`.
+- Raw spec, for headless callers: `{"slug": "<dns label>", "spec": {...}}`; `slug` is required with `spec` (422 otherwise). `spec` fields (all optional): `replicas`, `image`, `model`, `effort`, `peers`, `workdir`, `pvc_size`, `resources`, `env`, `any_mcp_config`, `max_attempts`, `auto_compact_pct`, `discard_hook_url`. Such a cluster has null `preset_id` and `preset_name`.
+
+Response 201 with the cluster view. Errors: 422 `invalid_request` (bad slug, both or neither of `spec` and `preset_id`, `spec` without `slug`, image outside `ORCH_AGENT_IMAGES`, reserved env key, replicas or PVC size above the caps, invalid `any_mcp_config`, an invalid preset), 404 `not_found` (unknown preset), 409 `conflict` (slug exists, or no free generated slug), 409 `cluster_limit`, 403 `forbidden`.
 
 ### `GET /api/v1/clusters/{cluster_id}`
 
-One cluster view: `id`, `slug`, `spec`, `desired`, `status`, `generation`, `observed_generation`, `created_at` and `summary` (`state` of `working`, `waiting`, `booting`, `error`, `deleting`; `ready`, `replicas`, `context_pct_max`, `auto_compact_pct`, `queued`, `failed`). Response 200. Errors: 404 `not_found`.
-
-### `PATCH /api/v1/clusters/{cluster_id}`
-
-Body `{"spec": {...}}` replaces the spec and bumps `generation`. Response 200 with the cluster view. Errors: 404 `not_found`, 409 `cluster_deleting`, 422 `invalid_request`.
+One cluster view: `id`, `slug`, `spec`, `desired`, `status`, `generation`, `observed_generation`, `created_at`, `preset_id` (null for a raw-spec cluster or once the preset is deleted), `preset_name` and `summary` (`state` of `working`, `waiting`, `booting`, `error`, `deleting`; `ready`, `replicas`, `context_pct_max`, `auto_compact_pct`, `queued`, `failed`). Response 200. Errors: 404 `not_found`.
 
 ### `DELETE /api/v1/clusters/{cluster_id}`
 

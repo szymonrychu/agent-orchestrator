@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import re
+import secrets
+import string
+from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Annotated, Any
 from urllib.parse import urlparse
@@ -46,6 +49,25 @@ class SpecInvalid(ValueError):
     def __init__(self, errors: list[str]):
         self.errors = errors
         super().__init__("invalid cluster spec: " + "; ".join(errors))
+
+
+def slugify(text: str, max_len: int = SLUG_MAX) -> str:
+    """Lowercase `text` to a DNS-1123 label body of at most `max_len`; "" if nothing is usable."""
+    body = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return body[:max_len].rstrip("-")
+
+
+def _random_suffix() -> str:
+    return "".join(secrets.choice(string.ascii_lowercase) for _ in range(4))
+
+
+def generated_slug(name: str, rand: Callable[[], str] | None = None) -> str:
+    """`<base>-<4 random letters>` from a display name, always valid and at most SLUG_MAX."""
+    room = SLUG_MAX - 5
+    base = slugify(name, room) or "cluster"
+    if base == "orchestrator" or base.startswith("orchestrator-"):
+        base = slugify(f"p-{base}", room)
+    return f"{base}-{(rand or _random_suffix)()}"
 
 
 def validate_slug(slug: str) -> None:
@@ -183,12 +205,21 @@ def _not_above(low: str, high: str) -> bool:
 
 
 def validate_spec(spec: ClusterSpec, settings: Settings, stored: ClusterSpec | None = None) -> None:
-    """Validate a spec; a model or effort equal to the stored one is not re-checked."""
+    """Validate a spec.
+
+    `stored` stays for the preset PUT: a model, effort or image that has since left the settings
+    lists is accepted only when unchanged from the stored preset spec. Scheduling a cluster passes
+    no `stored` and validates fully.
+    """
     from any_mcp.config import AnyMcpConfig
     from pydantic import ValidationError
 
     errors: list[str] = []
-    if spec.image is not None and spec.image not in settings.image_allowlist():
+    if (
+        spec.image is not None
+        and spec.image not in settings.image_allowlist()
+        and (stored is None or spec.image != stored.image)
+    ):
         errors.append(f"image {spec.image!r} is not in the allowed agent images")
     if spec.discard_hook_url is not None:
         parsed = urlparse(spec.discard_hook_url)

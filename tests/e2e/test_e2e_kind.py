@@ -3,9 +3,11 @@
 Run by `scripts/e2e.sh` (`mise run test:e2e`), which creates the kind cluster, installs the
 chart with e2e/values-kind.yaml, runs `helm test`, port-forwards the api Service to
 ORCH_E2E_API_URL and then runs this module. The tests share one agent cluster and run in
-file order: the round-robin fixture sends the messages the event-stream test reads, and the
-discard fixture runs last, so the shared-namespace test compares against a baseline taken
-before the cluster existed. Every fixture is lazy, so a single test can also run alone:
+file order: the cluster is scheduled from a preset created through POST /presets, the
+round-robin fixture sends the messages the event-stream test reads, the preset tests run after
+them, and the discard fixture runs last, so the shared-namespace test compares against a
+baseline taken before the cluster existed. Every fixture is lazy, so a single test can also run
+alone:
 `uv run pytest tests/e2e/test_e2e_kind.py::<name>` brings the same environment up itself
 (tests/e2e/conftest.py runs scripts/e2e.sh in hold mode and deletes the cluster afterwards).
 
@@ -39,6 +41,8 @@ RELEASE = os.environ.get("ORCH_E2E_RELEASE", "agent-orchestrator")
 API_URL = os.environ.get("ORCH_E2E_API_URL", "http://127.0.0.1:18080")
 KUBE_CONTEXT = os.environ.get("ORCH_E2E_KUBE_CONTEXT", "kind-agent-orchestrator-e2e")
 SLUG = "e2e-rr"
+PRESET_NAME = "E2E two replicas"
+GENERATED_SLUG = re.compile(r"^default-[a-z]{4}$")
 CLUSTER_LABEL = "agents.szymonrichert.pl/cluster"
 COMPONENTS = ("api", "dispatcher", "ingester", "reconciler")
 RECONCILER_SA = f"system:serviceaccount:{NAMESPACE}:{RELEASE}-reconciler"
@@ -250,15 +254,33 @@ def baseline() -> dict[tuple[str, str], dict[str, Any]]:
 
 
 @pytest.fixture(scope="module")
-def cluster(api: httpx.Client, baseline: dict) -> dict[str, Any]:
-    """A 2-replica, peers-on cluster created through the API, with 2 idle agents."""
+def preset(api: httpx.Client) -> Iterator[dict[str, Any]]:
+    """The 2-replica, peers-on preset the shared cluster is scheduled from (POST /presets)."""
     resp = api.post(
-        "/clusters",
-        json={"slug": SLUG, "spec": {"replicas": 2, "peers": True, "env": FAKE_TURN_ENV}},
+        "/presets",
+        json={
+            "name": PRESET_NAME,
+            "spec": {"replicas": 2, "peers": True, "env": FAKE_TURN_ENV},
+        },
     )
     assert resp.status_code == 201, resp.text
     created = resp.json()
+    try:
+        yield created
+    finally:  # the edit-and-delete test already removed it; a lone run may not have
+        api.delete(f"/presets/{created['id']}")
+
+
+@pytest.fixture(scope="module")
+def cluster(api: httpx.Client, baseline: dict, preset: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    """A 2-replica, peers-on cluster scheduled from a preset, with 2 idle agents."""
+    resp = api.post("/clusters", json={"preset_id": preset["id"], "slug": SLUG})
+    assert resp.status_code == 201, resp.text
+    created = resp.json()
     cid = created["id"]
+    assert created["slug"] == SLUG, created
+    assert created["preset_id"] == preset["id"], created
+    assert created["preset_name"] == PRESET_NAME, created
 
     def two_idle_agents() -> list[dict[str, Any]] | None:
         view = api.get(f"/clusters/{cid}").json()
@@ -275,7 +297,10 @@ def cluster(api: httpx.Client, baseline: dict) -> dict[str, Any]:
         print(kubectl("describe", "pods", "-l", f"{CLUSTER_LABEL}={SLUG}", check=False).stdout)
         print(kubectl("logs", "-l", f"{CLUSTER_LABEL}={SLUG}", "--tail=80", check=False).stdout)
         raise
-    return {**created, "agents": agents}
+    try:
+        yield {**created, "agents": agents}
+    finally:  # the discard fixture normally removed it already (404 then); never leave it behind
+        api.delete(f"/clusters/{cid}")
 
 
 def message(api: httpx.Client, mid: int) -> dict[str, Any]:
@@ -652,6 +677,133 @@ def test_terminal_websocket_refuses_foreign_origin(
         with attach(api, agent_id, term["terminal_id"]) as ws:
             ws.send(b"echo still-$((6*7))\n")
             read_until(ws, r"^still-42$")
+
+
+def pods_of(slug: str) -> dict[str, str]:
+    """Pod name -> pod uid of a cluster, read with kubectl."""
+    out = kubectl(
+        "get",
+        "pods",
+        "-l",
+        f"{CLUSTER_LABEL}={slug}",
+        "-o",
+        'jsonpath={range .items[*]}{.metadata.name}{" "}{.metadata.uid}{"\\n"}{end}',
+    ).stdout
+    return dict(line.split() for line in out.splitlines() if line.strip())
+
+
+def presets_by_name(api: httpx.Client) -> dict[str, dict[str, Any]]:
+    resp = api.get("/presets")
+    assert resp.status_code == 200, resp.text
+    return {p["name"]: p for p in resp.json()}
+
+
+def default_preset(api: httpx.Client) -> dict[str, Any]:
+    found = [p for p in api.get("/presets").json() if p["is_default"]]
+    assert len(found) == 1, found
+    return found[0]
+
+
+def test_default_preset_listed(api: httpx.Client) -> None:
+    listed = presets_by_name(api)
+    assert "Default" in listed, listed
+    default = listed["Default"]
+    assert default["is_default"] is True, default
+    assert default["spec"]["replicas"] == 1, default
+    assert default_preset(api)["id"] == default["id"]
+
+
+def test_cluster_scheduled_from_preset_keeps_provenance(
+    api: httpx.Client, cluster: dict[str, Any], preset: dict[str, Any]
+) -> None:
+    view = api.get(f"/clusters/{cluster['id']}").json()
+    assert view["slug"] == SLUG
+    assert view["preset_id"] == preset["id"] and view["preset_name"] == PRESET_NAME, view
+    assert view["spec"]["replicas"] == 2 and view["spec"]["peers"] is True, view["spec"]
+    assert view["spec"]["env"] == FAKE_TURN_ENV, view["spec"]
+
+
+def test_preset_edit_and_delete_leave_cluster_unchanged(
+    api: httpx.Client,
+    cluster: dict[str, Any],
+    preset: dict[str, Any],
+    round_robin: dict[str, Any],
+) -> None:
+    cid = cluster["id"]
+    before = api.get(f"/clusters/{cid}").json()
+    pods_before = pods_of(SLUG)
+    assert len(pods_before) == 2, pods_before
+    copy_id: str | None = None
+
+    def assert_unchanged() -> None:
+        # several reconcile polls (ORCH_RECONCILE_POLL_SECONDS=3) pass first
+        time.sleep(10)
+        view = api.get(f"/clusters/{cid}").json()
+        assert view["spec"] == before["spec"], view["spec"]
+        assert view["generation"] == before["generation"], view
+        assert view["observed_generation"] == before["observed_generation"], view
+        assert pods_of(SLUG) == pods_before
+
+    try:
+        edited = api.put(
+            f"/presets/{preset['id']}", json={"name": PRESET_NAME, "spec": {"replicas": 1}}
+        )
+        assert edited.status_code == 200, edited.text
+        assert edited.json()["spec"]["replicas"] == 1, edited.text
+        copied = api.post(f"/presets/{preset['id']}/copy")
+        assert copied.status_code == 201, copied.text
+        copy = copied.json()
+        copy_id = copy["id"]
+        assert copy["id"] != preset["id"] and copy["name"] != PRESET_NAME, copy
+        assert copy["is_default"] is False and copy["spec"]["replicas"] == 1, copy
+        assert_unchanged()
+        assert api.get(f"/clusters/{cid}").json()["preset_id"] == preset["id"]
+
+        deleted = api.delete(f"/presets/{preset['id']}")
+        assert deleted.status_code == 204, deleted.text
+        assert api.get(f"/presets/{preset['id']}").status_code == 404
+        assert_unchanged()
+        after = api.get(f"/clusters/{cid}").json()
+        assert after["preset_id"] is None, after
+        assert after["preset_name"] == PRESET_NAME, after
+    finally:
+        if copy_id is not None:
+            gone = api.delete(f"/presets/{copy_id}")
+            assert gone.status_code in (204, 404), gone.text
+    assert copy_id not in {p["id"] for p in api.get("/presets").json()}
+
+
+def test_schedule_default_preset_generated_slug(api: httpx.Client) -> None:
+    default = default_preset(api)
+    resp = api.post("/clusters", json={"preset_id": default["id"]})
+    assert resp.status_code == 201, resp.text
+    created = resp.json()
+    cid = created["id"]
+    try:
+        assert GENERATED_SLUG.fullmatch(created["slug"]), created["slug"]
+        assert created["spec"]["replicas"] == 1, created["spec"]
+        assert created["preset_id"] == default["id"], created
+        assert created["preset_name"] == "Default", created
+    finally:  # the cluster costs a reconcile for nothing: discard it at once
+        api.delete(f"/clusters/{cid}")
+    wait_for(
+        f"cluster {created['slug']} row to be gone",
+        lambda: api.get(f"/clusters/{cid}").status_code == 404,
+        DISCARD_TIMEOUT,
+    )
+
+
+def test_patch_cluster_retired(api: httpx.Client, cluster: dict[str, Any]) -> None:
+    resp = api.patch(f"/clusters/{cluster['id']}", json={"spec": {"replicas": 3}})
+    assert resp.status_code == 405, resp.text
+
+
+def test_delete_default_preset_refused(api: httpx.Client) -> None:
+    default = default_preset(api)
+    resp = api.delete(f"/presets/{default['id']}")
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["error"]["code"] == "preset_default", resp.text
+    assert api.get(f"/presets/{default['id']}").status_code == 200
 
 
 def test_discard_removes_objects_and_history(

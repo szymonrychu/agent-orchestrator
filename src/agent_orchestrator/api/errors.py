@@ -32,8 +32,10 @@ def error_body(code: str, message: str) -> dict:
     return {"error": {"code": code, "message": message}}
 
 
-def error_response(status: int, code: str, message: str) -> JSONResponse:
-    return JSONResponse(error_body(code, message), status_code=status)
+def error_response(
+    status: int, code: str, message: str, headers: dict[str, str] | None = None
+) -> JSONResponse:
+    return JSONResponse(error_body(code, message), status_code=status, headers=headers)
 
 
 def not_found(what: str) -> ApiError:
@@ -48,7 +50,7 @@ def install(app: FastAPI) -> None:
     @app.exception_handler(StarletteHTTPException)
     async def _http(_: Request, exc: StarletteHTTPException):
         code = _CODES.get(exc.status_code, "bad_request" if exc.status_code < 500 else "internal")
-        return error_response(exc.status_code, code, str(exc.detail))
+        return error_response(exc.status_code, code, str(exc.detail), exc.headers)
 
     @app.exception_handler(RequestValidationError)
     async def _validation(_: Request, exc: RequestValidationError):

@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import random
-import re
 import secrets
 import time
 from collections.abc import Callable
@@ -16,7 +15,7 @@ from typing import Any, TextIO
 import httpx
 
 from agent_orchestrator.bench.spec import Arm, BenchSpec, Task
-from agent_orchestrator.spec import SLUG_MAX
+from agent_orchestrator.spec import SLUG_MAX, slugify
 
 log = logging.getLogger("agent_orchestrator.bench")
 
@@ -32,9 +31,8 @@ class BenchError(RuntimeError):
 def arm_slug(arm: str, run: str) -> str:
     """`bench-<arm>-<run>` as a DNS-1123 label of at most SLUG_MAX characters."""
     tail = f"-{run}"
-    body = re.sub(r"[^a-z0-9]+", "-", arm.lower()).strip("-") or "arm"
     room = SLUG_MAX - len("bench-") - len(tail)
-    return f"bench-{body[:room].rstrip('-') or 'arm'}{tail}"
+    return f"bench-{slugify(arm, room) or 'arm'}{tail}"
 
 
 def _ts(value: str | None) -> datetime | None:
