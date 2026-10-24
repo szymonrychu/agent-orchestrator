@@ -530,6 +530,8 @@ export interface components {
              * @default 5
              */
             max_attempts: number;
+            /** Max Replicas */
+            max_replicas?: number | null;
             /** Model */
             model?: string | null;
             /**
@@ -545,6 +547,11 @@ export interface components {
              */
             replicas: number;
             resources?: components["schemas"]["Resources"] | null;
+            /**
+             * Static
+             * @default false
+             */
+            static: boolean;
             /**
              * Workdir
              * @default workdir
@@ -902,8 +909,10 @@ export interface components {
              * @default {
              *       "env": {},
              *       "max_attempts": 5,
+             *       "max_replicas": 1,
              *       "peers": true,
              *       "replicas": 1,
+             *       "static": false,
              *       "workdir": "workdir"
              *     }
              */

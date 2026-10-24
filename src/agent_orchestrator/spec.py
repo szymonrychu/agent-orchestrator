@@ -10,12 +10,13 @@ from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Annotated, Any
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 if TYPE_CHECKING:
     from agent_orchestrator.settings import Settings
 
 SLUG_MAX = 40
+RESERVED_PLUGIN = "orchestrator"
 _LABEL_RE = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
 _ENV_KEY_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 _RESERVED_ENV_PREFIXES = ("CCW_", "CLAUDE_", "ANTHROPIC_")
@@ -120,6 +121,8 @@ class ClusterSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     replicas: int = Field(default=1, ge=1, le=16)
+    max_replicas: int | None = Field(default=None, ge=1, le=16)
+    static: bool = False
     image: str | None = None
     model: str | None = None
     effort: str | None = None
@@ -132,6 +135,30 @@ class ClusterSpec(BaseModel):
     max_attempts: int = Field(default=5, ge=1, le=10)
     auto_compact_pct: int | None = Field(default=None, ge=1, le=100)
     discard_hook_url: str | None = None
+
+    @model_validator(mode="after")
+    def _cap(self) -> ClusterSpec:
+        if self.max_replicas is None:
+            # resolved without marking the field set, so presets stay sparse
+            self.__dict__["max_replicas"] = self.replicas
+        elif self.replicas > self.max_replicas:
+            raise ValueError(f"replicas {self.replicas} exceeds max_replicas {self.max_replicas}")
+        if self.static and self.max_replicas != self.replicas:
+            raise ValueError("static requires max_replicas to equal replicas")
+        return self
+
+    @property
+    def hive(self) -> bool:
+        """Every cluster that may run more than one agent is a hive."""
+        return (self.max_replicas or self.replicas) > 1
+
+    @property
+    def alone(self) -> bool:
+        return not self.hive
+
+    @property
+    def scalable(self) -> bool:
+        return self.hive and not self.static
 
     @field_validator("workdir")
     @classmethod
@@ -247,6 +274,10 @@ def validate_spec(spec: ClusterSpec, settings: Settings, stored: ClusterSpec | N
                 errors.append(f"resources: {key} request {request} exceeds limit {limit}")
     if spec.replicas > settings.max_replicas:
         errors.append(f"replicas {spec.replicas} exceeds the maximum {settings.max_replicas}")
+    if spec.max_replicas is not None and spec.max_replicas > settings.max_replicas:
+        errors.append(
+            f"max_replicas {spec.max_replicas} exceeds the maximum {settings.max_replicas}"
+        )
     if spec.pvc_size is not None:
         try:
             too_big = parse_quantity(spec.pvc_size) > parse_quantity(settings.max_pvc_size)
@@ -259,10 +290,17 @@ def validate_spec(spec: ClusterSpec, settings: Settings, stored: ClusterSpec | N
                 )
     if spec.any_mcp_config is not None:
         try:
-            AnyMcpConfig.model_validate(spec.any_mcp_config)
+            config = AnyMcpConfig.model_validate(spec.any_mcp_config)
         except ValidationError as exc:
             for err in exc.errors():
                 loc = ".".join(str(p) for p in err["loc"])
                 errors.append(f"any_mcp_config.{loc}: {err['msg']}".replace(".: ", ": "))
+        else:
+            for entry in config.plugins:
+                if RESERVED_PLUGIN in (entry.name, entry.namespace):
+                    errors.append(
+                        f"any_mcp_config.plugins: {RESERVED_PLUGIN!r} is reserved for the "
+                        f"rendered plugin (entry {entry.name!r})"
+                    )
     if errors:
         raise SpecInvalid(errors)

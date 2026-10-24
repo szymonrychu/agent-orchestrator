@@ -299,6 +299,19 @@
             "title": "Max Attempts",
             "type": "integer"
           },
+          "max_replicas": {
+            "anyOf": [
+              {
+                "maximum": 16.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Replicas"
+          },
           "model": {
             "anyOf": [
               {
@@ -343,6 +356,11 @@
                 "type": "null"
               }
             ]
+          },
+          "static": {
+            "default": false,
+            "title": "Static",
+            "type": "boolean"
           },
           "workdir": {
             "default": "workdir",
@@ -1317,8 +1335,10 @@
             "default": {
               "env": {},
               "max_attempts": 5,
+              "max_replicas": 1,
               "peers": true,
               "replicas": 1,
+              "static": false,
               "workdir": "workdir"
             }
           }
