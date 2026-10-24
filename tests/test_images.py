@@ -93,6 +93,16 @@ def test_ccw_dev_dependency_matches_agent_image_sha():
     assert f"claude-code-wrapper?rev={sha}#{sha}" in lock
 
 
+def test_agent_test_dockerfile_matches_dev_dependency():
+    dev = _pyproject()["dependency-groups"]["dev"]
+    pin = next(d for d in dev if d.startswith("claude-code-wrapper"))
+    sha = re.search(r"claude-code-wrapper@([0-9a-f]{40})$", pin).group(1)
+    text = (ROOT / "e2e/agent-test.Dockerfile").read_text()
+    args = dict(re.findall(r"^ARG\s+(\w+)=(\S+)", text, re.M))
+    assert args["BASE_IMAGE"] == f"harbor.szymonrichert.pl/containers/claude-code-wrapper:{sha[:7]}"
+    assert args["WRAPPER_SHA"] == sha
+
+
 def test_pyproject_any_mcp_pin_matches_settings_ref():
     deps = _pyproject()["project"]["dependencies"]
     pin = next(d for d in deps if d.startswith("any-mcp"))
