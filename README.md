@@ -306,19 +306,22 @@ One repo and one image; the entrypoint is `orch <cmd>`. The processes coordinate
 
 ### Single-writer interpretation of "no shared state"
 
-The rule "services talk only through the queue or HTTP APIs, with no shared state" is read as single-writer: one writer per table. The queue tables (`messages`, `commands`, `checks`) are the only multi-writer tables, and only through state-machine-guarded UPDATEs (`WHERE status = '<expected>'`). Every other table has exactly one writing process:
+The rule "services talk only through the queue or HTTP APIs, with no shared state" is read as single-writer: one writer per table. The queue tables (`messages`, `commands`, `checks`, `leadership_requests`) are the only multi-writer tables, and only through state-machine-guarded UPDATEs (`WHERE status = '<expected>'`). Every other table has exactly one writing process:
 
 | Table | Writer |
 |---|---|
 | `clusters` | api; the reconciler writes only `status` and `observed_generation` and deletes the row when a discard completes. `preset_id` is also set to null by the `ON DELETE SET NULL` cascade when the api deletes a preset, an api-originated write |
 | `presets` | api |
-| `agents` | reconciler; `last_dispatched_at` is written by the dispatch claim |
+| `agents` | reconciler; `last_dispatched_at` is written by the dispatch claim; `pod_ip` is written by the reconciler |
 | `agent_status` | ingester |
 | `messages` | api inserts and cancels while queued; the dispatcher does the rest |
 | `turns` | ingester |
 | `events` | ingester |
 | `commands` | api inserts; the dispatcher claims interrupt and compact and inserts `rebootstrap`; the reconciler claims restart and rebootstrap |
 | `checks` | api inserts; the reconciler does the rest |
+| `leadership_requests` | api inserts; the dispatcher decides rows (`applied` or `rejected`) only through `WHERE status = 'queued'` guarded updates |
+| `cluster_leaders` | dispatcher |
+| `file_locks` | api |
 
 ### NOTIFY channels and polling fallbacks
 
