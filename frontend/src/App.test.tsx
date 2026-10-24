@@ -87,7 +87,7 @@ describe('App', () => {
   test('top_bar_replaces_ribbon', async () => {
     mount()
     await waitFor(() => expect(tabs()).toHaveLength(2))
-    expect(tabs().map((t) => t.textContent)).toEqual(['alpha40%', 'beta10%'])
+    expect(tabs().map((t) => t.textContent)).toEqual(['alpha2/340%', 'beta1/110%'])
     expect(within(tabs()[0]).getByRole('img', { name: 'state working' })).toBeTruthy()
     expect(within(tabs()[1]).getByRole('img', { name: 'state waiting' })).toBeTruthy()
     expect(within(tabs()[0]).getByTestId('context-gauge-tick')).toBeTruthy()
@@ -169,7 +169,7 @@ describe('App', () => {
     expect(within(tabs()[0]).getByRole('img', { name: 'state waiting' })).toBeTruthy()
     expect(within(tabs()[0]).getByLabelText('context 77%')).toBeTruthy()
     emit('cluster_status', { cluster: cluster('c3', 'gamma', { state: 'booting', ready: 0 }) })
-    expect(tabs().map((t) => t.textContent?.replace(/\d+%$/, ''))).toEqual(['alpha', 'beta', 'gamma'])
+    expect(tabs().map((t) => t.textContent?.match(/^[a-z]+/)?.[0])).toEqual(['alpha', 'beta', 'gamma'])
     emit('snapshot', { clusters: [{ cluster: cluster('c9', 'omega'), agents: [] }] })
     expect(tabs().map((t) => t.textContent?.replace(/\d+%$/, ''))).toEqual(['omega'])
   })
