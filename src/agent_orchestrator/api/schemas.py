@@ -63,6 +63,11 @@ class ClusterView(BaseModel):
     preset_id: uuid.UUID | None
     preset_name: str | None
     summary: ClusterSummary
+    hive: bool
+    max_replicas: int
+    static: bool
+    leader_agent_id: uuid.UUID | None
+    leader_epoch: int | None
 
 
 class AgentContext(BaseModel):
@@ -80,6 +85,8 @@ class AgentView(BaseModel):
     free_since: datetime | None
     current_turn_id: str | None
     context: AgentContext | None
+    context_pct: float | None
+    leader: bool
     peers: int
     gone: bool
 

@@ -595,6 +595,8 @@ export interface components {
         /** AgentView */
         AgentView: {
             context: components["schemas"]["AgentContext"] | null;
+            /** Context Pct */
+            context_pct: number | null;
             /** Current Turn Id */
             current_turn_id: string | null;
             /** Free Since */
@@ -606,6 +608,8 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** Leader */
+            leader: boolean;
             /** Ordinal */
             ordinal: number;
             /** Peers */
@@ -737,11 +741,19 @@ export interface components {
             desired: "active" | "deleting";
             /** Generation */
             generation: number;
+            /** Hive */
+            hive: boolean;
             /**
              * Id
              * Format: uuid
              */
             id: string;
+            /** Leader Agent Id */
+            leader_agent_id: string | null;
+            /** Leader Epoch */
+            leader_epoch: number | null;
+            /** Max Replicas */
+            max_replicas: number;
             /** Observed Generation */
             observed_generation: number;
             /** Preset Id */
@@ -751,6 +763,8 @@ export interface components {
             /** Slug */
             slug: string;
             spec: components["schemas"]["ClusterSpec"];
+            /** Static */
+            static: boolean;
             /** Status */
             status: {
                 [key: string]: unknown;

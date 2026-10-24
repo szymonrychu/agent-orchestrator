@@ -481,7 +481,7 @@ Response 201 with the cluster view. Errors: 422 `invalid_request` (bad slug, bot
 
 ### `GET /api/v1/clusters/{cluster_id}`
 
-One cluster view: `id`, `slug`, `spec`, `desired`, `status`, `generation`, `observed_generation`, `created_at`, `preset_id` (null for a raw-spec cluster or once the preset is deleted), `preset_name` and `summary` (`state` of `working`, `waiting`, `booting`, `error`, `deleting`; `ready`, `replicas`, `context_pct_max`, `auto_compact_pct`, `queued`, `failed`). Response 200. Errors: 404 `not_found`.
+One cluster view: `id`, `slug`, `spec`, `desired`, `status`, `generation`, `observed_generation`, `created_at`, `preset_id` (null for a raw-spec cluster or once the preset is deleted), `preset_name`, `summary` (`state` of `working`, `waiting`, `booting`, `error`, `deleting`; `ready`, `replicas`, `context_pct_max`, `auto_compact_pct`, `queued`, `failed`), `hive`, `max_replicas` (the cap), `static`, `leader_agent_id` and `leader_epoch` (both null for an alone cluster or before the first election). Response 200. Errors: 404 `not_found`.
 
 ### `DELETE /api/v1/clusters/{cluster_id}`
 
@@ -493,7 +493,7 @@ Queues a user leadership override (the UI "Make leader"): body `{agent_id}`, any
 
 ### `GET /api/v1/clusters/{cluster_id}/agents`
 
-List of agent views: `id`, `ordinal`, `pod_name`, `ready`, `state`, `free_since`, `current_turn_id`, `context` (`used_tokens`, `window_tokens`, `used_percentage`, or null), `peers`, `gone`. Response 200. Errors: 404 `not_found`.
+List of agent views: `id`, `ordinal`, `pod_name`, `ready`, `state`, `free_since`, `current_turn_id`, `context` (`used_tokens`, `window_tokens`, `used_percentage`, or null), `context_pct` (null until known), `leader` (true for the cluster's current leader), `peers`, `gone`. Response 200. Errors: 404 `not_found`.
 
 ### `POST /api/v1/clusters/{cluster_id}/messages`
 
@@ -689,6 +689,7 @@ The `/clusters/{cluster_id}/events/stream` frames are named by the stored wrappe
 | `agent_status` | `/stream` | `{"cluster_id", "agent": <agent view>}` when an agent changed |
 | `message_status` | `/stream` | `{"cluster_id", "queued", "failed", "messages": [<changed message views>]}` |
 | `cluster_removed` | `/stream` | `{"cluster_id"}` when a discard completed |
+| `leader_changed` | `/stream` | `{"cluster_id", "agent_id", "epoch"}` on NOTIFY `leader_changed`; the `cluster_status` and `agent_status` frames that follow carry the new leader |
 
 ## Agent API
 

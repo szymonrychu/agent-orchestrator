@@ -42,6 +42,7 @@ _CREATE_LOCK = 0x4F524348  # serialises cluster creation so max_clusters cannot 
 
 
 def _view(cluster: repo.Cluster, agg: dict | None, settings: Settings) -> schemas.ClusterView:
+    agg = agg or {}
     return schemas.ClusterView(
         id=cluster.id,
         slug=cluster.slug,
@@ -54,6 +55,11 @@ def _view(cluster: repo.Cluster, agg: dict | None, settings: Settings) -> schema
         preset_id=cluster.preset_id,
         preset_name=cluster.preset_name,
         summary=views.summarize(cluster, agg, settings.default_auto_compact_pct),
+        hive=cluster.spec.hive,
+        max_replicas=cluster.spec.max_replicas or cluster.spec.replicas,
+        static=cluster.spec.static,
+        leader_agent_id=agg.get("leader_agent_id"),
+        leader_epoch=agg.get("leader_epoch"),
     )
 
 
@@ -74,6 +80,8 @@ def agent_view(r: dict) -> schemas.AgentView:
         )
         if known
         else None,
+        context_pct=r["context_pct"],
+        leader=bool(r.get("leader")),
         peers=len(r["peers"] or []),
         gone=r["gone_at"] is not None,
     )

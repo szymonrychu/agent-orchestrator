@@ -57,6 +57,17 @@
               }
             ]
           },
+          "context_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Pct"
+          },
           "current_turn_id": {
             "anyOf": [
               {
@@ -89,6 +100,10 @@
             "title": "Id",
             "type": "string"
           },
+          "leader": {
+            "title": "Leader",
+            "type": "boolean"
+          },
           "ordinal": {
             "title": "Ordinal",
             "type": "integer"
@@ -119,6 +134,8 @@
           "free_since",
           "current_turn_id",
           "context",
+          "context_pct",
+          "leader",
           "peers",
           "gone"
         ],
@@ -448,10 +465,41 @@
             "title": "Generation",
             "type": "integer"
           },
+          "hive": {
+            "title": "Hive",
+            "type": "boolean"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "leader_agent_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leader Agent Id"
+          },
+          "leader_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leader Epoch"
+          },
+          "max_replicas": {
+            "title": "Max Replicas",
+            "type": "integer"
           },
           "observed_generation": {
             "title": "Observed Generation",
@@ -487,6 +535,10 @@
           "spec": {
             "$ref": "#/components/schemas/ClusterSpec"
           },
+          "static": {
+            "title": "Static",
+            "type": "boolean"
+          },
           "status": {
             "additionalProperties": true,
             "title": "Status",
@@ -507,7 +559,12 @@
           "created_at",
           "preset_id",
           "preset_name",
-          "summary"
+          "summary",
+          "hive",
+          "max_replicas",
+          "static",
+          "leader_agent_id",
+          "leader_epoch"
         ],
         "title": "ClusterView",
         "type": "object"
