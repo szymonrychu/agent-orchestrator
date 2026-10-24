@@ -359,6 +359,10 @@ Every change sends `NOTIFY leader_changed {cluster_id, agent_id, epoch}`.
 
 Election and lost-leader detection are poll-driven. Readiness is observed by the reconciler and is not a NOTIFY the dispatcher hears, so the initial election, the grace clock and the takeover run on the next dispatcher drain, within `ORCH_DISPATCH_POLL_SECONDS` of the readiness change. "The first ready agent leads" therefore means the lowest-ordinal ready agent at the first pass that sees one ready, within the poll window, not the first instantaneous ready event. Requests are applied promptly: `leadership_requested` wakes the dispatcher. Each drain runs the pass, before claiming messages, for hive clusters with queued requests, with no leader row while an agent could lead, whose leader is gone or not ready, or whose `unready_since` is still set.
 
+### Routing
+
+Untargeted messages go to the leader of a hive. When the cluster has a `cluster_leaders` row, `_claim_in_cluster` treats an untargeted queued message as targeted to the leader and dispatches it through the same pick (idle, ready, not gone, free since its last dispatch). While the leader is busy the untargeted head holds the cluster's untargeted FIFO, so later untargeted messages wait, while later messages with an explicit `target_agent_id` to other free agents still dispatch. An explicit target always wins. A gone leader does not fail untargeted messages with `target_gone`: they stay queued until the leadership pass elects a successor. With no leader row (alone clusters, or a hive before its first pass) the pick stays the agent free the longest. Peer-delivered turns never pass the dispatcher, so this rule does not apply to them.
+
 ## Delivery and retries
 
 The dispatcher claims the oldest queued message of a cluster, reserves the agent free the longest, and posts it as a wrapper turn carrying `metadata = {orch_message_id, orch_attempt}`. Every send ends in exactly one outcome (D23, D24):
