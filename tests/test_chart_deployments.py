@@ -133,3 +133,23 @@ def test_settings_checksum_rolls_components() -> None:
         a = before[name]["spec"]["template"]["metadata"]["annotations"]["checksum/settings"]
         b = after[name]["spec"]["template"]["metadata"]["annotations"]["checksum/settings"]
         assert a and b and a != b
+
+
+def test_component_pod_annotations_reach_only_that_component() -> None:
+    # A sidecar-injecting webhook (oauth2-proxy admission) rejects port-less pods, so its
+    # annotations must land on the api pod alone; global podAnnotations still reach all.
+    deps = _deployments(
+        {
+            "podAnnotations": {"shared": "yes"},
+            "components": {"api": {"podAnnotations": {"only-api": "true", "shared": "api"}}},
+        }
+    )
+    for c in COMPONENTS:
+        ann = deps[f"{FULL}-{c}"]["spec"]["template"]["metadata"]["annotations"]
+        if c == "api":
+            assert ann["only-api"] == "true"
+            assert ann["shared"] == "api"
+        else:
+            assert "only-api" not in ann
+            assert ann["shared"] == "yes"
+        assert ann["checksum/settings"]
