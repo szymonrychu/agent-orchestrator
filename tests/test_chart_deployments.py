@@ -86,14 +86,17 @@ def test_only_reconciler_gets_kube_token() -> None:
 
 def test_api_service_and_probes() -> None:
     docs = render(BASE)
-    (svc,) = [d for d in docs if d["kind"] == "Service"]
+    (svc,) = [d for d in docs if d["kind"] == "Service" and d["metadata"]["name"] == FULL]
     assert svc["metadata"]["name"] == FULL
     assert svc["spec"]["selector"]["app.kubernetes.io/component"] == "api"
     (port,) = svc["spec"]["ports"]
     assert port["port"] == 80 and port["targetPort"] == "http"
     deps = _deployments()
     api = _container(deps[f"{FULL}-api"])
-    assert api["ports"] == [{"name": "http", "containerPort": 8000, "protocol": "TCP"}]
+    assert api["ports"] == [
+        {"name": "http", "containerPort": 8000, "protocol": "TCP"},
+        {"name": "agents", "containerPort": 8001, "protocol": "TCP"},
+    ]
     assert api["livenessProbe"]["httpGet"] == {"path": "/healthz", "port": "http"}
     assert api["readinessProbe"]["httpGet"] == {"path": "/readyz", "port": "http"}
     assert {"name": "ORCH_HTTP_PORT", "value": "8000"} in api["env"]
@@ -153,3 +156,59 @@ def test_component_pod_annotations_reach_only_that_component() -> None:
             assert "only-api" not in ann
             assert ann["shared"] == "yes"
         assert ann["checksum/settings"]
+
+
+def _kind(kind: str, values: dict[str, Any] | None = None) -> list[dict]:
+    return [d for d in render({**BASE, **(values or {})}) if d["kind"] == kind]
+
+
+def test_agents_service() -> None:
+    svcs = {d["metadata"]["name"]: d for d in _kind("Service")}
+    svc = svcs[f"{FULL}-agents"]
+    assert svc["spec"]["type"] == "ClusterIP"
+    (port,) = svc["spec"]["ports"]
+    assert port["port"] == 8001 and port["targetPort"] == "agents"
+    assert svc["spec"]["selector"]["app.kubernetes.io/component"] == "api"
+    ports = {
+        p["name"]: p["containerPort"] for p in _container(_deployments()[f"{FULL}-api"])["ports"]
+    }
+    assert ports == {"http": 8000, "agents": 8001}
+    custom = {d["metadata"]["name"]: d for d in _kind("Service", {"agentApi": {"port": 9100}})}
+    assert custom[f"{FULL}-agents"]["spec"]["ports"][0]["port"] == 9100
+    assert custom[f"{FULL}-agents"]["spec"]["ports"][0]["targetPort"] == "agents"
+
+
+def test_ingress_excludes_agents_service() -> None:
+    (ing,) = _kind(
+        "Ingress",
+        {
+            "ingress": {
+                "enabled": True,
+                "hosts": [{"host": "o.example", "paths": [{"path": "/", "pathType": "Prefix"}]}],
+            }
+        },
+    )
+    backends = [
+        p["backend"]["service"]["name"] for r in ing["spec"]["rules"] for p in r["http"]["paths"]
+    ]
+    assert backends and all(b == FULL for b in backends)
+    assert "agents" not in str(ing)
+
+
+def test_agent_api_settings() -> None:
+    (cm,) = [d for d in _kind("ConfigMap") if d["metadata"]["name"] == f"{FULL}-settings"]
+    assert cm["data"]["ORCH_AGENT_PORT"] == "8001"
+    assert cm["data"]["ORCH_AGENT_API_URL"] == f"http://{FULL}-agents.agents.svc:8001"
+    (cm,) = [
+        d
+        for d in _kind("ConfigMap", {"agentApi": {"port": 9100}})
+        if d["metadata"]["name"] == f"{FULL}-settings"
+    ]
+    assert cm["data"]["ORCH_AGENT_PORT"] == "9100"
+    assert cm["data"]["ORCH_AGENT_API_URL"].endswith(":9100")
+    (cm,) = [
+        d
+        for d in _kind("ConfigMap", {"env": {"ORCH_AGENT_API_URL": "http://x:1"}})
+        if d["metadata"]["name"] == f"{FULL}-settings"
+    ]
+    assert cm["data"]["ORCH_AGENT_API_URL"] == "http://x:1"

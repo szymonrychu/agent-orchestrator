@@ -1,0 +1,16 @@
+# Cluster-internal Service for the agent-only API port. Never referenced by the ingress.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agent-orchestrator.fullname" . }}-agents
+  labels:
+    {{- include "agent-orchestrator.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.agentApi.port }}
+      targetPort: agents
+      protocol: TCP
+      name: agents
+  selector:
+    {{- include "agent-orchestrator.componentLabels" (dict "context" . "component" "api") | nindent 4 }}

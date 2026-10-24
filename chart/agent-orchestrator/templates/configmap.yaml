@@ -20,6 +20,8 @@ data:
   ORCH_NAMESPACE: {{ .Release.Namespace | quote }}
   ORCH_AGENT_IMAGE: {{ .Values.agentImage | quote }}
   ORCH_CLAUDE_SECRET_NAME: {{ $claude | quote }}
+  ORCH_AGENT_PORT: {{ .Values.agentApi.port | toString | quote }}
+  ORCH_AGENT_API_URL: {{ printf "http://%s-agents.%s.svc:%v" (include "agent-orchestrator.fullname" .) .Release.Namespace .Values.agentApi.port | quote }}
   {{- range $k, $v := .Values.env }}
   {{ $k }}: {{ $v | toString | quote }}
   {{- end }}

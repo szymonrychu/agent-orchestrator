@@ -76,6 +76,9 @@ spec:
             - name: http
               containerPort: 8000
               protocol: TCP
+            - name: agents
+              containerPort: {{ $.Values.agentApi.port }}
+              protocol: TCP
           livenessProbe:
             {{- $cfg.livenessProbe | default (dict "httpGet" (dict "path" "/healthz" "port" "http")) | toYaml | nindent 12 }}
           readinessProbe:

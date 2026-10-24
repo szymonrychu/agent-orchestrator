@@ -54,6 +54,13 @@ service:
   # This sets the ports more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/#field-spec-ports
   port: 80
 
+# Agent-only API port. The api container listens on it (named port "agents") and the
+# cluster-internal Service <fullname>-agents exposes it to agent pods. It is never on the
+# ingress. Becomes ORCH_AGENT_PORT; ORCH_AGENT_API_URL defaults to the Service DNS name
+# and can be overridden through env.
+agentApi:
+  port: 8001
+
 # The reconciler Role and RoleBinding (namespaced, release namespace only). The Role is
 # bound to the <fullname>-reconciler ServiceAccount.
 rbac:
