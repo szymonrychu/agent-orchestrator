@@ -32,7 +32,7 @@ export class ApiError extends Error {
   }
 }
 
-const BASE = '/api/v1';
+export const BASE = '/api/v1';
 
 async function toError(res: Response): Promise<ApiError> {
   let code = 'http_error';
