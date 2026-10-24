@@ -405,6 +405,31 @@ describe('TerminalPanel', () => {
     expect(api.listTerminals).toHaveBeenCalledTimes(3)
   })
 
+  test('a listing in flight before a close does not bring the closed shell back', async () => {
+    api.listTerminals.mockResolvedValueOnce({ terminals: [shell('aaaaaa111'), shell('bbbbbb222', 'a2')], unavailable_agents: [] })
+    const view = mount()
+    await waitFor(() => expect(tabs()).toHaveLength(2))
+    // A relist starts (a late agent became ready) and stays pending across the close.
+    let resolveList!: (v: { terminals: TerminalView[]; unavailable_agents: string[] }) => void
+    api.listTerminals.mockReturnValueOnce(new Promise((r) => (resolveList = r)))
+    view.rerender(
+      <ThemeProvider theme={theme}>
+        <TerminalPanel cluster={CLUSTER} agents={[agent('a0', 0), agent('a1', 1), agent('a2', 2)]} />
+      </ThemeProvider>,
+    )
+    await flush()
+    expect(api.listTerminals).toHaveBeenCalledTimes(2)
+    let resolveDelete!: () => void
+    api.deleteTerminal.mockReturnValueOnce(new Promise<void>((r) => (resolveDelete = r)))
+    fireEvent.click(within(tabs()[0]).getByRole('button', { name: 'Close alpha-1 aaaaaa' }))
+    await flush()
+    resolveDelete()
+    await waitFor(() => expect(tabs()).toHaveLength(1))
+    // The stale listing, taken before the close, still names the closed shell.
+    await act(async () => resolveList({ terminals: [shell('aaaaaa111'), shell('bbbbbb222', 'a2'), shell('dddddd444', 'a0')], unavailable_agents: [] }))
+    expect(tabs().map((t) => t.textContent)).toEqual(['alpha-2 bbbbbb', 'alpha-0 dddddd'])
+  })
+
   test('refused tab shows the socket reason', async () => {
     api.listTerminals.mockResolvedValue({ terminals: [shell('aaaaaa111')], unavailable_agents: [] })
     mount()

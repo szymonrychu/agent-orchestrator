@@ -90,6 +90,10 @@ export function FilesPanel({ clusterId }: { clusterId: string }) {
   // A preview belongs to the cluster it was opened in: a cluster switch drops it.
   const preview = stored?.clusterId === clusterId ? stored : null
   const previewToken = useRef(0)
+  const previewRef = useRef(preview)
+  useEffect(() => {
+    previewRef.current = preview
+  })
 
   const openFile = useCallback(
     (path: string) => {
@@ -107,15 +111,24 @@ export function FilesPanel({ clusterId }: { clusterId: string }) {
     [clusterId],
   )
 
-  // Live tail of tool events (no history replay): a write refreshes its parent directory, a shell result the expanded tree.
+  // Live tail of tool events (no history replay): a finished write refreshes its parent directory (and refetches an open preview of the file), a shell result the expanded tree.
   useEffect(() => {
-    const events = createFileEvents({ root, isLoaded, refresh, refreshExpanded })
+    const events = createFileEvents({
+      root,
+      isLoaded,
+      refresh,
+      refreshExpanded,
+      written: (path) => {
+        const p = previewRef.current
+        if (p && p.path === path && p.state !== 'other') openFile(path)
+      },
+    })
     const stream = openStream(eventStreamUrl(clusterId), { eventNames: WATCHED_EVENTS, onEvent: (data) => events.handle(data) })
     return () => {
       stream.close()
       events.dispose()
     }
-  }, [clusterId, root, isLoaded, refresh, refreshExpanded])
+  }, [clusterId, root, isLoaded, refresh, refreshExpanded, openFile])
 
   const types = useMemo(() => {
     const out = new Map<string, FileEntry['type']>()

@@ -158,7 +158,16 @@ describe('FilesPanel', () => {
       expect(stream.opened[0].opts.afterId).toBeUndefined()
     })
 
-    test('event_driven_refresh Write and Edit refresh the loaded parent directory only', async () => {
+    /** A write tool's call followed by its result, as the stream delivers them (the call fires before the tool runs). */
+    let seq = 0
+    const call = async (name: string, input: Record<string, unknown>) => {
+      const id = `u${++seq}`
+      await emit('tool_call', { tool_use_id: id, name, tool_input: input })
+      return id
+    }
+    const result = (id: string) => emit('tool_result', { tool_use_id: id, response: 'ok', is_error: false })
+
+    test('event_driven_refresh Write and Edit refresh the loaded parent directory on the result only', async () => {
       let version = 0
       serve({
         '': listing('', [entry('src', 'dir'), entry('lib', 'dir')]),
@@ -170,22 +179,44 @@ describe('FilesPanel', () => {
       await screen.findByText('main.py')
       const before = calls().length
 
-      await emit('tool_call', { name: 'Write', tool_input: { file_path: '/work/src/new.py' } })
+      const id = await call('Write', { file_path: '/work/src/new.py' })
+      // The call fires before the tool runs: nothing is refreshed yet.
+      expect(calls().length).toBe(before)
+      await result(id)
       expect(await screen.findByText('new.py')).toBeTruthy()
       expect(calls().slice(before)).toEqual([['c1', 'src']])
 
-      // Not loaded (lib), outside the root, wrong tool, and a missing path are all ignored.
-      await emit('tool_call', { name: 'Write', tool_input: { file_path: '/work/lib/y.py' } })
-      await emit('tool_call', { name: 'Write', tool_input: { file_path: '/elsewhere/src/z.py' } })
-      await emit('tool_call', { name: 'Write', tool_input: { file_path: '/workshop/src/z.py' } })
-      await emit('tool_call', { name: 'Read', tool_input: { file_path: '/work/src/main.py' } })
-      await emit('tool_call', { name: 'Edit', tool_input: {} })
+      // Not loaded (lib), outside the root, wrong tool, a missing path and an unknown result id are all ignored.
+      await result(await call('Write', { file_path: '/work/lib/y.py' }))
+      await result(await call('Write', { file_path: '/elsewhere/src/z.py' }))
+      await result(await call('Write', { file_path: '/workshop/src/z.py' }))
+      await result(await call('Read', { file_path: '/work/src/main.py' }))
+      await result(await call('Edit', {}))
+      await result('never-called')
       expect(calls().length).toBe(before + 1)
 
       // Edit and NotebookEdit work, also through the alternate accessors; a file in the root refreshes the root.
-      await emit('tool_call', { tool_name: 'Edit', input: { file_path: '/work/root.txt' } })
-      await emit('tool_call', { name: 'NotebookEdit', tool_input: { file_path: '/work/src/n.ipynb' } })
+      const alt = `u${++seq}`
+      await emit('tool_call', { tool_use_id: alt, tool_name: 'Edit', input: { file_path: '/work/root.txt' } })
+      await result(alt)
+      await result(await call('NotebookEdit', { file_path: '/work/src/n.ipynb' }))
       expect(calls().slice(before + 1)).toEqual([['c1', ''], ['c1', 'src']])
+    })
+
+    test('event_driven_refresh a written file open in the preview is refetched on the result', async () => {
+      serve({ '': listing('', [entry('a.txt'), entry('b.txt')]) })
+      let version = 0
+      api.readFile.mockImplementation(async (_c: string, path: string) => content(path, { content: `v${version++}` }))
+      mount()
+      fireEvent.click(await screen.findByText('a.txt'))
+      await screen.findByText('v0')
+      const id = await call('Edit', { file_path: '/work/a.txt' })
+      expect(api.readFile).toHaveBeenCalledTimes(1)
+      await result(id)
+      expect(await screen.findByText('v1')).toBeTruthy()
+      // Another file is not the open one.
+      await result(await call('Write', { file_path: '/work/b.txt' }))
+      expect(api.readFile).toHaveBeenCalledTimes(2)
     })
 
     test('event_driven_refresh Bash results refresh expanded directories at most once a second', async () => {

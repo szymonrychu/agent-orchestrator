@@ -1,4 +1,4 @@
-/** Maps cluster events to file tree refreshes: a write refreshes its parent directory, a shell result refreshes the expanded tree. */
+/** Maps cluster events to file tree refreshes: a finished write refreshes its parent directory, a shell result refreshes the expanded tree. */
 
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit'])
 const BASH_TOOL = 'Bash'
@@ -11,6 +11,8 @@ export interface FileEventTargets {
   isLoaded: (path: string) => boolean
   refresh: (path: string) => void
   refreshExpanded: () => void
+  /** A write tool finished on this root-relative file path. */
+  written?: (path: string) => void
 }
 
 export interface FileEvents {
@@ -29,10 +31,17 @@ export function parentInRoot(filePath: string, root: string): string | null {
   return parts.slice(0, -1).join('/')
 }
 
+/** Root-relative path of an absolute file path already known to be inside `root`. */
+function relativeInRoot(filePath: string, root: string): string {
+  return filePath.slice(root.replace(/\/+$/, '').length + 1)
+}
+
 /** @param row - a cluster event as delivered by the event stream: { type, data: { name | tool_name, tool_input | input } }. */
 export function createFileEvents(targets: FileEventTargets, bashMs: number = BASH_REFRESH_MS): FileEvents {
   let cooling: ReturnType<typeof setTimeout> | null = null
   let pending = false
+  // Write calls by tool use id, awaiting their result: the call fires before the tool runs.
+  const writes = new Map<string, string>()
 
   const runBash = () => {
     targets.refreshExpanded()
@@ -56,17 +65,27 @@ export function createFileEvents(targets: FileEventTargets, bashMs: number = BAS
         else pending = true
         return
       }
+      if (event.type === 'tool_result' && typeof data.tool_use_id === 'string') {
+        const path = writes.get(data.tool_use_id)
+        if (path === undefined) return
+        writes.delete(data.tool_use_id)
+        const root = targets.root()
+        if (root === null) return
+        const parent = parentInRoot(path, root)
+        if (parent === null) return
+        if (targets.isLoaded(parent)) targets.refresh(parent)
+        targets.written?.(relativeInRoot(path, root))
+        return
+      }
       if (event.type !== 'tool_call' || typeof name !== 'string' || !WRITE_TOOLS.has(name)) return
       const filePath = record(data.tool_input ?? data.input)?.file_path
-      const root = targets.root()
-      if (typeof filePath !== 'string' || root === null) return
-      const parent = parentInRoot(filePath, root)
-      if (parent !== null && targets.isLoaded(parent)) targets.refresh(parent)
+      if (typeof filePath === 'string' && typeof data.tool_use_id === 'string') writes.set(data.tool_use_id, filePath)
     },
     dispose() {
       if (cooling !== null) clearTimeout(cooling)
       cooling = null
       pending = false
+      writes.clear()
     },
   }
 }

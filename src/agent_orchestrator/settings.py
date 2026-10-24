@@ -53,7 +53,7 @@ class _Bad(ValueError):
 
 
 def normalise_origin(value: str) -> str | None:
-    """Canonical `scheme://host[:port]` (lower-cased), or None when value is not a bare origin.
+    """Canonical `scheme://host[:port]` (lower-cased, default port dropped), or None.
 
     Rejects a path, query, fragment, userinfo, a missing host and any scheme but http(s), so the
     literal `null` Origin of sandboxed pages never matches.
@@ -68,9 +68,14 @@ def normalise_origin(value: str) -> str | None:
         return None
     if parsed.username is not None or parsed.password is not None:
         return None
+    if parsed.path or parsed.params or parsed.query or parsed.fragment:
+        return None
     host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
-    origin = f"{parsed.scheme}://{host}" + (f":{port}" if port is not None else "")
-    return origin if value == origin else None
+    default = {"http": 80, "https": 443}[parsed.scheme]
+    origin = f"{parsed.scheme}://{host}" + (f":{port}" if port not in (None, default) else "")
+    # Anything urlparse tolerated beyond the bare origin (stray separators, spaces) is rejected.
+    explicit = f"{parsed.scheme}://{host}" + (f":{port}" if port is not None else "")
+    return origin if value == explicit else None
 
 
 class Settings(BaseSettings):

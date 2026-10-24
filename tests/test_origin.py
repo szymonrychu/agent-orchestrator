@@ -47,6 +47,24 @@ def test_settings_parse_and_validate(monkeypatch):
             Settings()
 
 
+def test_default_ports_are_dropped(monkeypatch):
+    from agent_orchestrator.api.origin import origin_allowed
+    from agent_orchestrator.settings import normalise_origin
+
+    assert normalise_origin("https://Host:443") == "https://host"
+    assert normalise_origin("http://host:80") == "http://host"
+    assert normalise_origin("https://host:80") == "https://host:80"
+    assert normalise_origin("http://host:443") == "http://host:443"
+    assert normalise_origin("https://host:443/") is None
+    assert normalise_origin("https://host:443?x=1") is None
+    monkeypatch.setenv("ORCH_ALLOWED_ORIGINS", "https://orch.example.com:443,http://l:80")
+    allowed = Settings().allowed_origins
+    assert allowed == ["https://orch.example.com", "http://l"]
+    assert origin_allowed("https://orch.example.com", allowed)
+    assert origin_allowed("https://orch.example.com:443", allowed)
+    assert origin_allowed("http://l", allowed)
+
+
 async def _ws(app, origin: str | None) -> list[dict]:
     headers = [(b"host", b"orch")]
     if origin is not None:

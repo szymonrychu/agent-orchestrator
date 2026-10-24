@@ -9,7 +9,7 @@ import MenuItem from '@mui/material/MenuItem'
 import Tab from '@mui/material/Tab'
 import Tabs from '@mui/material/Tabs'
 import Typography from '@mui/material/Typography'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MouseEvent } from 'react'
 import { ApiError } from '../api/client'
 import type { AgentView, ClusterView } from '../api/client'
@@ -56,6 +56,8 @@ function ClusterTerminals({ clusterId, agents }: { clusterId: string; agents: Ag
   const [error, setError] = useState<string | null>(null)
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null)
   const [unavailable, setUnavailable] = useState<string[]>([])
+  // Shells closed or being closed: a listing taken before the close must not bring them back.
+  const closed = useRef(new Set<string>())
   // The listing covers ready agents only: it is repeated whenever that set changes, so shells of a late agent show up.
   const readyKey = agents.filter((a) => a.ready).map((a) => a.id).sort().join(',')
 
@@ -67,7 +69,7 @@ function ClusterTerminals({ clusterId, agents }: { clusterId: string; agents: Ag
         if (!live) return
         setError(null)
         setUnavailable(list.unavailable_agents)
-        const alive = list.terminals.filter((t) => t.alive).map(toTab)
+        const alive = list.terminals.filter((t) => t.alive && !closed.current.has(t.terminal_id)).map(toTab)
         setTabs((prev) => {
           const known = new Set(prev.map((t) => t.terminalId))
           return [...prev, ...alive.filter((t) => !known.has(t.terminalId))]
@@ -97,11 +99,15 @@ function ClusterTerminals({ clusterId, agents }: { clusterId: string; agents: Ag
 
   const close = async (tab: Tab) => {
     setError(null)
+    closed.current.add(tab.terminalId)
     try {
       await deleteTerminal(tab.agentId, tab.terminalId)
     } catch (e) {
       // a shell that is already gone only needs its tab dropped
-      if (!(e instanceof ApiError && e.status === 404)) return setError(errorText(e))
+      if (!(e instanceof ApiError && e.status === 404)) {
+        closed.current.delete(tab.terminalId)
+        return setError(errorText(e))
+      }
     }
     setTabs((prev) => {
       const index = prev.findIndex((t) => t.terminalId === tab.terminalId)
