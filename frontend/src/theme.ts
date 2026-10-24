@@ -44,6 +44,31 @@ export const CANVAS_BG = TOKENS.bgCanvas
 /** Opaque background of panels, including those drawn over the map or 3D view. */
 export const PANEL_BG = TOKENS.bgPanel
 
+/** Colours of the xterm.js screen: the dashboard surfaces plus the 16 ANSI colours a shell and its tools print with. */
+export const terminalTheme = {
+  background: TOKENS.bgCanvas,
+  foreground: TOKENS.textPrimary,
+  cursor: TOKENS.accent,
+  cursorAccent: TOKENS.bgCanvas,
+  selectionBackground: TOKENS.borderStrong,
+  black: '#1d2026',
+  red: '#e5484d',
+  green: '#4cb782',
+  yellow: '#e2a336',
+  blue: '#5b9bd5',
+  magenta: '#b083d6',
+  cyan: '#4fb8c4',
+  white: '#d6d9de',
+  brightBlack: '#5a6069',
+  brightRed: '#f2777b',
+  brightGreen: '#6fd0a0',
+  brightYellow: '#f0c060',
+  brightBlue: '#7fb3e6',
+  brightMagenta: '#c9a3e6',
+  brightCyan: '#7ccdd6',
+  brightWhite: '#e8eaed',
+} as const
+
 const { regular, medium } = TOKENS.fontWeights
 const { xs, sm, md, lg, xl } = TOKENS.fontSizes
 const COARSE = '@media (pointer: coarse)'

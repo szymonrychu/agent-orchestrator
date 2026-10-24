@@ -9,6 +9,7 @@ import type { ClusterView } from './api/client'
 import { TopBar } from './layout/TopBar'
 import { Workspace } from './layout/Workspace'
 import { sortedAgents, useClusters } from './ribbon/useClusters'
+import { TerminalPanel } from './terminal/TerminalPanel'
 import { TOKENS } from './theme'
 
 export const APP_NAME = 'Agent Orchestrator';
@@ -35,7 +36,7 @@ export default function App() {
               clusterId={selected.cluster.id}
               files={<FilesPanel clusterId={selected.cluster.id} />}
               chat={<ChatView cluster={selected.cluster} agents={sortedAgents(selected)} />}
-              terminal={<Typography color="text.secondary">Terminals</Typography>}
+              terminal={<TerminalPanel cluster={selected.cluster} agents={sortedAgents(selected)} />}
             />
           </Box>
         ) : (

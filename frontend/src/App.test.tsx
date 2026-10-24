@@ -11,6 +11,7 @@ const api = vi.hoisted(() => ({ listClusters: vi.fn(), listAgents: vi.fn(), getM
 const stream = vi.hoisted(() => ({ opts: null as null | StreamOptions, close: vi.fn() }))
 
 vi.mock('./api/client', async (orig) => ({ ...(await orig<typeof import('./api/client')>()), ...api, statusStreamUrl: () => '/api/v1/stream' }))
+vi.mock('./api/terminals', async (orig) => ({ ...(await orig<typeof import('./api/terminals')>()), listTerminals: async () => ({ terminals: [], unavailable_agents: [] }) }))
 vi.mock('./api/stream', () => ({
   openStream: (_url: string, opts: StreamOptions) => {
     // The chat view opens its own stream; keep the cluster status stream.
