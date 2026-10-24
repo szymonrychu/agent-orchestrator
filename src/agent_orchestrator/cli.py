@@ -72,13 +72,18 @@ def bind_sockets(settings) -> list:
 
     family = socket.AF_INET6 if ":" in settings.http_host else socket.AF_INET
     socks = []
-    for port in (settings.http_port, settings.agent_port):
-        sock = socket.socket(family, socket.SOCK_STREAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind((settings.http_host, port))
-        sock.listen(2048)
-        sock.set_inheritable(True)
-        socks.append(sock)
+    try:
+        for port in (settings.http_port, settings.agent_port):
+            sock = socket.socket(family, socket.SOCK_STREAM)
+            socks.append(sock)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((settings.http_host, port))
+            sock.listen(2048)
+            sock.set_inheritable(True)
+    except BaseException:
+        for sock in socks:
+            sock.close()
+        raise
     return socks
 
 

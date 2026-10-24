@@ -132,3 +132,26 @@ def test_bind_sockets_ipv6_host():
     finally:
         for s in socks:
             s.close()
+
+
+def test_bind_sockets_closes_first_when_second_bind_fails(monkeypatch):
+    created: list[socket.socket] = []
+    real = socket.socket
+
+    class Spy(real):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            created.append(self)
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        a = probe.getsockname()[1]
+    with real() as holder:
+        holder.bind(("127.0.0.1", 0))
+        holder.listen(1)
+        b = holder.getsockname()[1]
+        monkeypatch.setattr(socket, "socket", Spy)
+        with pytest.raises(OSError):
+            cli.bind_sockets(Settings(http_host="127.0.0.1", http_port=a, agent_port=b))
+    assert len(created) == 2
+    assert all(s.fileno() == -1 for s in created)
