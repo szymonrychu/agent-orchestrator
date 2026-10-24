@@ -205,12 +205,16 @@ def _not_above(low: str, high: str) -> bool:
 
 
 def validate_spec(spec: ClusterSpec, settings: Settings, stored: ClusterSpec | None = None) -> None:
-    """Validate a spec; a model or effort equal to the stored one is not re-checked."""
+    """Validate a spec; a model, effort or image equal to the stored one is not re-checked."""
     from any_mcp.config import AnyMcpConfig
     from pydantic import ValidationError
 
     errors: list[str] = []
-    if spec.image is not None and spec.image not in settings.image_allowlist():
+    if (
+        spec.image is not None
+        and spec.image not in settings.image_allowlist()
+        and (stored is None or spec.image != stored.image)
+    ):
         errors.append(f"image {spec.image!r} is not in the allowed agent images")
     if spec.discard_hook_url is not None:
         parsed = urlparse(spec.discard_hook_url)

@@ -402,11 +402,35 @@ Versioning: `/api/v1` is additive only. New routes, new optional request fields 
 
 Source allowlist: the api checks the direct socket peer against `ORCH_ALLOWED_CIDRS` (default `192.168.1.0/24`). `Forwarded`, `X-Forwarded-For` and `X-Real-IP` are never read. A caller outside the list gets `403 forbidden`. `/healthz` and `/readyz` are exempt.
 
-Error codes: `bad_request` (400), `forbidden` (403), `forbidden_origin` (403, `Origin` not in `ORCH_ALLOWED_ORIGINS` on a terminal POST or DELETE or a WebSocket upgrade), `not_found` (404), `conflict` (409, slug exists), `cluster_deleting` (409), `cluster_limit` (409, `ORCH_MAX_CLUSTERS` reached), `not_queued` (409), `not_failed` (409), `agent_gone` (409), `agent_not_ready` (409, no ready agent for a file or terminal proxy), `invalid_path` (400, a file path is absolute, holds a NUL byte or leaves the workdir), `not_a_directory` (400, listing a file), `not_a_file` (400, reading a directory or special file), `terminal_limit` (409, the wrapper's per-pod terminal cap is reached), `session_not_active` (409, the agent's wrapper session is not active), `terminal_not_found` (404, no such shell on that agent), `invalid_size` (422, rows or cols outside 1..1000), `invalid_request` (422, also a terminal id that is not `term_` plus 12 lowercase hex digits), `target_gone` (422), `internal` (500, 503 on `/readyz`), `wrapper_error` (502, the wrapper answered 5xx), `wrapper_unreachable` (502, the wrapper pod could not be reached), `unavailable` (503, no master key for the proxies).
+Error codes: `bad_request` (400), `forbidden` (403), `forbidden_origin` (403, `Origin` not in `ORCH_ALLOWED_ORIGINS` on a terminal POST or DELETE or a WebSocket upgrade), `not_found` (404), `conflict` (409, slug or preset name exists), `preset_default` (409, renaming or deleting the default preset), `last_preset` (409, deleting the only preset), `cluster_deleting` (409), `cluster_limit` (409, `ORCH_MAX_CLUSTERS` reached), `not_queued` (409), `not_failed` (409), `agent_gone` (409), `agent_not_ready` (409, no ready agent for a file or terminal proxy), `invalid_path` (400, a file path is absolute, holds a NUL byte or leaves the workdir), `not_a_directory` (400, listing a file), `not_a_file` (400, reading a directory or special file), `terminal_limit` (409, the wrapper's per-pod terminal cap is reached), `session_not_active` (409, the agent's wrapper session is not active), `terminal_not_found` (404, no such shell on that agent), `invalid_size` (422, rows or cols outside 1..1000), `invalid_request` (422, also a terminal id that is not `term_` plus 12 lowercase hex digits), `target_gone` (422), `internal` (500, 503 on `/readyz`), `wrapper_error` (502, the wrapper answered 5xx), `wrapper_unreachable` (502, the wrapper pod could not be reached), `unavailable` (503, no master key for the proxies).
 
 ### `GET /api/v1/meta`
 
 Defaults and limits for forms: `defaults` (model, effort, replicas, auto_compact_pct, pvc_size, storage_class, max_attempts), `agent_image`, `agent_images` (the image allowlist), `models`, `caps` (`max_replicas`, `max_pvc_size`, `max_clusters`, from `ORCH_MAX_REPLICAS`, `ORCH_MAX_PVC_SIZE`, `ORCH_MAX_CLUSTERS`) and `discard_hook` (`none`, `command`, `url`). Response 200.
+
+### `GET /api/v1/presets`
+
+All presets as a list of preset views `{id, name, is_default, spec, created_at, updated_at}`, the default first, then by name. `spec` holds only the keys the caller stored. A fresh database has one preset, `Default`, with spec `{"replicas": 1}`. Response 200.
+
+### `POST /api/v1/presets`
+
+Body `{"name": "<name>", "spec": {...}}`. The name is 1 to 40 characters of letters, digits, spaces, dots, dashes and underscores, with no leading or trailing space; the API never trims it. Names are unique ignoring case. `spec` takes the same fields as the cluster spec (all optional) and is checked against the current settings (models, efforts, image allowlist, caps) like a cluster create; only the keys sent are stored, no defaults are filled. Response 201 with the preset view. Errors: 422 `invalid_request` (bad name, or a spec the settings refuse), 409 `conflict` (name taken).
+
+### `GET /api/v1/presets/{preset_id}`
+
+One preset view. Response 200. Errors: 404 `not_found`.
+
+### `PUT /api/v1/presets/{preset_id}`
+
+Body `{"name": "<name>", "spec": {...}}` replaces the name and the whole spec, with the rules of the create. A model, effort or image that is no longer in the settings lists is accepted only when it equals the value already stored in this preset. The default preset can be edited but not renamed. Response 200 with the preset view. Errors: 404 `not_found`, 409 `conflict` (name taken), 409 `preset_default` (renaming the default), 422 `invalid_request`.
+
+### `DELETE /api/v1/presets/{preset_id}`
+
+Deletes the preset. Clusters made from it keep their spec; their `preset_id` becomes null. Response 204 with no body. Errors: 404 `not_found`, 409 `preset_default` (the default cannot be deleted), 409 `last_preset` (the only preset cannot be deleted).
+
+### `POST /api/v1/presets/{preset_id}/copy`
+
+Optional body `{"name": "<name>"}`. Creates a new, non-default preset holding the source's stored spec verbatim. Without a name it is `<source name> copy`, then `<source name> copy 2`, `copy 3` and so on until free; the source part is cut to fit 40 characters and right-trimmed before ` copy`. Response 201 with the new preset view. Errors: 404 `not_found` (unknown source), 409 `conflict` (an explicit name is taken), 422 `invalid_request` (bad explicit name).
 
 ### `GET /api/v1/clusters`
 

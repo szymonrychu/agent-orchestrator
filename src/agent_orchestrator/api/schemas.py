@@ -24,6 +24,28 @@ class PatchCluster(BaseModel):
     spec: ClusterSpec
 
 
+class PresetIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    spec: ClusterSpec = ClusterSpec()
+
+
+class CopyPreset(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+
+
+class PresetView(BaseModel):
+    id: uuid.UUID
+    name: str
+    is_default: bool
+    spec: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+
 class ClusterSummary(BaseModel):
     state: Literal["working", "waiting", "booting", "error", "deleting"]
     ready: int

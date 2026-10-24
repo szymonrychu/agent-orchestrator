@@ -79,10 +79,14 @@ async def _one_view(conn, cluster: repo.Cluster, settings: Settings) -> schemas.
     return _view(cluster, aggs.get(cluster.id), settings)
 
 
-def _check_spec(
+def check_spec(
     spec: ClusterSpec, settings: Settings, stored: ClusterSpec | None = None
 ) -> ClusterSpec:
-    """Validate the spec and return it with empty resource keys filled from the defaults."""
+    """Validate the spec and return it with empty resource keys filled from the defaults.
+
+    A model, effort or image equal to the one in `stored` is accepted even when it has left the
+    settings lists; scheduling and preset creation pass no `stored` and validate fully.
+    """
     try:
         validate_spec(spec, settings, stored)
     except SpecInvalid as exc:
@@ -138,7 +142,7 @@ async def create_cluster(
         validate_slug(body.slug)
     except ValueError as exc:
         raise ApiError(422, "invalid_request", str(exc)) from None
-    spec = _check_spec(body.spec, settings)
+    spec = check_spec(body.spec, settings)
     async with pool.connection() as conn:
         async with conn.transaction():
             await conn.execute("SELECT pg_advisory_xact_lock(%s)", (_CREATE_LOCK,))
@@ -177,7 +181,7 @@ async def patch_cluster(
         stored = await repo.get(conn, cluster_id)
         if stored is None:
             raise not_found("cluster")
-        spec = _check_spec(body.spec, settings, stored.spec)
+        spec = check_spec(body.spec, settings, stored.spec)
         try:
             cluster = await repo.update_spec(conn, cluster_id, spec)
         except repo.ClusterNotFound:
