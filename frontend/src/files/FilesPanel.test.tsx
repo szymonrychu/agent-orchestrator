@@ -267,41 +267,126 @@ describe('FilesPanel', () => {
       })
       // The burst collapsed into one trailing pass.
       expect(calls().length).toBe(before + 4)
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(5000)
-      })
-      expect(calls().length).toBe(before + 4)
     })
   })
 
-  test('manual_refresh_and_errors', async () => {
-    let up = false
-    api.listFiles.mockImplementation(async (_c: string, path: string) => {
-      if (!up) throw new ApiError(409, 'agent_not_ready', 'no agent of the cluster is ready')
-      return path === '' ? listing('', [entry('src', 'dir'), entry('fresh.txt')]) : listing(path, [entry('main.py')])
+  describe('auto poll', () => {
+    const setVisibility = (v: 'visible' | 'hidden') => {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => v })
+      document.dispatchEvent(new Event('visibilitychange'))
+    }
+    const tick = (ms: number) =>
+      act(async () => {
+        vi.advanceTimersByTime(ms)
+        await Promise.resolve()
+        await new Promise((r) => setTimeout(r, 0))
+      })
+    afterEach(() => setVisibility('visible'))
+    // Only the interval is faked, so the Testing Library waits keep working on real timers.
+    beforeEach(() => void vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] }))
+
+    test('no refresh button', async () => {
+      serve({ '': listing('', [entry('a.txt')]) })
+      mount()
+      await screen.findByText('a.txt')
+      expect(screen.queryByRole('button', { name: 'Refresh files' })).toBeNull()
+      expect(screen.queryByLabelText('Refresh files')).toBeNull()
     })
-    mount()
-    const alert = await screen.findByRole('alert')
-    expect(alert.textContent).toContain('agent_not_ready')
-    expect(screen.queryByText('workdir not created yet')).toBeNull()
 
-    up = true
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh files' }))
-    expect(await screen.findByText('fresh.txt')).toBeTruthy()
-    expect(screen.queryByRole('alert')).toBeNull()
+    test('polls while visible', async () => {
+      let version = 0
+      serve({ '': () => listing('', version ? [entry('a.txt'), entry('new.txt')] : [entry('a.txt')]) })
+      mount()
+      await screen.findByText('a.txt')
+      version = 1
+      await tick(3100)
+      expect(screen.getByText('new.txt')).toBeTruthy()
+      // An idle poll lists again but changes nothing.
+      const n = calls().length
+      await tick(3000)
+      expect(calls().length).toBe(n + 1)
+    })
 
-    // The refresh button re-fetches the root and every expanded directory.
-    fireEvent.click(screen.getByText('src'))
-    await screen.findByText('main.py')
-    api.listFiles.mockClear()
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh files' }))
-    await waitFor(() => expect(calls().map((c) => c[1]).sort()).toEqual(['', 'src']))
+    test('hidden tab makes no listing calls and one pass runs on return', async () => {
+      serve({ '': listing('', [entry('a.txt')]) })
+      mount()
+      await screen.findByText('a.txt')
+      act(() => setVisibility('hidden'))
+      const n = calls().length
+      await tick(10000)
+      expect(calls().length).toBe(n)
+      act(() => setVisibility('visible'))
+      await tick(0)
+      expect(calls().length).toBe(n + 1)
+    })
 
-    // A failing folder shows its error inline and keeps the tree.
-    up = false
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh files' }))
-    expect((await screen.findAllByRole('alert'))[0].textContent).toContain('agent_not_ready')
-    expect(screen.getByText('fresh.txt')).toBeTruthy()
+    test('unmounted panel runs no timer', async () => {
+      serve({ '': listing('', [entry('a.txt')]) })
+      const view = mount()
+      await screen.findByText('a.txt')
+      view.unmount()
+      const n = calls().length
+      await tick(10000)
+      expect(calls().length).toBe(n)
+    })
+
+    test('a stream open runs one pass', async () => {
+      serve({ '': listing('', [entry('a.txt')]) })
+      mount()
+      await screen.findByText('a.txt')
+      const n = calls().length
+      await act(async () => stream.opened[stream.opened.length - 1].opts.onOpen?.())
+      expect(calls().length).toBe(n + 1)
+    })
+
+    test('recovers from a 409 root without a click', async () => {
+      let up = false
+      api.listFiles.mockImplementation(async () => {
+        if (!up) throw new ApiError(409, 'agent_not_ready', 'no agent of the cluster is ready')
+        return listing('', [entry('fresh.txt')])
+      })
+      mount()
+      expect((await screen.findByRole('alert')).textContent).toContain('agent_not_ready')
+      up = true
+      await tick(3100)
+      expect(screen.getByText('fresh.txt')).toBeTruthy()
+      expect(screen.queryByRole('alert')).toBeNull()
+    })
+
+    test('recovers from a missing root without a click', async () => {
+      let up = false
+      api.listFiles.mockImplementation(async () => {
+        if (!up) throw new ApiError(404, 'not_found', 'workdir does not exist')
+        return listing('', [entry('fresh.txt')])
+      })
+      mount()
+      await screen.findByText('workdir not created yet')
+      up = true
+      await tick(3100)
+      expect(screen.getByText('fresh.txt')).toBeTruthy()
+      expect(screen.queryByText('workdir not created yet')).toBeNull()
+    })
+
+    test('preview refetch when the entry mtime or size changes', async () => {
+      let mtime = '2026-10-23T00:00:00Z'
+      let size = 10
+      serve({ '': () => listing('', [{ ...entry('a.txt'), mtime, size }, entry('b.txt')]) })
+      let version = 0
+      api.readFile.mockImplementation(async (_c: string, path: string) => content(path, { content: `v${version++}` }))
+      mount()
+      fireEvent.click(await screen.findByText('a.txt'))
+      await screen.findByText('v0')
+      // Nothing changed: no refetch.
+      await tick(3100)
+      expect(api.readFile).toHaveBeenCalledTimes(1)
+      mtime = '2026-10-24T00:00:00Z'
+      await tick(3100)
+      expect(api.readFile).toHaveBeenCalledTimes(2)
+      expect(screen.getByText('v1')).toBeTruthy()
+      size = 99
+      await tick(3100)
+      expect(api.readFile).toHaveBeenCalledTimes(3)
+    })
   })
 
   test('symlink_previews_and_escape_error', async () => {
