@@ -20,8 +20,8 @@ Every process reads `ORCH_*` variables (the contract `agent-orchestrator-setting
 | Variable | Default | Read by | Meaning |
 |---|---|---|---|
 | `ORCH_DATABASE_URL` | required | all | Postgres DSN (required) |
-| `ORCH_MASTER_KEY` | unset | api, reconciler | secret key, at least 32 bytes after stripping; only for commands that call require_master_key() |
-| `ORCH_MASTER_KEY_FILE` | empty | api, reconciler | file holding the master key; wins over ORCH_MASTER_KEY |
+| `ORCH_MASTER_KEY` | unset | api (file and terminal proxies), reconciler | secret key, at least 32 bytes after stripping; only for commands that call require_master_key() |
+| `ORCH_MASTER_KEY_FILE` | empty | api (file and terminal proxies), reconciler | file holding the master key; wins over ORCH_MASTER_KEY |
 | `ORCH_NAMESPACE` | `agents` | api, reconciler, dispatcher | the one namespace of the orchestrator and every agent cluster |
 | `ORCH_AGENT_IMAGE` | empty | api, reconciler | claude-code-wrapper image the agent pods run (required to create clusters) |
 | `ORCH_CHECK_IMAGE` | empty | dispatcher | image for check jobs; defaults to agent_image |
@@ -52,6 +52,7 @@ Every process reads `ORCH_*` variables (the contract `agent-orchestrator-setting
 | `ORCH_SHUTDOWN_GRACE_SECONDS` | `20` | all | graceful shutdown wait |
 | `ORCH_LOG_LEVEL` | `INFO` | all | log level |
 | `ORCH_ALLOWED_CIDRS` | `192.168.1.0/24` | api | comma-separated direct-peer source allowlist (health routes exempt) |
+| `ORCH_ALLOWED_ORIGINS` | empty | api | comma-separated browser origins (`scheme://host[:port]`, lower-cased, no path, no trailing slash) allowed to open a WebSocket or call the terminal POST and DELETE routes; empty refuses every request that carries an `Origin`. Dev example: `http://localhost:5173` |
 | `ORCH_AGENT_IMAGES` | empty | api | comma-separated extra ClusterSpec.image allowlist (agent_image is always allowed) |
 | `ORCH_MAX_REPLICAS` | `16` | api | cap on replicas per cluster |
 | `ORCH_MAX_PVC_SIZE` | `100Gi` | api | cap on PVC size |
@@ -96,7 +97,7 @@ One image, one `orch` entrypoint. Every command reads `ORCH_*` settings (see Con
 CI (`.github/workflows/ci.yaml`, job `images`) builds the orchestrator image from the root `Dockerfile` on every push and pull request and smoke-tests it with `docker run --rm <image> --help`. Only a push to `main` logs in to Harbor (secrets `HARBOR_USERNAME`, `HARBOR_PASSWORD`) and pushes it with `regctl`.
 
 - Orchestrator image: `harbor.szymonrichert.pl/containers/agent-orchestrator:<sha7>`, where `<sha7>` is the first seven characters of the commit sha. Tags are immutable; there is no `latest`.
-- Agent image: no agent image is built here. Agent pods run the claude-code-wrapper image named by `ORCH_AGENT_IMAGE`; the recommended one is `harbor.szymonrichert.pl/containers/claude-code-wrapper:ca2ddf3`. This is the value for the chart's `agentImage` and agents-helmfile, and the commit the dev dependency `claude-code-wrapper` in `pyproject.toml` is pinned to, so config validation tests the wrapper the agents run.
+- Agent image: no agent image is built here. Agent pods run the claude-code-wrapper image named by `ORCH_AGENT_IMAGE`; the recommended one is `harbor.szymonrichert.pl/containers/claude-code-wrapper:1ced775`. This is the value for the chart's `agentImage` and agents-helmfile, and the commit the dev dependency `claude-code-wrapper` in `pyproject.toml` is pinned to, so config validation tests the wrapper the agents run.
 - any-mcp: it reaches agent pods through the rendered onStart hook, not through an image. The `any-mcp` dependency in `pyproject.toml` and `ORCH_ANY_MCP_REF` pin the same release tag (`v0.1.0`).
 
 ## Helm chart
@@ -174,6 +175,15 @@ ingress:
       hosts:
         - orchestrator.example.com
 ```
+
+WebSocket routes (the terminal) need long idle timeouts at the ingress. ingress-nginx closes an idle proxied connection after 60 s by default, so raise `nginx.ingress.kubernetes.io/proxy-read-timeout` and `nginx.ingress.kubernetes.io/proxy-send-timeout` to `"3600"` (as agents-helmfile already does) through `ingress.annotations`. The UI pings every 20 s, well inside that window, so a quiet terminal stays open.
+
+```yaml
+ingress:
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+```
 ## Security
 
 The api trusts only the direct socket peer (`ORCH_ALLOWED_CIDRS`, see API). Behind an ingress that peer is the ingress controller, but not its node LAN IP. ingress-nginx runs hostNetwork, yet on a flannel cluster its proxied connection reaches the api pod from the node's pod-network gateway address: from another node via `flannel.1` as `10.244.N.0`, from the same node via `cni0` as `10.244.N.1`. A LAN client therefore gets `403` if `ORCH_ALLOWED_CIDRS` lists only the LAN CIDR. Set `ORCH_ALLOWED_CIDRS` to each node's podCIDR `.0/31` (covers `.0` and `.1`; agent pods get `.2` and up, so they stay outside), derived from `kubectl get nodes -o jsonpath='{range .items[*]}{.spec.podCIDR}{"\n"}{end}'`, for example `10.244.0.0/31,10.244.1.0/31`. Update the list whenever nodes are added or removed. The allowlist is blind to who the original client was.
@@ -187,6 +197,16 @@ ingress:
   denySourceRanges: ["192.168.1.10/32", "192.168.1.11/32"]  # cluster node IPs
   allowSourceRanges: ["192.168.1.0/24"]                      # the LAN
 ```
+
+### Origin allowlist
+
+Browsers apply no CORS to WebSocket upgrades, so any web page opened on a LAN machine could otherwise open a terminal shell against the api. The api therefore checks the `Origin` header of every WebSocket upgrade against `ORCH_ALLOWED_ORIGINS`, beside the source allowlist (which is unchanged):
+
+- no `Origin` header (a non-browser client): allowed, the source allowlist still applies;
+- `Origin: null` or an origin not in the list: the upgrade is closed with code 1008 before it is accepted;
+- an empty list refuses every upgrade that carries an `Origin`, so the setting is mandatory for any deployment that serves the UI: list the UI origin exactly as the browser sends it (`scheme://host[:port]`), for example the ingress origin `https://orchestrator.example.com`.
+
+The POST and DELETE terminal routes apply the same rule and answer `403 forbidden_origin`. For local UI development list the dev server: `ORCH_ALLOWED_ORIGINS=http://localhost:5173`. An entry with a path, a trailing slash, userinfo or a scheme other than http or https fails settings validation naming `ORCH_ALLOWED_ORIGINS`.
 
 ## Releasing
 
@@ -277,7 +297,7 @@ One repo and one image; the entrypoint is `orch <cmd>`. The processes coordinate
 
 | Process | Command | Role |
 |---|---|---|
-| api | `orch api` | FastAPI REST and SSE, serves the SPA; never calls wrappers or Kubernetes |
+| api | `orch api` | FastAPI REST and SSE, serves the SPA; calls wrappers only for the file and terminal proxies in `api/workspace.py` (derived per-cluster tokens, user decision N1), never Kubernetes |
 | dispatcher | `orch dispatcher` | claims messages and commands, calls wrapper turns, interrupt and compact, verifies ambiguous sends |
 | ingester | `orch ingester` | one SSE subscription per agent; writes events, agent status and turns |
 | reconciler | `orch reconciler` | renders and applies Kubernetes objects, observes pods, bootstraps sessions, runs checks, executes restart, runs the pre-discard hook |
@@ -380,7 +400,7 @@ Versioning: `/api/v1` is additive only. New routes, new optional request fields 
 
 Source allowlist: the api checks the direct socket peer against `ORCH_ALLOWED_CIDRS` (default `192.168.1.0/24`). `Forwarded`, `X-Forwarded-For` and `X-Real-IP` are never read. A caller outside the list gets `403 forbidden`. `/healthz` and `/readyz` are exempt.
 
-Error codes: `bad_request` (400), `forbidden` (403), `not_found` (404), `conflict` (409, slug exists), `cluster_deleting` (409), `cluster_limit` (409, `ORCH_MAX_CLUSTERS` reached), `not_queued` (409), `not_failed` (409), `agent_gone` (409), `invalid_request` (422), `target_gone` (422), `internal` (500, 503 on `/readyz`).
+Error codes: `bad_request` (400), `forbidden` (403), `forbidden_origin` (403, `Origin` not in `ORCH_ALLOWED_ORIGINS` on a terminal POST or DELETE or a WebSocket upgrade), `not_found` (404), `conflict` (409, slug exists), `cluster_deleting` (409), `cluster_limit` (409, `ORCH_MAX_CLUSTERS` reached), `not_queued` (409), `not_failed` (409), `agent_gone` (409), `agent_not_ready` (409, no ready agent for a file or terminal proxy), `invalid_path` (400, a file path is absolute, holds a NUL byte or leaves the workdir), `not_a_directory` (400, listing a file), `not_a_file` (400, reading a directory or special file), `terminal_limit` (409, the wrapper's per-pod terminal cap is reached), `session_not_active` (409, the agent's wrapper session is not active), `terminal_not_found` (404, no such shell on that agent), `invalid_size` (422, rows or cols outside 1..1000), `invalid_request` (422, also a terminal id that is not `term_` plus 12 lowercase hex digits), `target_gone` (422), `internal` (500, 503 on `/readyz`), `wrapper_error` (502, the wrapper answered 5xx), `wrapper_unreachable` (502, the wrapper pod could not be reached), `unavailable` (503, no master key for the proxies).
 
 ### `GET /api/v1/meta`
 
@@ -461,6 +481,133 @@ Pages stored events. Query `before_id` or `after_id` (mutually exclusive), `limi
 ### `GET /api/v1/clusters/{cluster_id}/events/stream`
 
 SSE stream of the cluster's stored events after a cursor: query `after_id` or the `Last-Event-ID` header; with neither, it starts at the current end. Each frame has `id` = the event id, `event` = the stored event type and `data` = the event JSON. Errors before the stream starts: 400 `bad_request`, 404 `not_found`.
+
+### `GET /api/v1/clusters/{cluster_id}/files`
+
+Lists one directory of the cluster's shared workdir, read through the wrapper of the first ready agent (lowest ordinal) or of `agent_id`. Read-only; dotfiles and `.git` are included. Query: `path` (relative to the workdir, default empty is the workdir root), `offset` (integer >= 0, default 0; pass the previous `next_offset`), `agent_id` (optional; an agent of this cluster, else 404 `not_found`). Response 200:
+
+```json
+{
+  "cluster_id": "5b7e...", "agent_id": "0c1d...",
+  "root": "/workdir/proj", "path": "src",
+  "entries": [
+    {"name": "pkg", "type": "dir", "size": null, "mtime": "2026-10-23T09:01:00.011Z"},
+    {"name": "main.py", "type": "file", "size": 812, "mtime": "2026-10-23T09:02:10.500Z"}
+  ],
+  "next_offset": null
+}
+```
+
+`root` is the absolute real path of the workdir and `path` the normalised relative path. `type` is `dir`, `file`, `symlink` (listed, never followed) or `other`; `size` is bytes for a `file` and null otherwise; `mtime` is UTC ISO-8601. Directories come first, then the rest, each by name; a page holds at most the wrapper's `limits.files_max_entries` entries and `next_offset` is the `offset` of the next page, or null on the last. A workdir that does not exist yet answers 404 `not_found` for the empty path. Errors: 400 `invalid_path`, 400 `not_a_directory`, 404 `not_found` (cluster, agent, path or workdir), 409 `agent_not_ready` (no usable agent), 422 `invalid_request` (bad `offset`), 502 `wrapper_unreachable`, 502 `wrapper_error`, 503 `unavailable` (no master key). The wrapper status and code are passed through unchanged for 4xx.
+
+### `GET /api/v1/clusters/{cluster_id}/files/content`
+
+Reads one file of the cluster workdir through the same agent choice as the listing. Query: `path` (relative to the workdir), `agent_id` (optional). Response 200:
+
+```json
+{
+  "cluster_id": "5b7e...", "agent_id": "0c1d...",
+  "path": "src/main.py", "size": 812, "mtime": "2026-10-23T09:02:10.500Z",
+  "mime": "text/x-python", "kind": "text", "content": "print('hi')\n"
+}
+```
+
+`mime` is guessed from the file name (null when unknown). `kind` is `too_large` when `size` exceeds the wrapper's `limits.file_preview_max_bytes` (default 1 MiB; `content` null), `binary` when the first 8 KiB hold a NUL byte or the file is not valid UTF-8 (`content` null), else `text` with the decoded `content`. The content is relayed as stored and is not passed through the secret redactor. Errors: 400 `invalid_path`, 400 `not_a_file`, 404 `not_found`, 409 `agent_not_ready`, 502 `wrapper_unreachable`, 502 `wrapper_error`, 503 `unavailable`.
+
+### `POST /api/v1/agents/{agent_id}/terminals`
+
+Starts an interactive login shell in the agent's session workdir, through the agent's wrapper. Body (optional, extra keys are refused): `{"rows": 24, "cols": 80}`, both 1..1000 and defaulting to 24 and 80. Guarded by the Origin allowlist: a request whose `Origin` is not in `ORCH_ALLOWED_ORIGINS` is `403 forbidden_origin`; a request without `Origin` passes. Response 201:
+
+```json
+{
+  "agent_id": "0c1d...", "cluster_id": "5b7e...", "pod_name": "demo-0",
+  "terminal_id": "term_0123456789ab", "created_at": "2026-10-23T09:03:00.000Z",
+  "alive": true, "exit_code": null, "attached": false, "rows": 24, "cols": 80
+}
+```
+
+Attach to the shell with the WebSocket route. Errors: 403 `forbidden_origin`, 404 `not_found` (agent), 409 `agent_not_ready`, 409 `terminal_limit` (the wrapper allows 8 shells per pod), 409 `session_not_active`, 422 `invalid_size`, 422 `invalid_request` (unknown body key), 502 `wrapper_unreachable`, 502 `wrapper_error`, 503 `unavailable`. The wrapper status and code are passed through unchanged for 4xx.
+
+### `GET /api/v1/clusters/{cluster_id}/terminals`
+
+Lists the shells of every ready agent of the cluster. The agents are queried concurrently; one that cannot answer is listed in `unavailable_agents` instead of failing the request, and a cluster with no ready agent answers an empty list. Response 200:
+
+```json
+{
+  "terminals": [
+    {
+      "agent_id": "0c1d...", "cluster_id": "5b7e...", "pod_name": "demo-0",
+      "terminal_id": "term_0123456789ab", "created_at": "2026-10-23T09:03:00.000Z",
+      "alive": true, "exit_code": null, "attached": true, "rows": 40, "cols": 120
+    }
+  ],
+  "unavailable_agents": ["7a2f..."]
+}
+```
+
+`attached` is true while a client is attached; an exited shell stays listed with `alive` false and its `exit_code` until closed or reaped. Errors: 404 `not_found` (cluster), 503 `unavailable`.
+
+### `DELETE /api/v1/agents/{agent_id}/terminals/{terminal_id}`
+
+Closes one shell and everything it started. Guarded by the Origin allowlist like the create route. `terminal_id` must be `term_` plus 12 lowercase hex digits, else `422 invalid_request` before any wrapper call. Response 204 without a body. Errors: 403 `forbidden_origin`, 404 `not_found` (agent), 404 `terminal_not_found`, 409 `agent_not_ready`, 422 `invalid_request`, 502 `wrapper_unreachable`, 502 `wrapper_error`, 503 `unavailable`.
+
+### `WS /api/v1/agents/{agent_id}/terminals/{terminal_id}/attach`
+
+Attaches to one shell created with `POST /api/v1/agents/{agent_id}/terminals`. WebSocket routes are not in OpenAPI, so this section is the contract. The api relays the socket to the agent's wrapper (`/v1/sessions/{session_id}/terminals/{terminal_id}/attach`), adding the cluster's wrapper bearer itself: the client never sees or sends a wrapper token, and the token appears in no frame, close reason or log line.
+
+Frames, relayed unchanged in both directions:
+
+- binary frames are raw PTY bytes: keystrokes from the client, shell output to the client. Split input into frames of at most 64 KiB; a larger frame is closed by the wrapper with 1009.
+- text frames are JSON control messages. Client to server: `{"type": "resize", "cols": 120, "rows": 40}` (1..1000 each) and `{"type": "ping"}`; server to client: `{"type": "pong"}` and `{"type": "exit", "code": 0}` when the shell exits, followed by a close 1000. An unknown control message is closed with 1003. The browser UI pings every 20 s to keep idle proxies from dropping the socket; the api adds no pings of its own.
+
+Replay on attach: the wrapper first sends the shell's recent output (its scrollback ring, up to 256 KiB) as binary frames, then live output, so a reconnecting client redraws the screen. Several clients may attach to one shell at once; a client that cannot keep up is closed with 1013 rather than slowing the shell. Attaching to a shell that already exited replays its output, sends the `exit` frame and closes 1000.
+
+Origin rule: the upgrade is checked against `ORCH_ALLOWED_ORIGINS` (see Origin allowlist) and the source allowlist before it is accepted. An `Origin` of `null` or one not in the list is refused with close 1008 before accept, which a client sees as an HTTP 403 handshake answer; a client that sends no `Origin` (a headless client) passes.
+
+Close codes. Every other failure is a close after the socket was accepted, with the code below and a short reason:
+
+| Code | Reason | When |
+|---|---|---|
+| 1008 | `invalid_terminal_id` | `terminal_id` is not `term_` plus 12 lowercase hex digits; checked first, no wrapper connection is opened |
+| 4404 | `not_found` | unknown agent (or not a UUID), or the wrapper knows no such session or terminal (its 404) |
+| 4409 | `agent_not_ready` | the agent is not ready, has no wrapper session or its cluster is being discarded, or the wrapper session is not active (its 409) |
+| 1011 | `wrapper_unavailable`, `unavailable` | the wrapper is unreachable, rejected the bearer, or failed otherwise; `unavailable` when no master key is configured |
+
+Once both sides are open, a close on either side closes the other side with a mapped code: 1000, 1003, 1008, 1009, 1011, 1013, 4000-4999 and every other code a close frame may carry (such as 1001 when a browser tab closes) pass through with their reason; 1005 (a close frame without a code) becomes 1000; 1006 (connection dropped without a close frame), 1015 and a close without a code become 1011. The reserved codes 1005, 1006 and 1015 are never sent. The relay keeps no buffer of its own and ends with its connections.
+
+Headless example (Python, `websockets` 17, no `Origin` header):
+
+```python
+import asyncio
+import json
+
+import httpx
+from websockets.asyncio.client import connect
+
+API = "http://orchestrator.example.com"
+AGENT = "0c1d..."  # an agent id from GET /api/v1/clusters/{cluster_id}/agents
+
+
+async def main() -> None:
+    async with httpx.AsyncClient(base_url=API) as http:
+        made = await http.post(f"/api/v1/agents/{AGENT}/terminals", json={"rows": 24, "cols": 80})
+        made.raise_for_status()
+        terminal_id = made.json()["terminal_id"]
+    url = f"ws://orchestrator.example.com/api/v1/agents/{AGENT}/terminals/{terminal_id}/attach"
+    async with connect(url) as ws:
+        await ws.send(json.dumps({"type": "resize", "cols": 120, "rows": 40}))
+        await ws.send(b"ls -la\rexit\r")  # keystrokes are binary frames
+        async for frame in ws:
+            if isinstance(frame, bytes):
+                print(frame.decode(errors="replace"), end="")  # PTY output, replay first
+            elif json.loads(frame)["type"] == "exit":
+                break  # the shell ended; the server closes with 1000
+
+
+asyncio.run(main())
+```
+
+Use `wss://` behind a TLS ingress. A closed socket raises `websockets.exceptions.ConnectionClosed`, whose `rcvd.code` is one of the codes above.
 
 ### `GET /api/v1/stream`
 

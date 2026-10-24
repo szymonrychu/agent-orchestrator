@@ -76,6 +76,39 @@ class WrapperClient:
         _raise_for_error(resp)
         return resp
 
+    async def request_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json: Any = None,
+        timeout: float = DEFAULT_TIMEOUT,
+    ) -> tuple[int, Any]:
+        """Any wrapper `/v1` call: (status, body) for a 2xx, the parsed JSON (None when empty).
+
+        A 3xx/4xx/5xx raises WrapperError with the wrapper's own code; a transport failure
+        raises WrapperUnreachable. The bearer travels only in the Authorization header.
+        """
+        try:
+            resp = await self._http.request(
+                method,
+                self._url(path),
+                params=params,
+                json=json,
+                headers=self._headers,
+                timeout=timeout,
+            )
+        except httpx.HTTPError as exc:
+            raise WrapperUnreachable(f"{type(exc).__name__}: {exc}") from exc
+        _raise_for_error(resp)
+        if not resp.content:
+            return resp.status_code, None
+        try:
+            return resp.status_code, resp.json()
+        except ValueError:
+            return resp.status_code, resp.text
+
     # sessions
 
     async def list_sessions(self) -> list[Snapshot]:

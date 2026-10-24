@@ -577,6 +577,36 @@
         "title": "CreateCluster",
         "type": "object"
       },
+      "CreateTerminal": {
+        "additionalProperties": false,
+        "description": "Both sizes are optional; the wrapper validates the 1..1000 range (`invalid_size`).",
+        "properties": {
+          "cols": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cols"
+          },
+          "rows": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rows"
+          }
+        },
+        "title": "CreateTerminal",
+        "type": "object"
+      },
       "EventView": {
         "properties": {
           "agent_id": {
@@ -670,6 +700,166 @@
           "next_after_id"
         ],
         "title": "EventsPage",
+        "type": "object"
+      },
+      "FileContent": {
+        "properties": {
+          "agent_id": {
+            "format": "uuid",
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "cluster_id": {
+            "format": "uuid",
+            "title": "Cluster Id",
+            "type": "string"
+          },
+          "content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content"
+          },
+          "kind": {
+            "enum": [
+              "text",
+              "binary",
+              "too_large"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "mime": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mime"
+          },
+          "mtime": {
+            "title": "Mtime",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "cluster_id",
+          "agent_id",
+          "path",
+          "size",
+          "mtime",
+          "mime",
+          "kind",
+          "content"
+        ],
+        "title": "FileContent",
+        "type": "object"
+      },
+      "FileEntry": {
+        "properties": {
+          "mtime": {
+            "title": "Mtime",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size"
+          },
+          "type": {
+            "enum": [
+              "dir",
+              "file",
+              "symlink",
+              "other"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "type",
+          "size",
+          "mtime"
+        ],
+        "title": "FileEntry",
+        "type": "object"
+      },
+      "FileListing": {
+        "properties": {
+          "agent_id": {
+            "format": "uuid",
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "cluster_id": {
+            "format": "uuid",
+            "title": "Cluster Id",
+            "type": "string"
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/FileEntry"
+            },
+            "title": "Entries",
+            "type": "array"
+          },
+          "next_offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Offset"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "root": {
+            "title": "Root",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cluster_id",
+          "agent_id",
+          "root",
+          "path",
+          "entries",
+          "next_offset"
+        ],
+        "title": "FileListing",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -1092,6 +1282,99 @@
         "title": "Resources",
         "type": "object"
       },
+      "TerminalList": {
+        "properties": {
+          "terminals": {
+            "items": {
+              "$ref": "#/components/schemas/TerminalView"
+            },
+            "title": "Terminals",
+            "type": "array"
+          },
+          "unavailable_agents": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Unavailable Agents",
+            "type": "array"
+          }
+        },
+        "required": [
+          "terminals",
+          "unavailable_agents"
+        ],
+        "title": "TerminalList",
+        "type": "object"
+      },
+      "TerminalView": {
+        "properties": {
+          "agent_id": {
+            "format": "uuid",
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "alive": {
+            "title": "Alive",
+            "type": "boolean"
+          },
+          "attached": {
+            "title": "Attached",
+            "type": "boolean"
+          },
+          "cluster_id": {
+            "format": "uuid",
+            "title": "Cluster Id",
+            "type": "string"
+          },
+          "cols": {
+            "title": "Cols",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "exit_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Code"
+          },
+          "pod_name": {
+            "title": "Pod Name",
+            "type": "string"
+          },
+          "rows": {
+            "title": "Rows",
+            "type": "integer"
+          },
+          "terminal_id": {
+            "title": "Terminal Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_id",
+          "cluster_id",
+          "pod_name",
+          "terminal_id",
+          "created_at",
+          "alive",
+          "exit_code",
+          "attached",
+          "rows",
+          "cols"
+        ],
+        "title": "TerminalView",
+        "type": "object"
+      },
       "TurnView": {
         "properties": {
           "completed_at": {
@@ -1321,6 +1604,107 @@
           }
         },
         "summary": "Restart Agent"
+      }
+    },
+    "/api/v1/agents/{agent_id}/terminals": {
+      "post": {
+        "description": "Start a shell in the agent's session workdir; the wrapper's limits pass through.",
+        "operationId": "create_terminal_api_v1_agents__agent_id__terminals_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Agent Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CreateTerminal"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TerminalView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Terminal"
+      }
+    },
+    "/api/v1/agents/{agent_id}/terminals/{terminal_id}": {
+      "delete": {
+        "description": "Close one shell; an unknown id is the wrapper's 404 `terminal_not_found`.",
+        "operationId": "delete_terminal_api_v1_agents__agent_id__terminals__terminal_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "terminal_id",
+            "required": true,
+            "schema": {
+              "title": "Terminal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Terminal"
       }
     },
     "/api/v1/checks/{check_id}": {
@@ -1850,6 +2234,153 @@
         "summary": "Stream Events"
       }
     },
+    "/api/v1/clusters/{cluster_id}/files": {
+      "get": {
+        "description": "One directory of the cluster workdir, read by the first ready agent (or `agent_id`).",
+        "operationId": "list_files_api_v1_clusters__cluster_id__files_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cluster_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Cluster Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "path",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "agent_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Agent Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileListing"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Files"
+      }
+    },
+    "/api/v1/clusters/{cluster_id}/files/content": {
+      "get": {
+        "description": "One file of the cluster workdir: text, or kind binary / too_large without content.",
+        "operationId": "file_content_api_v1_clusters__cluster_id__files_content_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cluster_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Cluster Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "path",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "agent_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Agent Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileContent"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "File Content"
+      }
+    },
     "/api/v1/clusters/{cluster_id}/messages": {
       "get": {
         "operationId": "list_messages_api_v1_clusters__cluster_id__messages_get",
@@ -1968,6 +2499,47 @@
           }
         },
         "summary": "Post Message"
+      }
+    },
+    "/api/v1/clusters/{cluster_id}/terminals": {
+      "get": {
+        "description": "Every ready agent's shells, queried concurrently; failing agents are reported, not fatal.",
+        "operationId": "list_terminals_api_v1_clusters__cluster_id__terminals_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cluster_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Cluster Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TerminalList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Terminals"
       }
     },
     "/api/v1/commands/{command_id}": {

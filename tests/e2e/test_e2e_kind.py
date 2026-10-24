@@ -14,8 +14,10 @@ The test (never the orchestrator) uses kubectl exec to look inside agent pods.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import re
 import subprocess
 import time
 import uuid
@@ -25,6 +27,8 @@ from typing import Any
 import httpx
 import pytest
 import yaml
+from websockets.exceptions import InvalidStatus
+from websockets.sync.client import ClientConnection, connect
 
 from agent_orchestrator.settings import Settings
 
@@ -64,6 +68,8 @@ SESSION_CONFIGS = (
 READY_TIMEOUT = 900  # onStart pip-installs any-mcp from GitHub in every pod
 TURN_TIMEOUT = 300
 DISCARD_TIMEOUT = 180
+SHELL_TIMEOUT = 60
+EVIL_ORIGIN = "http://evil.example"
 
 
 # ------------------------------------------------------------------ helpers
@@ -160,6 +166,57 @@ def all_events(api: httpx.Client, cluster_id: str) -> list[list[dict[str, Any]]]
         if not body["has_more_before"] or not body["events"]:
             return pages
         params = {"limit": 500, "before_id": body["events"][0]["id"]}
+
+
+def ws_url(api: httpx.Client, agent_id: str, terminal_id: str) -> str:
+    """The attach WebSocket URL on the same host and port as the REST API port-forward."""
+    base = str(api.base_url).rstrip("/").replace("http", "ws", 1)
+    return f"{base}/agents/{agent_id}/terminals/{terminal_id}/attach"
+
+
+def attach(api: httpx.Client, agent_id: str, terminal_id: str, **kwargs: Any) -> ClientConnection:
+    """A headless attach: no Origin unless given, and never through an environment proxy."""
+    return connect(ws_url(api, agent_id, terminal_id), proxy=None, **kwargs)
+
+
+def read_until(ws: ClientConnection, pattern: str, timeout: float = SHELL_TIMEOUT) -> str:
+    """Collect PTY output (binary frames; text frames are control JSON) until `pattern` matches.
+
+    The pattern is matched per line against the output with every CR, CRLF or LF turned into one
+    newline: a pty echoes the typed command ending in CRLF and then prints the command's output
+    after a bare CR, so `^ok$` finds the output line and never the echoed `echo ok`.
+    """
+    deadline = time.monotonic() + timeout
+    seen = ""
+    while not re.search(pattern, re.sub(r"\r\n?", "\n", seen), re.MULTILINE):
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise AssertionError(f"no match for {pattern!r} within {timeout:.0f}s in {seen!r}")
+        try:
+            frame = ws.recv(timeout=left)
+        except TimeoutError:
+            continue
+        if isinstance(frame, bytes):
+            seen += frame.decode(errors="replace")
+    return seen
+
+
+def terminals_of(api: httpx.Client, cluster_id: str) -> list[dict[str, Any]]:
+    resp = api.get(f"/clusters/{cluster_id}/terminals")
+    assert resp.status_code == 200, resp.text
+    return resp.json()["terminals"]
+
+
+@contextlib.contextmanager
+def shell(api: httpx.Client, agent_id: str) -> Iterator[dict[str, Any]]:
+    """A terminal created through POST /agents/{id}/terminals; deleted on exit if still there."""
+    made = api.post(f"/agents/{agent_id}/terminals", json={"rows": 24, "cols": 80})
+    assert made.status_code == 201, made.text
+    term = made.json()
+    try:
+        yield term
+    finally:
+        api.delete(f"/agents/{agent_id}/terminals/{term['terminal_id']}")
 
 
 # ------------------------------------------------------------------ fixtures
@@ -487,6 +544,114 @@ def test_in_cluster_pod_refused_by_allowlist(api: httpx.Client) -> None:
     # the port-forwarded caller arrives from loopback, inside ORCH_ALLOWED_CIDRS
     resp = api.get("/clusters")
     assert resp.status_code == 200, resp.text
+
+
+def test_files_list_and_read_through_api(api: httpx.Client, cluster: dict[str, Any]) -> None:
+    cid = cluster["id"]
+    agent_id = cluster["agents"][0]["id"]
+    note = f"e2e-note-{uuid.uuid4().hex[:8]}.txt"
+    text = f"hello-{uuid.uuid4().hex}"
+    # the agent writes a file into the shared workdir through its own shell
+    with shell(api, agent_id) as term, attach(api, agent_id, term["terminal_id"]) as ws:
+        ws.send(f"printf '%s\\n' {text} > {note}\n".encode())
+        ws.send(b"echo written-$((6*7))\n")
+        read_until(ws, r"^written-42$")
+
+    listing = api.get(f"/clusters/{cid}/files")
+    assert listing.status_code == 200, listing.text
+    body = listing.json()
+    assert body["cluster_id"] == cid and body["path"] == "", body
+    assert body["root"].startswith("/workdir"), body["root"]
+    entry = next(e for e in body["entries"] if e["name"] == note)
+    assert entry["type"] == "file" and entry["size"] == len(text) + 1, entry
+
+    content = api.get(f"/clusters/{cid}/files/content", params={"path": note})
+    assert content.status_code == 200, content.text
+    got = content.json()
+    assert got["path"] == note and got["kind"] == "text", got
+    assert got["content"] == text + "\n", got
+
+    # a path that leaves the workdir is refused, for the listing and for the content
+    for route in ("files", "files/content"):
+        for bad in ("..", "../etc/passwd", "/etc/passwd"):
+            resp = api.get(f"/clusters/{cid}/{route}", params={"path": bad})
+            assert resp.status_code == 400, (route, bad, resp.text)
+            assert resp.json()["error"]["code"] == "invalid_path", (route, bad, resp.text)
+
+
+def test_terminal_lifecycle_over_websocket(api: httpx.Client, cluster: dict[str, Any]) -> None:
+    cid = cluster["id"]
+    agent_id = cluster["agents"][0]["id"]
+    root = api.get(f"/clusters/{cid}/files").json()["root"]
+    made = api.post(f"/agents/{agent_id}/terminals", json={"rows": 24, "cols": 80})
+    assert made.status_code == 201, made.text
+    term = made.json()
+    tid = term["terminal_id"]
+    assert re.fullmatch(r"term_[0-9a-f]{12}", tid), term
+    assert term["agent_id"] == agent_id and term["cluster_id"] == cid, term
+    assert term["alive"] is True and (term["rows"], term["cols"]) == (24, 80), term
+    try:
+        with attach(api, agent_id, tid) as ws:
+            ws.send(b"pwd\n")
+            read_until(ws, re.escape(root))
+            ws.send(b"echo ok\n")
+            read_until(ws, r"^ok$")
+            ws.send(json.dumps({"type": "ping"}))
+            listed = wait_for(
+                "the terminal listed as attached",
+                lambda: next(
+                    (
+                        t
+                        for t in terminals_of(api, cid)
+                        if t["terminal_id"] == tid and t["attached"]
+                    ),
+                    None,
+                ),
+                30,
+            )
+            assert listed["agent_id"] == agent_id and listed["alive"] is True, listed
+
+        # reattach: the wrapper replays the shell's recent output before anything live
+        with attach(api, agent_id, tid) as ws:
+            replay = read_until(ws, r"^ok$")
+            assert root in replay, replay
+            ws.send(b"echo again\n")
+            read_until(ws, r"^again$")
+
+        deleted = api.delete(f"/agents/{agent_id}/terminals/{tid}")
+        assert deleted.status_code == 204, deleted.text
+        wait_for(
+            "the terminal to be gone from the list",
+            lambda: all(t["terminal_id"] != tid for t in terminals_of(api, cid)),
+            30,
+        )
+        again = api.delete(f"/agents/{agent_id}/terminals/{tid}")
+        assert again.status_code == 404, again.text
+        assert again.json()["error"]["code"] == "terminal_not_found", again.text
+    finally:
+        api.delete(f"/agents/{agent_id}/terminals/{tid}")
+
+
+def test_terminal_websocket_refuses_foreign_origin(
+    api: httpx.Client, cluster: dict[str, Any]
+) -> None:
+    agent_id = cluster["agents"][0]["id"]
+    with shell(api, agent_id) as term:
+        with pytest.raises(InvalidStatus) as refused:
+            attach(api, agent_id, term["terminal_id"], origin=EVIL_ORIGIN)
+        assert refused.value.response.status_code == 403
+        # the REST routes apply the same rule
+        post = api.post(f"/agents/{agent_id}/terminals", headers={"Origin": EVIL_ORIGIN})
+        assert post.status_code == 403, post.text
+        assert post.json()["error"]["code"] == "forbidden_origin", post.text
+        delete = api.delete(
+            f"/agents/{agent_id}/terminals/{term['terminal_id']}", headers={"Origin": EVIL_ORIGIN}
+        )
+        assert delete.status_code == 403, delete.text
+        # the refused attempts opened and closed nothing: the shell is still there and usable
+        with attach(api, agent_id, term["terminal_id"]) as ws:
+            ws.send(b"echo still-$((6*7))\n")
+            read_until(ws, r"^still-42$")
 
 
 def test_discard_removes_objects_and_history(

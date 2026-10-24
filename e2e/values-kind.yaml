@@ -15,6 +15,9 @@ env:
   # kubectl port-forward connects from loopback inside the api pod; every pod-network
   # caller (agent pods, check Jobs, any other pod) is refused with 403 forbidden.
   ORCH_ALLOWED_CIDRS: "127.0.0.0/8"
+  # The e2e port-forward is the only browser-facing origin; WebSocket upgrades from any other
+  # origin are refused with 1008.
+  ORCH_ALLOWED_ORIGINS: http://127.0.0.1:18080,http://localhost:18080
   ORCH_AGENT_IMAGES: agent-orchestrator-agent-test:e2e
   ORCH_IMAGE_PULL_SECRET: ""
   # scripts/e2e.sh probes which RWX StorageClass works and overrides this when it falls

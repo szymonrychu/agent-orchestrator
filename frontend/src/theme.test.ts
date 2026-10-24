@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CANVAS_BG, CONTROL_PX, MONO_FONT, PANEL_BG, TOKENS, TOUCH_TARGET_PX, theme } from './theme'
+import { CANVAS_BG, CONTROL_PX, MONO_FONT, PANEL_BG, TOKENS, TOUCH_TARGET_PX, terminalTheme, theme } from './theme'
 
 const channels = (hex: string): number[] => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16))
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -115,5 +115,15 @@ describe('exported constants', () => {
     expect(PANEL_BG).toBe(TOKENS.bgPanel)
     expect(TOUCH_TARGET_PX).toBe(44)
     expect(CONTROL_PX).toBe(32)
+  })
+})
+
+describe('terminalTheme', () => {
+  it('colours the xterm screen from the dashboard tokens and defines the 16 ANSI colours', () => {
+    expect(terminalTheme.background).toBe(TOKENS.bgCanvas)
+    expect(terminalTheme.foreground).toBe(TOKENS.textPrimary)
+    const ansi = Object.entries(terminalTheme).filter(([k]) => !['background', 'foreground', 'cursor', 'cursorAccent', 'selectionBackground'].includes(k))
+    expect(ansi).toHaveLength(16)
+    for (const [, v] of ansi) expect(v).toMatch(/^#[0-9a-f]{6}$/)
   })
 })

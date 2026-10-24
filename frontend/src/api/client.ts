@@ -32,7 +32,7 @@ export class ApiError extends Error {
   }
 }
 
-const BASE = '/api/v1';
+export const BASE = '/api/v1';
 
 async function toError(res: Response): Promise<ApiError> {
   let code = 'http_error';
@@ -49,14 +49,14 @@ async function toError(res: Response): Promise<ApiError> {
   return new ApiError(res.status, code, message);
 }
 
-function query(params: Record<string, string | number | undefined>): string {
+export function query(params: Record<string, string | number | undefined>): string {
   const q = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) if (v !== undefined) q.set(k, String(v));
   const s = q.toString();
   return s ? `?${s}` : '';
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+export async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method,
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
