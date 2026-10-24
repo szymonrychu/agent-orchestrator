@@ -66,6 +66,21 @@ def _settings():
     return settings
 
 
+def bind_sockets(settings) -> list:
+    """The main and agent listening sockets, bound here so one server can serve both."""
+    import socket
+
+    socks = []
+    for port in (settings.http_port, settings.agent_port):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((settings.http_host, port))
+        sock.listen(2048)
+        sock.set_inheritable(True)
+        socks.append(sock)
+    return socks
+
+
 def build_uvicorn_config(settings):
     """uvicorn config for `orch api`.
 
@@ -117,6 +132,7 @@ def _cmd_api(_args: argparse.Namespace) -> int:
 
     async def main() -> None:
         server = _Server(build_uvicorn_config(settings))
+        socks = bind_sockets(settings)
         stop = asyncio.Event()
         install_signal_handlers(stop)
 
@@ -126,9 +142,11 @@ def _cmd_api(_args: argparse.Namespace) -> int:
 
         watcher = asyncio.create_task(watch())
         try:
-            await server.serve()
+            await server.serve(sockets=socks)
         finally:
             watcher.cancel()
+            for sock in socks:
+                sock.close()
 
     settings = _settings()
     asyncio.run(main())

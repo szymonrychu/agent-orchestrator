@@ -22,6 +22,8 @@ Every process reads `ORCH_*` variables (the contract `agent-orchestrator-setting
 | `ORCH_DATABASE_URL` | required | all | Postgres DSN (required) |
 | `ORCH_MASTER_KEY` | unset | api (file and terminal proxies), reconciler | secret key, at least 32 bytes after stripping; only for commands that call require_master_key() |
 | `ORCH_MASTER_KEY_FILE` | empty | api (file and terminal proxies), reconciler | file holding the master key; wins over ORCH_MASTER_KEY |
+| `ORCH_AGENT_PORT` | `8001` | api | second listener (same server) serving only `/agent/v1/*`, `/healthz` and `/readyz` to agent pods; the source allowlist is skipped there |
+| `ORCH_AGENT_API_URL` | unset | api, reconciler | URL agent pods use to reach the agent port (set by the chart to the agents Service) |
 | `ORCH_NAMESPACE` | `agents` | api, reconciler, dispatcher | the one namespace of the orchestrator and every agent cluster |
 | `ORCH_AGENT_IMAGE` | empty | api, reconciler | claude-code-wrapper image the agent pods run (required to create clusters) |
 | `ORCH_CHECK_IMAGE` | empty | dispatcher | image for check jobs; defaults to agent_image |
@@ -185,6 +187,8 @@ ingress:
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
 ```
 ## Security
+
+Agent pods reach `/agent/v1` on the agents Service only, with the cluster token and from their own pod IP. The agent port serves nothing else (404), and `/agent/v1` is 404 on the main port.
 
 The api trusts only the direct socket peer (`ORCH_ALLOWED_CIDRS`, see API). Behind an ingress that peer is the ingress controller, but not its node LAN IP. ingress-nginx runs hostNetwork, yet on a flannel cluster its proxied connection reaches the api pod from the node's pod-network gateway address: from another node via `flannel.1` as `10.244.N.0`, from the same node via `cni0` as `10.244.N.1`. A LAN client therefore gets `403` if `ORCH_ALLOWED_CIDRS` lists only the LAN CIDR. Set `ORCH_ALLOWED_CIDRS` to each node's podCIDR `.0/31` (covers `.0` and `.1`; agent pods get `.2` and up, so they stay outside), derived from `kubectl get nodes -o jsonpath='{range .items[*]}{.spec.podCIDR}{"\n"}{end}'`, for example `10.244.0.0/31,10.244.1.0/31`. Update the list whenever nodes are added or removed. The allowlist is blind to who the original client was.
 
