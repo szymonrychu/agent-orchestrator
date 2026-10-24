@@ -171,7 +171,7 @@ describe('App', () => {
     emit('cluster_status', { cluster: cluster('c3', 'gamma', { state: 'booting', ready: 0 }) })
     expect(tabs().map((t) => t.textContent?.match(/^[a-z]+/)?.[0])).toEqual(['alpha', 'beta', 'gamma'])
     emit('snapshot', { clusters: [{ cluster: cluster('c9', 'omega'), agents: [] }] })
-    expect(tabs().map((t) => t.textContent?.replace(/\d+%$/, ''))).toEqual(['omega'])
+    expect(tabs().map((t) => t.textContent?.match(/^[a-z]+/)?.[0])).toEqual(['omega'])
   })
 
   test('hamburger_opens_sessions_menu_with_empty_settings', async () => {
