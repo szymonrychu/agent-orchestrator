@@ -1,4 +1,6 @@
 import asyncio
+import json
+import shutil
 import threading
 
 import psycopg
@@ -14,7 +16,7 @@ from factories import (
     set_agent_status,
 )
 
-from agent_orchestrator.db.migrate import run_migrations
+from agent_orchestrator.db.migrate import MIGRATIONS_DIR, run_migrations
 from agent_orchestrator.db.pool import listen, notify
 
 TABLES = {
@@ -51,6 +53,25 @@ def test_fresh_database_gets_all_tables(empty_dsn):
         versions = [r[0] for r in c.execute("SELECT version FROM schema_migrations")]
     assert tables >= TABLES
     assert versions == ["0001", "0002"]
+
+
+def test_presets_migration_on_existing_clusters(empty_dsn, tmp_path):
+    shutil.copy(MIGRATIONS_DIR / "0001_init.sql", tmp_path / "0001_init.sql")
+    assert run_migrations(empty_dsn, tmp_path) == ["0001"]
+    spec = {"replicas": 3, "model": "opus"}
+    with psycopg.connect(empty_dsn, autocommit=True) as c:
+        c.execute(
+            "INSERT INTO clusters (id, slug, spec) VALUES (gen_random_uuid(), 'old', %s)",
+            (json.dumps(spec),),
+        )
+    assert run_migrations(empty_dsn) == ["0002"]
+    with psycopg.connect(empty_dsn) as c:
+        row = c.execute(
+            "SELECT spec, preset_id, preset_name FROM clusters WHERE slug='old'"
+        ).fetchall()
+        default = c.execute("SELECT name, spec FROM presets WHERE is_default").fetchall()
+    assert row == [(spec, None, None)]
+    assert default == [("Default", {"replicas": 1})]
 
 
 def test_rerun_is_noop(empty_dsn):

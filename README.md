@@ -310,7 +310,7 @@ The rule "services talk only through the queue or HTTP APIs, with no shared stat
 
 | Table | Writer |
 |---|---|
-| `clusters` | api; the reconciler writes only `status` and `observed_generation` and deletes the row when a discard completes |
+| `clusters` | api; the reconciler writes only `status` and `observed_generation` and deletes the row when a discard completes. `preset_id` is also set to null by the `ON DELETE SET NULL` cascade when the api deletes a preset, an api-originated write |
 | `presets` | api |
 | `agents` | reconciler; `last_dispatched_at` is written by the dispatch claim |
 | `agent_status` | ingester |

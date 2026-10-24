@@ -1,5 +1,5 @@
 /** Preset editor (new, edit, copy): /meta defaults for unset fields, sparse saving, inline validation, server 409 and 422 shown in an Alert. */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
@@ -42,6 +42,7 @@ function FormBody({ preset, copyOf, onClose, onSaved }: Omit<PresetFormProps, 'o
   const [state, setState] = useState<FormState>(() => initialState(null, preset, copyOf))
   const [serverError, setServerError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const touched = useRef(new Set<keyof FormValues>())
   const { values, setKeys } = state
   const editing = preset !== undefined
 
@@ -52,8 +53,16 @@ function FormBody({ preset, copyOf, onClose, onSaved }: Omit<PresetFormProps, 'o
         if (cancelled) return
         setMeta(m)
         setState((s) => {
+          // meta-derived defaults go under whatever the user already edited
           const fresh = initialState(m, source.preset, source.copyOf)
-          return { ...fresh, values: { ...fresh.values, name: s.values.name } }
+          const values = { ...fresh.values } as Record<keyof FormValues, FormValues[keyof FormValues]>
+          const setKeys = new Set(fresh.setKeys)
+          for (const key of touched.current) {
+            values[key] = s.values[key]
+            const setKey = setKeyOf(key)
+            if (setKey) setKeys.add(setKey)
+          }
+          return { values: values as unknown as FormValues, setKeys }
         })
       })
       .catch((e: unknown) => {
@@ -66,11 +75,13 @@ function FormBody({ preset, copyOf, onClose, onSaved }: Omit<PresetFormProps, 'o
 
   const errors = validate(values, meta)
   const invalid = Object.keys(errors).length > 0
-  const set = <K extends keyof FormValues>(key: K, value: FormValues[K]) =>
+  const set = <K extends keyof FormValues>(key: K, value: FormValues[K]) => {
+    touched.current.add(key)
     setState((s) => {
       const setKey = setKeyOf(key)
       return { values: { ...s.values, [key]: value }, setKeys: setKey ? new Set(s.setKeys).add(setKey) : s.setKeys }
     })
+  }
   const text = (key: Exclude<keyof FormValues, 'peers' | 'env'>, label: string, extra: { disabled?: boolean; multiline?: boolean } = {}) => (
     <TextField
       size="small"

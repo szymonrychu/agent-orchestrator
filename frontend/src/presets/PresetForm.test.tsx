@@ -56,6 +56,24 @@ const noop = { onClose: vi.fn(), onSaved: vi.fn() }
 const optionTexts = () => screen.getAllByRole('option').map((o) => o.textContent)
 
 describe('PresetForm', () => {
+  test('keeps edits made before meta loads', { timeout: 15000 }, async () => {
+    let resolveMeta: (m: Meta) => void = () => {}
+    api.getMeta.mockReturnValue(new Promise<Meta>((r) => { resolveMeta = r }))
+    api.createPreset.mockResolvedValue(preset())
+    wrap(<PresetForm open onClose={vi.fn()} onSaved={vi.fn()} />)
+    await replace('Name', 'early')
+    await replace('Max attempts', '9')
+    resolveMeta(meta())
+    await ready()
+    expect(field('Name').value).toBe('early')
+    expect(field('Max attempts').value).toBe('9')
+    await userEvent.click(button('Create'))
+    await waitFor(() => expect(api.createPreset).toHaveBeenCalled())
+    const body = api.createPreset.mock.calls[0][0]
+    expect(body.name).toBe('early')
+    expect(body.spec.max_attempts).toBe(9)
+  })
+
   test('new_preset_prefills_defaults_saves_only_set_fields', { timeout: 15000 }, async () => {
     api.createPreset.mockResolvedValue(preset())
     const onSaved = vi.fn()
