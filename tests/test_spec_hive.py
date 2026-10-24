@@ -85,3 +85,9 @@ def test_cap_stable_after_backfill() -> None:
     assert edited.hive is True
     with pytest.raises(ValidationError):
         ClusterSpec.model_validate({**stored, "replicas": 3})
+
+
+@pytest.mark.parametrize("key", ["ORCH_AGENT_TOKEN", "ORCH_AGENT_URL", "ORCH_CLUSTER_ID", "ORCH_X"])
+def test_orch_env_reserved(key: str) -> None:
+    with pytest.raises(ValidationError):
+        ClusterSpec(env={key: "v"})

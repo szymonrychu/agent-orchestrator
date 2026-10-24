@@ -23,6 +23,10 @@ WORKSPACE_VOLUME = "workspace"
 PROBE_PERIOD = 5
 STARTUP_SLACK = 12
 
+# Always passed to the any-mcp stdio child; ORCH_AGENT_URL is listed even when unset (the wrapper
+# passes through only variables that exist).
+AGENT_PASSTHROUGH_ENV = ("ORCH_AGENT_TOKEN", "ORCH_AGENT_URL", "ORCH_CLUSTER_ID", "POD_NAME")
+
 ASK_IN_WRITING_PROMPT = (
     "The AskUserQuestion tool is disabled and nobody answers interactive questions. "
     "When you need a decision or information from the user, ask in writing in your reply: "
@@ -56,7 +60,7 @@ def _shutdown_timeout(grace: int) -> int:
 def _ccw_config(cluster: Cluster, settings: Settings) -> dict[str, Any]:
     spec, slug = cluster.spec, cluster.slug
     claude: dict[str, Any] = {
-        "passthrough_env": sorted(spec.env),
+        "passthrough_env": sorted([*spec.env, *AGENT_PASSTHROUGH_ENV]),
         "env": {
             "claude_code_oauth_token": "${CLAUDE_CODE_OAUTH_TOKEN}",
             "disable_autoupdater": True,
@@ -141,6 +145,13 @@ def _container(cluster: Cluster, settings: Settings, names: dict[str, str]) -> d
             "name": "CLAUDE_CODE_OAUTH_TOKEN",
             **_secret_ref(settings.claude_secret_name, "CLAUDE_CODE_OAUTH_TOKEN"),
         },
+        {"name": "ORCH_AGENT_TOKEN", **_secret_ref(names["secret"], "ORCH_AGENT_TOKEN")},
+        {"name": "ORCH_CLUSTER_ID", "value": str(cluster.id)},
+        *(
+            [{"name": "ORCH_AGENT_URL", "value": settings.agent_api_url}]
+            if settings.agent_api_url
+            else []
+        ),
         *({"name": k, "value": v} for k, v in sorted(spec.env.items())),
     ]
     startup_failures = math.ceil(settings.on_start_timeout_seconds / PROBE_PERIOD) + STARTUP_SLACK
@@ -203,7 +214,11 @@ def render_cluster(
         "kind": "Secret",
         "metadata": _meta(slug, names["secret"], settings),
         "type": "Opaque",
-        "stringData": {"CCW_AUTH_TOKEN": tokens.auth, "CCW_PEER_TOKEN": tokens.peer},
+        "stringData": {
+            "CCW_AUTH_TOKEN": tokens.auth,
+            "CCW_PEER_TOKEN": tokens.peer,
+            "ORCH_AGENT_TOKEN": tokens.agent,
+        },
     }
     configmap = {
         "apiVersion": "v1",

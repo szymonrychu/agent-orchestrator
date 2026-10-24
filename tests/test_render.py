@@ -22,7 +22,9 @@ from agent_orchestrator.spec import ClusterSpec
 from agent_orchestrator.tokens import ClusterTokens
 
 GOLDEN = Path(__file__).parent / "golden"
-TOKENS = ClusterTokens(auth="a" * 32, peer="p" * 32)
+TOKENS = ClusterTokens(auth="a" * 32, peer="p" * 32, agent="g" * 32)
+AGENT_ENV = ["ORCH_AGENT_TOKEN", "ORCH_AGENT_URL", "ORCH_CLUSTER_ID", "POD_NAME"]
+AGENT_URL = "http://orchestrator-agents.agents.svc:8081"
 IMAGE = "harbor.example/containers/claude-code-wrapper:ca2ddf3"
 
 
@@ -228,7 +230,7 @@ def test_passthrough_env_lists_spec_env_names(tmp_path, monkeypatch):
         make_cluster(env={"ZED": "1", "ALPHA": "2"}), make_settings(), TOKENS
     )
     cfg = config_of(objs)
-    assert cfg["claude"]["passthrough_env"] == ["ALPHA", "ZED"]
+    assert cfg["claude"]["passthrough_env"] == sorted(["ALPHA", "ZED", *AGENT_ENV])
     env = {e["name"]: e.get("value") for e in container_of(objs)["env"]}
     assert env["ZED"] == "1" and env["ALPHA"] == "2"
     for k, v in {
@@ -237,11 +239,14 @@ def test_passthrough_env_lists_spec_env_names(tmp_path, monkeypatch):
         "CCW_PEER_URL": "http://x:1",
         "CLAUDE_CODE_OAUTH_TOKEN": "o",
         "POD_NAME": "p",
+        "ORCH_AGENT_TOKEN": "g" * 20,
+        "ORCH_AGENT_URL": "http://o:1",
+        "ORCH_CLUSTER_ID": "c",
     }.items():
         monkeypatch.setenv(k, v)
     path = tmp_path / "c.yaml"
     path.write_text(by_kind(objs)["ConfigMap"]["data"]["config.yaml"])
-    assert load_config(path).claude.passthrough_env == ["ALPHA", "ZED"]
+    assert load_config(path).claude.passthrough_env == sorted(["ALPHA", "ZED", *AGENT_ENV])
 
 
 def test_workdir_path_matches_mount_and_session_workdir():
@@ -415,3 +420,45 @@ def test_render_keeps_spec_resources_unchanged():
     spec = {"resources": {"requests": {"cpu": "2"}, "limits": {"memory": "2Gi"}}}
     c = container_of(render.render_cluster(make_cluster(**spec), make_settings(), TOKENS))
     assert c["resources"] == {"requests": {"cpu": "2"}, "limits": {"memory": "2Gi"}}
+
+
+def test_agent_credential_env():
+    cluster = make_cluster()
+    objs = render.render_cluster(cluster, make_settings(agent_api_url=AGENT_URL), TOKENS)
+    assert by_kind(objs)["Secret"]["stringData"]["ORCH_AGENT_TOKEN"] == TOKENS.agent
+    env = {e["name"]: e for e in container_of(objs)["env"]}
+    assert env["ORCH_AGENT_TOKEN"]["valueFrom"]["secretKeyRef"] == {
+        "name": "agent-alpha-ccw",
+        "key": "ORCH_AGENT_TOKEN",
+    }
+    assert env["ORCH_CLUSTER_ID"]["value"] == str(cluster.id)
+    assert env["ORCH_AGENT_URL"]["value"] == AGENT_URL
+
+
+def test_passthrough_includes_agent_env():
+    objs = render.render_cluster(
+        make_cluster(env={"ZED": "1"}), make_settings(agent_api_url=AGENT_URL), TOKENS
+    )
+    assert config_of(objs)["claude"]["passthrough_env"] == sorted(["ZED", *AGENT_ENV])
+    solo = render.render_cluster(
+        make_cluster(replicas=1), make_settings(agent_api_url=AGENT_URL), TOKENS
+    )
+    assert "ORCH_AGENT_TOKEN" in config_of(solo)["claude"]["passthrough_env"]
+
+
+def test_no_agent_url_omits_env():
+    objs = render.render_cluster(make_cluster(), make_settings(), TOKENS)
+    names = [e["name"] for e in container_of(objs)["env"]]
+    assert "ORCH_AGENT_URL" not in names
+    assert "ORCH_AGENT_TOKEN" in names and "ORCH_CLUSTER_ID" in names
+    assert "ORCH_AGENT_URL" in config_of(objs)["claude"]["passthrough_env"]
+
+
+def test_agent_token_trust_domain_documented():
+    """The token is plain pod env, readable by every process in the pod (Bash included)."""
+    objs = render.render_cluster(make_cluster(), make_settings(agent_api_url=AGENT_URL), TOKENS)
+    env = {e["name"]: e for e in container_of(objs)["env"]}
+    assert "ORCH_AGENT_TOKEN" in env
+    assert "ORCH_AGENT_TOKEN" in config_of(objs)["claude"]["passthrough_env"]
+    readme = (Path(__file__).parent.parent / "README.md").read_text().lower()
+    assert "best-effort" in readme and "orch_agent_token" in readme

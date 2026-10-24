@@ -19,7 +19,7 @@ SLUG_MAX = 40
 RESERVED_PLUGIN = "orchestrator"
 _LABEL_RE = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
 _ENV_KEY_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
-_RESERVED_ENV_PREFIXES = ("CCW_", "CLAUDE_", "ANTHROPIC_")
+_RESERVED_ENV_PREFIXES = ("CCW_", "CLAUDE_", "ANTHROPIC_", "ORCH_")
 _RESERVED_ENV_SUFFIXES = ("_PROXY", "_BASE_URL")
 _QUANTITY_RE = re.compile(
     r"([+-]?(?:\d+\.?\d*|\.\d+))(Ki|Mi|Gi|Ti|Pi|Ei|[numkMGTPE]|[eE][+-]?\d+)?"
@@ -189,7 +189,7 @@ class ClusterSpec(BaseModel):
         if bad:
             raise ValueError(
                 "env keys must match [A-Z_][A-Z0-9_]* and must not be POD_NAME, CCW_*, CLAUDE_*, "
-                "ANTHROPIC_*, *_PROXY or *_BASE_URL: " + ", ".join(sorted(bad))
+                "ANTHROPIC_*, ORCH_*, *_PROXY or *_BASE_URL: " + ", ".join(sorted(bad))
             )
         return v
 

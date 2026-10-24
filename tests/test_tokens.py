@@ -1,4 +1,6 @@
 import dataclasses
+import hashlib
+import hmac
 from uuid import UUID
 
 import pytest
@@ -62,3 +64,15 @@ def test_known_answer_vectors():
     assert t.peer == "".join(
         ["b573a7ba5c992f58", "3b3fb96e62056ec7", "471a47c1c42b4d9b", "91c2fa5bea452fc1"]
     )
+
+
+def test_agent_token_purpose():
+    t = derive_tokens(KEY, CID)
+    assert t.agent not in (t.auth, t.peer)
+    assert len(t.agent) == 64
+    assert t.agent == derive_tokens(KEY, CID).agent
+    assert derive_tokens(KEY, OTHER).agent != t.agent
+    assert t.agent == hmac.new(KEY, f"agent:{CID}".encode(), hashlib.sha256).hexdigest()
+    for text in (repr(t), str(t)):
+        assert t.agent not in text
+        assert "agent='***'" in text
