@@ -87,7 +87,7 @@ def test_cap_stable_after_backfill() -> None:
         SessionSpec.model_validate({**stored, "replicas": 3})
 
 
-@pytest.mark.parametrize("key", ["ORCH_AGENT_TOKEN", "ORCH_AGENT_URL", "ORCH_CLUSTER_ID", "ORCH_X"])
+@pytest.mark.parametrize("key", ["ORCH_AGENT_TOKEN", "ORCH_AGENT_URL", "ORCH_SESSION_ID", "ORCH_X"])
 def test_orch_env_reserved(key: str) -> None:
     with pytest.raises(ValidationError):
         SessionSpec(env={key: "v"})

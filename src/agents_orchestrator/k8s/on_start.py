@@ -48,7 +48,7 @@ def _orchestrator_entry(
         "config": {
             "base_url": "${ORCH_AGENT_URL}",
             "token": "${ORCH_AGENT_TOKEN}",
-            "cluster": "${ORCH_CLUSTER_ID}",
+            "session": "${ORCH_SESSION_ID}",
             "agent": "${POD_NAME}",
             "slug": slug,
             "max_replicas": spec.max_replicas or spec.replicas,

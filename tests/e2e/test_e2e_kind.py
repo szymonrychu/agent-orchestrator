@@ -206,7 +206,7 @@ def wait_leader(
 AGENT_CALL = (
     "import json, os, sys, urllib.request, urllib.error\n"
     "method, path, body, auth = sys.argv[1:5]\n"
-    "headers = {'X-Orch-Cluster': os.environ['ORCH_CLUSTER_ID']}\n"
+    "headers = {'X-Orch-Session': os.environ['ORCH_SESSION_ID']}\n"
     "if auth == 'token':\n"
     "    headers['Authorization'] = 'Bearer ' + os.environ['ORCH_AGENT_TOKEN']\n"
     "data = None\n"
@@ -858,7 +858,7 @@ def test_agent_api_identity(api: httpx.Client, session: dict[str, Any]) -> None:
     script = (
         "import json, urllib.request, urllib.error\n"
         f"req = urllib.request.Request('{url}/agent/v1/me', headers={{\n"
-        f"    'Authorization': 'Bearer {token}', 'X-Orch-Cluster': '{session['id']}'}})\n"
+        f"    'Authorization': 'Bearer {token}', 'X-Orch-Session': '{session['id']}'}})\n"
         "try:\n"
         "    r = urllib.request.urlopen(req, timeout=10)\n"
         "    out = [r.status, r.read().decode()]\n"

@@ -119,7 +119,7 @@ async def test_agent_scale_refusals(pool, dsn):
         )
         assert_error(
             await post(
-                "/agent/v1/scale", json={"replicas": 3}, headers={"X-Orch-Cluster": str(c["id"])}
+                "/agent/v1/scale", json={"replicas": 3}, headers={"X-Orch-Session": str(c["id"])}
             ),
             401,
             "unauthorized",
@@ -163,7 +163,7 @@ async def test_plugin_scale_tool_contract(pool, dsn):
         return {
             "base_url": f"http://orch:{AGENT_PORT}",
             "token": token(c["id"]),
-            "cluster": str(c["id"]),
+            "session": str(c["id"]),
             "agent": slug,
             "slug": slug,
             "max_replicas": 4,

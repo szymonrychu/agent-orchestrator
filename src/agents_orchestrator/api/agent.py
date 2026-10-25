@@ -1,7 +1,8 @@
 """Agent API (`/agent/v1`), served only on the agent port (see allowlist.PortGate).
 
-`require_agent()` is the identity contract of every agent route: a session token plus the
-direct socket peer IP bound to a live agent pod. No forwarded header is read (D22).
+`require_agent()` is the identity contract of every agent route: `X-Orch-Session` naming the
+session, its agent token, and the direct socket peer IP bound to a live agent pod. No forwarded
+header is read (D22).
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ class Member(BaseModel):
 
 
 class Me(BaseModel):
-    cluster_id: uuid.UUID
+    session_id: uuid.UUID
     agent_id: uuid.UUID
     pod_name: str
     ordinal: int
@@ -60,13 +61,13 @@ async def require_agent(
     pool: Pool,
     settings: Cfg,
     authorization: Annotated[str | None, Header()] = None,
-    x_orch_cluster: Annotated[str | None, Header()] = None,
+    x_orch_session: Annotated[str | None, Header()] = None,
 ) -> agents_repo.Agent:
     """The calling agent's row. 401 for any credential problem (one shared answer), 403 when
     the socket peer is not the pod IP of a live agent of that session."""
     scheme, _, presented = (authorization or "").partition(" ")
     try:
-        session_id = uuid.UUID(x_orch_cluster or "")
+        session_id = uuid.UUID(x_orch_session or "")
     except ValueError:
         raise _unauthorized() from None
     if scheme.lower() != "bearer" or not presented:
@@ -96,7 +97,7 @@ async def me(agent: Caller, pool: Pool) -> Me:
     leader_id = leader[0] if leader else None
     leader_pod = next((m["pod_name"] for m in members if m["id"] == leader_id), None)
     return Me(
-        cluster_id=agent.session_id,
+        session_id=agent.session_id,
         agent_id=agent.id,
         pod_name=agent.pod_name,
         ordinal=agent.ordinal,

@@ -36,7 +36,7 @@ def client_for(app, ip: str = IP0) -> httpx.AsyncClient:
 
 
 def headers(session_id, tok: str | None = None) -> dict[str, str]:
-    h = {"X-Orch-Cluster": str(session_id)}
+    h = {"X-Orch-Session": str(session_id)}
     h["Authorization"] = f"Bearer {tok if tok is not None else token(session_id)}"
     return h
 
@@ -61,7 +61,7 @@ async def test_me_identity(pool, dsn):
         r = await http.get("/agent/v1/me", headers=headers(c["id"]))
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["cluster_id"] == str(c["id"])
+    assert body["session_id"] == str(c["id"])
     assert body["agent_id"] == str(a1["id"])
     assert body["pod_name"] == a1["pod_name"]
     assert body["ordinal"] == 1
@@ -78,12 +78,12 @@ async def test_token_rejections(pool, dsn):
     cases = [
         {},
         {"Authorization": f"Bearer {token(c['id'])}"},
-        {"X-Orch-Cluster": str(c["id"])},
+        {"X-Orch-Session": str(c["id"])},
         headers(c["id"], "wrong"),
         headers(c["id"], token(other["id"])),
         {**headers(c["id"]), "Authorization": token(c["id"])},
         headers(uuid.uuid4()),
-        {**headers(c["id"]), "X-Orch-Cluster": "not-a-uuid"},
+        {**headers(c["id"]), "X-Orch-Session": "not-a-uuid"},
     ]
     messages = set()
     async with client_for(app) as http:
@@ -94,6 +94,21 @@ async def test_token_rejections(pool, dsn):
             assert err["code"] == "unauthorized"
             messages.add(err["message"])
     assert len(messages) == 1
+
+
+async def test_old_cluster_header_refused(pool, dsn):
+    """The pre-rename header is no alias: carrying only it is a missing X-Orch-Session."""
+    c, _, _ = await hive(pool)
+    old = {"Authorization": f"Bearer {token(c['id'])}", "X-Orch-Cluster": str(c["id"])}
+    async with client_for(create_app(make_settings(dsn), pool), IP1) as http:
+        refused = await http.get("/agent/v1/me", headers=old)
+        missing = await http.get("/agent/v1/me", headers={"Authorization": old["Authorization"]})
+        accepted = await http.get("/agent/v1/me", headers=headers(c["id"]))
+    assert refused.status_code == missing.status_code == 401, refused.text
+    assert refused.json() == missing.json()
+    assert refused.json()["error"]["code"] == "unauthorized"
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["session_id"] == str(c["id"])
 
 
 async def test_ip_binding(pool, dsn):

@@ -6,6 +6,7 @@ import json
 import re
 
 from any_mcp.config import AnyMcpConfig
+from any_mcp.orchestrator import OrchestratorPlugin
 
 from agents_orchestrator.k8s import on_start
 from agents_orchestrator.settings import Settings
@@ -69,7 +70,7 @@ def test_hive_entry_and_allow():
         "config": {
             "base_url": "${ORCH_AGENT_URL}",
             "token": "${ORCH_AGENT_TOKEN}",
-            "cluster": "${ORCH_CLUSTER_ID}",
+            "session": "${ORCH_SESSION_ID}",
             "agent": "${POD_NAME}",
             "slug": "alpha",
             "max_replicas": 4,
@@ -80,6 +81,17 @@ def test_hive_entry_and_allow():
     }
     cfg = written_config(on_start.render_on_start(spec, make_settings(), "alpha"))
     AnyMcpConfig.model_validate(cfg)
+
+
+def test_plugin_entry_session_key():
+    """The rendered entry names the session and validates under any-mcp v0.3.0."""
+    spec = SessionSpec(replicas=2, max_replicas=4)
+    cfg = written_config(on_start.render_on_start(spec, make_settings(), "alpha"))
+    config = AnyMcpConfig.model_validate(cfg)
+    entry = next(p for p in config.plugins if p.name == "orchestrator")
+    assert entry.config["session"] == "${ORCH_SESSION_ID}"
+    plugin_config = OrchestratorPlugin.Config.model_validate(entry.config)
+    assert plugin_config.session == "${ORCH_SESSION_ID}"
 
 
 def test_user_config_merged():

@@ -24,7 +24,7 @@ STARTUP_SLACK = 12
 
 # Always passed to the any-mcp stdio child; ORCH_AGENT_URL is listed even when unset (the wrapper
 # passes through only variables that exist).
-AGENT_PASSTHROUGH_ENV = ("ORCH_AGENT_TOKEN", "ORCH_AGENT_URL", "ORCH_CLUSTER_ID", "POD_NAME")
+AGENT_PASSTHROUGH_ENV = ("ORCH_AGENT_TOKEN", "ORCH_AGENT_URL", "ORCH_SESSION_ID", "POD_NAME")
 
 ASK_IN_WRITING_PROMPT = (
     "The AskUserQuestion tool is disabled and nobody answers interactive questions. "
@@ -63,7 +63,7 @@ def _lock_check_hook() -> dict[str, Any]:
         "url": "${ORCH_AGENT_URL}/agent/v1/locks/check",
         "headers": {
             "Authorization": "Bearer ${ORCH_AGENT_TOKEN}",
-            "X-Orch-Cluster": "${ORCH_CLUSTER_ID}",
+            "X-Orch-Session": "${ORCH_SESSION_ID}",
         },
         "matcher": "^(Write|Edit|MultiEdit|NotebookEdit)$",
         "blocking": True,
@@ -210,7 +210,7 @@ def _container(session: Session, settings: Settings, names: dict[str, str]) -> d
             **_secret_ref(settings.claude_secret_name, "CLAUDE_CODE_OAUTH_TOKEN"),
         },
         {"name": "ORCH_AGENT_TOKEN", **_secret_ref(names["secret"], "ORCH_AGENT_TOKEN")},
-        {"name": "ORCH_CLUSTER_ID", "value": str(session.id)},
+        {"name": "ORCH_SESSION_ID", "value": str(session.id)},
         *(
             [{"name": "ORCH_AGENT_URL", "value": settings.agent_api_url}]
             if settings.agent_api_url

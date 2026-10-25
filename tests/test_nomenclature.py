@@ -6,7 +6,6 @@ ALLOWED_PHRASES, which are removed from a line before it is checked.
 
 from __future__ import annotations
 
-import json
 import re
 import subprocess
 from pathlib import Path
@@ -44,12 +43,13 @@ ALLOWED_PHRASES = (
     'CNPG_KIND = "Cluster"',
 )
 
-# Agent-API names renamed by orch-agent-api-sessions, which removes this list.
-AGENT_API_PHRASES = ("X-Orch-Cluster", "x-orch-cluster", "ORCH_CLUSTER_ID")
-AGENT_API_SCHEMAS = ("Me",)
-
-# Old names that retirement tests pin as gone.
-RETIRED_PHRASES = ('"/api/v1/clusters"', "test_old_cluster_routes_gone")
+# Old names that retirement tests pin as gone (old routes, the old agent-API header).
+RETIRED_PHRASES = (
+    '"/api/v1/clusters"',
+    "test_old_cluster_routes_gone",
+    '"X-Orch-Cluster"',
+    "test_old_cluster_header_refused",
+)
 
 # Schema history: 0001-0004 stay byte-identical, 0005 renames their old names, and the migration
 # tests seed the pre-0005 schema.
@@ -63,19 +63,6 @@ HISTORY = frozenset(
         "tests/test_migrations.py",
         "tests/test_nomenclature.py",
     }
-)
-
-# The agent API (X-Orch-Cluster, ORCH_CLUSTER_ID, the any-mcp plugin key) is renamed by
-# orch-agent-api-sessions, which removes these exceptions.
-AGENT_API = re.compile(
-    r"^(src/agents_orchestrator/api/agent\.py"
-    r"|src/agents_orchestrator/k8s/render\.py"
-    r"|src/agents_orchestrator/k8s/on_start\.py"
-    r"|tests/test_api_agent\.py"
-    r"|tests/test_agent_[^/]+\.py"
-    r"|tests/test_on_start\.py"
-    r"|tests/test_render\.py"
-    r"|tests/golden/[^/]+\.yaml)$"
 )
 
 UNIT = re.compile("cluster", re.IGNORECASE)
@@ -93,15 +80,10 @@ def _offending(path: str) -> list[str]:
         text = (ROOT / path).read_text(encoding="utf-8")
     except (UnicodeDecodeError, FileNotFoundError):
         return []
-    if path == "openapi.json":
-        document = json.loads(text)
-        for name in AGENT_API_SCHEMAS:
-            del document["components"]["schemas"][name]
-        text = json.dumps(document, indent=2)
     hits = []
     for n, line in enumerate(text.splitlines(), start=1):
         stripped = line
-        for phrase in (*ALLOWED_PHRASES, *AGENT_API_PHRASES, *RETIRED_PHRASES):
+        for phrase in (*ALLOWED_PHRASES, *RETIRED_PHRASES):
             stripped = stripped.replace(phrase, "")
         if UNIT.search(stripped):
             hits.append(f"{path}:{n}: {line.strip()}")
@@ -109,7 +91,7 @@ def _offending(path: str) -> list[str]:
 
 
 def test_guarded_paths_name_the_unit_session() -> None:
-    files = [p for p in _tracked() if p not in HISTORY and not AGENT_API.match(p)]
+    files = [p for p in _tracked() if p not in HISTORY]
     assert len(files) > 100
     hits = [hit for path in files for hit in _offending(path)]
     assert not hits, "\n".join(hits[:50]) + f"\n({len(hits)} lines)"

@@ -154,7 +154,7 @@ class Settings(BaseSettings):
     scale_drain_seconds: float = 900
 
     any_mcp_repo: str = "https://github.com/szymonrychu/any-mcp"
-    any_mcp_ref: str = "v0.2.0"
+    any_mcp_ref: str = "v0.3.0"
     on_start_timeout_seconds: float = 600
 
     def __init__(self, **values: object) -> None:

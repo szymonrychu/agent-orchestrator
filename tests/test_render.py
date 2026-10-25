@@ -23,7 +23,7 @@ from agents_orchestrator.tokens import SessionTokens
 
 GOLDEN = Path(__file__).parent / "golden"
 TOKENS = SessionTokens(auth="a" * 32, peer="p" * 32, agent="g" * 32)
-AGENT_ENV = ["ORCH_AGENT_TOKEN", "ORCH_AGENT_URL", "ORCH_CLUSTER_ID", "POD_NAME"]
+AGENT_ENV = ["ORCH_AGENT_TOKEN", "ORCH_AGENT_URL", "ORCH_SESSION_ID", "POD_NAME"]
 AGENT_URL = "http://orchestrator-agents.agents.svc:8081"
 IMAGE = "harbor.example/containers/claude-code-wrapper:ca2ddf3"
 
@@ -241,7 +241,7 @@ def test_passthrough_env_lists_spec_env_names(tmp_path, monkeypatch):
         "POD_NAME": "p",
         "ORCH_AGENT_TOKEN": "g" * 20,
         "ORCH_AGENT_URL": "http://o:1",
-        "ORCH_CLUSTER_ID": "c",
+        "ORCH_SESSION_ID": "c",
     }.items():
         monkeypatch.setenv(k, v)
     path = tmp_path / "c.yaml"
@@ -431,8 +431,27 @@ def test_agent_credential_env():
         "name": "agent-alpha-ccw",
         "key": "ORCH_AGENT_TOKEN",
     }
-    assert env["ORCH_CLUSTER_ID"]["value"] == str(session.id)
+    assert env["ORCH_SESSION_ID"]["value"] == str(session.id)
     assert env["ORCH_AGENT_URL"]["value"] == AGENT_URL
+
+
+def test_agent_env_session_id():
+    """Agent pods get ORCH_SESSION_ID, pass it to any-mcp, and send it as X-Orch-Session."""
+    session = make_session(replicas=2)
+    objs = _render(session)
+    env = {e["name"]: e for e in container_of(objs)["env"]}
+    assert {k for k in env if k.startswith("ORCH_")} == {
+        "ORCH_AGENT_TOKEN",
+        "ORCH_AGENT_URL",
+        "ORCH_SESSION_ID",
+    }
+    assert env["ORCH_SESSION_ID"] == {"name": "ORCH_SESSION_ID", "value": str(session.id)}
+    cfg = config_of(objs)
+    assert cfg["claude"]["passthrough_env"] == AGENT_ENV
+    assert cfg["hooks"]["onAgentToolCall"][0]["headers"] == {
+        "Authorization": "Bearer ${ORCH_AGENT_TOKEN}",
+        "X-Orch-Session": "${ORCH_SESSION_ID}",
+    }
 
 
 def test_passthrough_includes_agent_env():
@@ -450,7 +469,7 @@ def test_no_agent_url_omits_env():
     objs = render.render_session(make_session(), make_settings(), TOKENS)
     names = [e["name"] for e in container_of(objs)["env"]]
     assert "ORCH_AGENT_URL" not in names
-    assert "ORCH_AGENT_TOKEN" in names and "ORCH_CLUSTER_ID" in names
+    assert "ORCH_AGENT_TOKEN" in names and "ORCH_SESSION_ID" in names
     assert "ORCH_AGENT_URL" in config_of(objs)["claude"]["passthrough_env"]
 
 
@@ -499,7 +518,7 @@ def test_hive_session_config():
             "url": "${ORCH_AGENT_URL}/agent/v1/locks/check",
             "headers": {
                 "Authorization": "Bearer ${ORCH_AGENT_TOKEN}",
-                "X-Orch-Cluster": "${ORCH_CLUSTER_ID}",
+                "X-Orch-Session": "${ORCH_SESSION_ID}",
             },
             "matcher": "^(Write|Edit|MultiEdit|NotebookEdit)$",
             "blocking": True,
@@ -701,7 +720,7 @@ def test_rendered_wrapper_settings_validate(tmp_path, monkeypatch):
         "POD_NAME": "agent-alpha-0",
         "ORCH_AGENT_TOKEN": "t",
         "ORCH_AGENT_URL": AGENT_URL,
-        "ORCH_CLUSTER_ID": "c",
+        "ORCH_SESSION_ID": "c",
     }.items():
         monkeypatch.setenv(k, v)
     path = tmp_path / "config.yaml"
@@ -744,7 +763,7 @@ def test_hive_with_agent_commands_validates(tmp_path, monkeypatch):
         "POD_NAME": "agent-alpha-0",
         "ORCH_AGENT_TOKEN": "t",
         "ORCH_AGENT_URL": AGENT_URL,
-        "ORCH_CLUSTER_ID": "c",
+        "ORCH_SESSION_ID": "c",
     }.items():
         monkeypatch.setenv(k, v)
     path = tmp_path / "config.yaml"

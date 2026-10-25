@@ -1372,11 +1372,6 @@
             "title": "Agent Id",
             "type": "string"
           },
-          "cluster_id": {
-            "format": "uuid",
-            "title": "Cluster Id",
-            "type": "string"
-          },
           "epoch": {
             "anyOf": [
               {
@@ -1418,13 +1413,18 @@
             "title": "Pod Name",
             "type": "string"
           },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
           "static": {
             "title": "Static",
             "type": "boolean"
           }
         },
         "required": [
-          "cluster_id",
+          "session_id",
           "agent_id",
           "pod_name",
           "ordinal",
@@ -3059,7 +3059,7 @@
           },
           {
             "in": "header",
-            "name": "x-orch-cluster",
+            "name": "x-orch-session",
             "required": false,
             "schema": {
               "anyOf": [
@@ -3070,7 +3070,7 @@
                   "type": "null"
                 }
               ],
-              "title": "X-Orch-Cluster"
+              "title": "X-Orch-Session"
             }
           }
         ],
@@ -3122,7 +3122,7 @@
           },
           {
             "in": "header",
-            "name": "x-orch-cluster",
+            "name": "x-orch-session",
             "required": false,
             "schema": {
               "anyOf": [
@@ -3133,7 +3133,7 @@
                   "type": "null"
                 }
               ],
-              "title": "X-Orch-Cluster"
+              "title": "X-Orch-Session"
             }
           }
         ],
@@ -3198,7 +3198,7 @@
           },
           {
             "in": "header",
-            "name": "x-orch-cluster",
+            "name": "x-orch-session",
             "required": false,
             "schema": {
               "anyOf": [
@@ -3209,7 +3209,7 @@
                   "type": "null"
                 }
               ],
-              "title": "X-Orch-Cluster"
+              "title": "X-Orch-Session"
             }
           }
         ],
@@ -3273,7 +3273,7 @@
           },
           {
             "in": "header",
-            "name": "x-orch-cluster",
+            "name": "x-orch-session",
             "required": false,
             "schema": {
               "anyOf": [
@@ -3284,7 +3284,7 @@
                   "type": "null"
                 }
               ],
-              "title": "X-Orch-Cluster"
+              "title": "X-Orch-Session"
             }
           }
         ],
@@ -3339,7 +3339,7 @@
           },
           {
             "in": "header",
-            "name": "x-orch-cluster",
+            "name": "x-orch-session",
             "required": false,
             "schema": {
               "anyOf": [
@@ -3350,7 +3350,7 @@
                   "type": "null"
                 }
               ],
-              "title": "X-Orch-Cluster"
+              "title": "X-Orch-Session"
             }
           }
         ],
@@ -3404,7 +3404,7 @@
           },
           {
             "in": "header",
-            "name": "x-orch-cluster",
+            "name": "x-orch-session",
             "required": false,
             "schema": {
               "anyOf": [
@@ -3415,7 +3415,7 @@
                   "type": "null"
                 }
               ],
-              "title": "X-Orch-Cluster"
+              "title": "X-Orch-Session"
             }
           }
         ],
@@ -3479,7 +3479,7 @@
           },
           {
             "in": "header",
-            "name": "x-orch-cluster",
+            "name": "x-orch-session",
             "required": false,
             "schema": {
               "anyOf": [
@@ -3490,7 +3490,7 @@
                   "type": "null"
                 }
               ],
-              "title": "X-Orch-Cluster"
+              "title": "X-Orch-Session"
             }
           }
         ],
@@ -3554,7 +3554,7 @@
           },
           {
             "in": "header",
-            "name": "x-orch-cluster",
+            "name": "x-orch-session",
             "required": false,
             "schema": {
               "anyOf": [
@@ -3565,7 +3565,7 @@
                   "type": "null"
                 }
               ],
-              "title": "X-Orch-Cluster"
+              "title": "X-Orch-Session"
             }
           }
         ],
@@ -3629,7 +3629,7 @@
           },
           {
             "in": "header",
-            "name": "x-orch-cluster",
+            "name": "x-orch-session",
             "required": false,
             "schema": {
               "anyOf": [
@@ -3640,7 +3640,7 @@
                   "type": "null"
                 }
               ],
-              "title": "X-Orch-Cluster"
+              "title": "X-Orch-Session"
             }
           }
         ],
@@ -3694,7 +3694,7 @@
           },
           {
             "in": "header",
-            "name": "x-orch-cluster",
+            "name": "x-orch-session",
             "required": false,
             "schema": {
               "anyOf": [
@@ -3705,7 +3705,7 @@
                   "type": "null"
                 }
               ],
-              "title": "X-Orch-Cluster"
+              "title": "X-Orch-Session"
             }
           }
         ],

@@ -74,9 +74,9 @@ async def test_agent_init_scripts_auth(pool, dsn):
     app = create_app(make_settings(dsn), pool)
     body = {"scripts": ["echo evil"]}
     async with client_for(app) as http:
-        no_token = await http.put(URL, headers={"X-Orch-Cluster": str(c["id"])}, json=body)
+        no_token = await http.put(URL, headers={"X-Orch-Session": str(c["id"])}, json=body)
         wrong = await http.put(URL, headers=headers(c["id"], token(other["id"])), json=body)
-        get_no_token = await http.get(URL, headers={"X-Orch-Cluster": str(c["id"])})
+        get_no_token = await http.get(URL, headers={"X-Orch-Session": str(c["id"])})
     async with client_for(app, "10.9.9.9") as http:
         stranger = await http.put(URL, headers=headers(c["id"]), json=body)
         stranger_get = await http.get(URL, headers=headers(c["id"]))
@@ -108,7 +108,7 @@ async def test_plugin_parity(pool, dsn):
     config = {
         "base_url": f"http://orch:{AGENT_PORT}",
         "token": token(c["id"]),
-        "cluster": str(c["id"]),
+        "session": str(c["id"]),
         "agent": "a0",
         "slug": c["slug"],
     }
@@ -122,7 +122,7 @@ async def test_plugin_parity(pool, dsn):
         got = await h.call("init_scripts_get")
         edit = await h.call("init_scripts_edit", {"scripts": ["echo plugin"]})
     assert ".agent-init/" in tools["_scripts_get"]["description"]
-    assert "next cluster" in tools["_scripts_edit"]["description"]
+    assert "next session" in tools["_scripts_edit"]["description"]
     assert not got.is_error, got.text
     assert got.structured["scripts"] == ["echo old"]
     assert got.structured["script_path"].endswith("/.agent-init/init.sh")

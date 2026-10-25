@@ -76,7 +76,7 @@ Every process reads `ORCH_*` variables (the contract `agent-orchestrator-setting
 | `ORCH_DISCARD_HOOK_TIMEOUT_SECONDS` | `120` | api, reconciler | discard hook timeout |
 | `ORCH_SCALE_DRAIN_SECONDS` | `900` | reconciler | scale-down drain deadline (> 0): after it the StatefulSet gets the target replicas even while a draining agent is busy |
 | `ORCH_ANY_MCP_REPO` | `https://github.com/szymonrychu/any-mcp` | api, reconciler | any-mcp git repository |
-| `ORCH_ANY_MCP_REF` | `v0.2.0` | api, reconciler | any-mcp pinned release tag vX.Y.Z (never a branch) |
+| `ORCH_ANY_MCP_REF` | `v0.3.0` | api, reconciler | any-mcp pinned release tag vX.Y.Z (never a branch) |
 | `ORCH_ON_START_TIMEOUT_SECONDS` | `600` | api, reconciler | onStart hook timeout |
 
 ## Commands
@@ -104,7 +104,7 @@ CI (`.github/workflows/ci.yaml`, job `images`) builds the orchestrator image fro
 
 - Orchestrator image: `harbor.szymonrichert.pl/containers/agent-orchestrator:<sha7>`, where `<sha7>` is the first seven characters of the commit sha. Tags are immutable; there is no `latest`.
 - Agent image: no agent image is built here. Agent pods run the claude-code-wrapper image named by `ORCH_AGENT_IMAGE`; the recommended one is `harbor.szymonrichert.pl/containers/claude-code-wrapper:1f64e9f`. This is the value for the chart's `agentImage` and agents-helmfile, and the commit the dev dependency `claude-code-wrapper` in `pyproject.toml` is pinned to, so config validation tests the wrapper the agents run.
-- any-mcp: it reaches agent pods through the rendered onStart hook, not through an image. The `any-mcp` dependency in `pyproject.toml` and `ORCH_ANY_MCP_REF` pin the same release tag (`v0.2.0`).
+- any-mcp: it reaches agent pods through the rendered onStart hook, not through an image. The `any-mcp` dependency in `pyproject.toml` and `ORCH_ANY_MCP_REF` pin the same release tag (`v0.3.0`).
 
 ## Helm chart
 
@@ -198,7 +198,7 @@ ingress:
 
 Agent pods reach `/agent/v1` on the agents Service only, with the session token and from their own pod IP. The agent port serves nothing else (404), and `/agent/v1` is 404 on the main port.
 
-Every agent pod receives `ORCH_AGENT_TOKEN` (a per-session HMAC of the master key, purpose `agent`), `ORCH_CLUSTER_ID` and, when `ORCH_AGENT_API_URL` is set, `ORCH_AGENT_URL`, as plain env; they are also passed through to the any-mcp stdio child. The token is therefore readable by every process in the pod, Bash and subagents included. The main-agent-only tool gate (`main_agent_only_tools`) is a best-effort guard, not a security boundary, and nothing here claims isolation from subagents. Without `ORCH_AGENT_API_URL` the reconciler logs one warning per cluster and omits `ORCH_AGENT_URL`.
+Every agent pod receives `ORCH_AGENT_TOKEN` (a per-session HMAC of the master key, purpose `agent`), `ORCH_SESSION_ID` and, when `ORCH_AGENT_API_URL` is set, `ORCH_AGENT_URL`, as plain env; they are also passed through to the any-mcp stdio child. The token is therefore readable by every process in the pod, Bash and subagents included. The main-agent-only tool gate (`main_agent_only_tools`) is a best-effort guard, not a security boundary, and nothing here claims isolation from subagents. Without `ORCH_AGENT_API_URL` the reconciler logs one warning per session and omits `ORCH_AGENT_URL`.
 
 The api trusts only the direct socket peer (`ORCH_ALLOWED_CIDRS`, see API). Behind an ingress that peer is the ingress controller, but not its node LAN IP. ingress-nginx runs hostNetwork, yet on a flannel cluster its proxied connection reaches the api pod from the node's pod-network gateway address: from another node via `flannel.1` as `10.244.N.0`, from the same node via `cni0` as `10.244.N.1`. A LAN client therefore gets `403` if `ORCH_ALLOWED_CIDRS` lists only the LAN CIDR. Set `ORCH_ALLOWED_CIDRS` to each node's podCIDR `.0/31` (covers `.0` and `.1`; agent pods get `.2` and up, so they stay outside), derived from `kubectl get nodes -o jsonpath='{range .items[*]}{.spec.podCIDR}{"\n"}{end}'`, for example `10.244.0.0/31,10.244.1.0/31`. Update the list whenever nodes are added or removed. The allowlist is blind to who the original client was.
 
@@ -836,19 +836,21 @@ How API callers size a session:
 
 ## Agent API
 
-Agent pods call the orchestrator on `/agent/v1`. It is served only on the agent port (`ORCH_AGENT_PORT`, default 8001, reached through the agents Service); the main port answers 404 for it, and the agent port serves nothing else except `/healthz` and `/readyz`. The pod env carries `ORCH_AGENT_URL`, `ORCH_CLUSTER_ID` and `ORCH_AGENT_TOKEN`.
+Agent pods call the orchestrator on `/agent/v1`. It is served only on the agent port (`ORCH_AGENT_PORT`, default 8001, reached through the agents Service); the main port answers 404 for it, and the agent port serves nothing else except `/healthz` and `/readyz`. The pod env carries `ORCH_AGENT_URL`, `ORCH_SESSION_ID` and `ORCH_AGENT_TOKEN`.
 
 Every request needs:
 
-- `Authorization: Bearer <ORCH_AGENT_TOKEN>`, the cluster's derived agent token.
-- `X-Orch-Cluster: <cluster id>`.
+- `Authorization: Bearer <ORCH_AGENT_TOKEN>`, the session's derived agent token.
+- `X-Orch-Session: <session id>`.
 
-The caller's identity is its socket peer: the direct peer IP must be the `pod_ip` of a not-gone agent of that cluster. Forwarded headers are never read.
+The header and env renamed the unit to session with no alias (formerly `X-Orch-Cluster` and `ORCH_CLUSTER_ID`, and the any-mcp orchestrator plugin key `cluster`, now `session`): a request carrying only `X-Orch-Cluster` is refused like a missing header. Agents need any-mcp `v0.3.0` or later. The token derivation is unchanged, so a running session's token stays valid.
+
+The caller's identity is its socket peer: the direct peer IP must be the `pod_ip` of a not-gone agent of that session. Forwarded headers are never read.
 
 Errors use the usual `{"error": {"code", "message"}}` shape:
 
-- `401 unauthorized`: a header is missing, the cluster is unknown or the token is wrong. One shared message for every case.
-- `403 forbidden`: the peer IP is not a live agent pod of that cluster (including the former IP of a gone agent).
+- `401 unauthorized`: a header is missing, the session is unknown or the token is wrong. One shared message for every case.
+- `403 forbidden`: the peer IP is not a live agent pod of that session (including the former IP of a gone agent).
 
 ### `GET /agent/v1/me`
 
@@ -856,7 +858,7 @@ The caller's identity, the leader and the hive members.
 
 ```json
 {
-  "cluster_id": "uuid", "agent_id": "uuid", "pod_name": "string", "ordinal": 0,
+  "session_id": "uuid", "agent_id": "uuid", "pod_name": "string", "ordinal": 0,
   "leader": "pod name or null", "epoch": "int or null",
   "max_replicas": 4, "static": false,
   "members": [
@@ -865,27 +867,27 @@ The caller's identity, the leader and the hive members.
 }
 ```
 
-`leader` and `epoch` come from the cluster's leader record and are null while there is none. `members` are the not-gone agents by ordinal; `state` is the stored agent state and `context_pct` is null when unknown.
+`leader` and `epoch` come from the session's leader record and are null while there is none. `members` are the not-gone agents by ordinal; `state` is the stored agent state and `context_pct` is null when unknown.
 
 ### `POST /agent/v1/leadership/handover`
 
-The current leader hands leadership away. Body `{to?, reason, epoch}`: `to` is the pod name of a member (omitted: any agent), `reason` is 1 to 500 characters, `epoch` is the epoch the caller read from `GET /agent/v1/me`. Queues a `handover` request and sends `NOTIFY leadership_requested {session_id}`; the dispatcher re-checks everything at apply time. There is no takeover route. Response 202 `{request_id}`. Errors, checked in this order: 409 `alone` (a single-agent cluster), 409 `not_leader` (the caller is not the current leader, or there is none), 409 `stale_epoch` (`epoch` differs from the current epoch), 404 `not_found` (unknown `to`), 422 `invalid_request`.
+The current leader hands leadership away. Body `{to?, reason, epoch}`: `to` is the pod name of a member (omitted: any agent), `reason` is 1 to 500 characters, `epoch` is the epoch the caller read from `GET /agent/v1/me`. Queues a `handover` request and sends `NOTIFY leadership_requested {session_id}`; the dispatcher re-checks everything at apply time. There is no takeover route. Response 202 `{request_id}`. Errors, checked in this order: 409 `alone` (a single-agent session), 409 `not_leader` (the caller is not the current leader, or there is none), 409 `stale_epoch` (`epoch` differs from the current epoch), 404 `not_found` (unknown `to`), 422 `invalid_request`.
 
 ### `GET /agent/v1/init-scripts`
 
-The init scripts of the caller's cluster and the last init run, so the agent knows how its cluster was initialised. The cluster is always the token's; there is no way to name another. Response 200, the same view as the public `GET /api/v1/sessions/{id}/init-scripts` (`session_id`, `scripts`, `preset_id`, `preset_name`, `status`, `edited_since_run`, `script_path`, `log_path`, `preset_updated` always false). The scripts and the run log are also files under `.agent-init/` in the workdir. Any agent of the cluster may call it. Errors: the 401 and 403 above.
+The init scripts of the caller's session and the last init run, so the agent knows how its session was initialised. The session is always the token's; there is no way to name another. Response 200, the same view as the public `GET /api/v1/sessions/{id}/init-scripts` (`session_id`, `scripts`, `preset_id`, `preset_name`, `status`, `edited_since_run`, `script_path`, `log_path`, `preset_updated` always false). The scripts and the run log are also files under `.agent-init/` in the workdir. Any agent of the session may call it. Errors: the 401 and 403 above.
 
 ### `PUT /agent/v1/init-scripts`
 
-Replaces the caller's cluster init scripts. Body `{"scripts": ["<shell script>", ...]}` with the same limits as the public PUT. Writes the cluster's stored `spec.init_scripts` and its source preset's (when it still exists) in one transaction, with no generation bump and no pod roll; the edit applies to the next cluster created from the preset and never re-runs here. Response 200 with the view above and `preset_updated` true when a preset was written. Errors: 422 `invalid_request` (nothing is written), 409 `conflict` (the cluster is being deleted), plus the 401 and 403 above. These two routes back the plugin tools `orchestrator_init_scripts_get` and `orchestrator_init_scripts_edit`.
+Replaces the caller's session init scripts. Body `{"scripts": ["<shell script>", ...]}` with the same limits as the public PUT. Writes the session's stored `spec.init_scripts` and its source preset's (when it still exists) in one transaction, with no generation bump and no pod roll; the edit applies to the next session created from the preset and never re-runs here. Response 200 with the view above and `preset_updated` true when a preset was written. Errors: 422 `invalid_request` (nothing is written), 409 `conflict` (the session is being deleted), plus the 401 and 403 above. These two routes back the plugin tools `orchestrator_init_scripts_get` and `orchestrator_init_scripts_edit`.
 
 ### `POST /agent/v1/scale`
 
-The leader grows or shrinks its own cluster. Body `{replicas}`; sets `spec.replicas` in place (no generation bump, no pod roll) through the same writer as the public `POST /api/v1/sessions/{id}/scale`, with the caller checked as leader. Response 202 `{session_id, replicas, previous_replicas, max_replicas}`. Errors: 403 `not_leader` (the caller is not the current leader), 409 `static_session`, 422 `out_of_range` (outside 1 to `max_replicas`), 409 `leader_would_leave` (the leader's ordinal would be removed), 409 `session_deleting`, 422 `invalid_request`, plus the 401 and 403 above. Served only on the agent port; the public scale route is not reachable there. Backs the plugin tool `orchestrator_scale`.
+The leader grows or shrinks its own session. Body `{replicas}`; sets `spec.replicas` in place (no generation bump, no pod roll) through the same writer as the public `POST /api/v1/sessions/{id}/scale`, with the caller checked as leader. Response 202 `{session_id, replicas, previous_replicas, max_replicas}`. Errors: 403 `not_leader` (the caller is not the current leader), 409 `static_session`, 422 `out_of_range` (outside 1 to `max_replicas`), 409 `leader_would_leave` (the leader's ordinal would be removed), 409 `session_deleting`, 422 `invalid_request`, plus the 401 and 403 above. Served only on the agent port; the public scale route is not reachable there. Backs the plugin tool `orchestrator_scale`.
 
 ### File locks
 
-Advisory locks on files, so agents claim what they edit and are warned before writing a file another live agent holds. Paths are relative to the cluster workdir (`/workdir/<spec.workdir>`); an absolute path under it is converted, and an empty path, a `..` escape or a path outside the workdir is `400 invalid_path`. The workdir root constant `WORKDIR_ROOT` lives in `spec.py`, shared by the renderer and the api.
+Advisory locks on files, so agents claim what they edit and are warned before writing a file another live agent holds. Paths are relative to the session workdir (`/workdir/<spec.workdir>`); an absolute path under it is converted, and an empty path, a `..` escape or a path outside the workdir is `400 invalid_path`. The workdir root constant `WORKDIR_ROOT` lives in `spec.py`, shared by the renderer and the api.
 
 - `POST /agent/v1/locks/claim` body `{paths: [1..50]}` -> 200 `{claimed: [path], held: [{path, agent}]}`. A lock held by another live agent stays theirs (`held`); a lock held by a gone agent is taken over.
 - `POST /agent/v1/locks/release` body `{paths}` -> 200 `{released: [path]}`; only the caller's own locks.
