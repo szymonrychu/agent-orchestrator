@@ -215,6 +215,10 @@ Browsers apply no CORS to WebSocket upgrades, so any web page opened on a LAN ma
 
 The POST and DELETE terminal routes apply the same rule and answer `403 forbidden_origin`. For local UI development list the dev server: `ORCH_ALLOWED_ORIGINS=http://localhost:5173`. An entry with a path, a trailing slash, userinfo or a scheme other than http or https fails settings validation naming `ORCH_ALLOWED_ORIGINS`.
 
+### Hooks and credentials
+
+Command hooks run `sh -c` in the agent pod with the wrapper's full environment, including `CLAUDE_CODE_OAUTH_TOKEN`, `CCW_AUTH_TOKEN`, `CCW_PEER_TOKEN` and `ORCH_AGENT_TOKEN`. Whoever can edit a preset can already run code in the pod through terminals and init scripts, so hooks add no new privilege, but they make the exposure part of the stored spec. A webhook `secret` and `headers` are stored in the spec in plain text and returned by the API, so do not put credentials you cannot share with every API reader there. `${VAR}` interpolation is disabled for every user value (each `$` is doubled to `$$` in the rendered wrapper config), so a spec cannot pull a pod environment variable into a URL, header or prompt; a hook's shell still expands `$VAR` itself at run time.
+
 ## Releasing
 
 The chart is published to `oci://harbor.szymonrichert.pl/charts/agent-orchestrator` with immutable versions; Harbor rejects a repeated version and CI fails first with a clear message. `scripts/chart-version.sh` picks the version from `version` in `chart/agent-orchestrator/Chart.yaml`:

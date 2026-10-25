@@ -13,7 +13,7 @@ from agent_orchestrator.db.clusters import Cluster
 from agent_orchestrator.k8s.labels import cluster_labels, object_names, prefix, selector
 from agent_orchestrator.k8s.on_start import render_on_start
 from agent_orchestrator.settings import Settings
-from agent_orchestrator.spec import WORKDIR_ROOT, ClusterSpec
+from agent_orchestrator.spec import WORKDIR_ROOT, ClusterSpec, WrapperSettings
 from agent_orchestrator.tokens import ClusterTokens
 
 HASH_ANNOTATION = "agents.szymonrichert.pl/config-hash"
@@ -71,6 +71,47 @@ def _lock_check_hook() -> dict[str, Any]:
         "timeout_seconds": 2,
         "retries": 0,
     }
+
+
+def _escape(value: Any) -> Any:
+    """Double each `$` in every string of a user subtree (keys excluded).
+
+    The wrapper interpolates `${VAR}` in config values; `$$` makes it yield the literal text, so a
+    user value can never read the pod environment. A hook shell still sees `$VAR` at run time.
+    """
+    if isinstance(value, str):
+        return value.replace("$", "$$")
+    if isinstance(value, dict):
+        return {k: _escape(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_escape(v) for v in value]
+    return value
+
+
+def _apply_wrapper(cfg: dict[str, Any], wrapper: WrapperSettings) -> None:
+    """Merge `spec.wrapper` into the config after the reserved entries, which stay first."""
+    user = _escape(wrapper.model_dump(mode="json", exclude_none=True))
+    hooks = cfg["hooks"]
+    for event, actions in user.get("hooks", {}).items():
+        hooks.setdefault(event, []).extend(actions)
+    perms = user.get("permissions", {})
+    deny = cfg["claude"]["permissions"]["deny"]
+    deny.extend(d for d in perms.get("deny", []) if d not in deny)
+    if "allow" in perms:
+        cfg["claude"]["permissions"]["allow"] = perms["allow"]
+    cfg["claude"]["mcp_servers"].update(user.get("mcp_servers", {}))
+    if "system_append" in user:
+        cfg["prompts"]["system_append"] += "\n\n" + user["system_append"]
+    sessions = cfg["sessions"]
+    for key in ("auto_compact", "turn_stall_seconds", "max_restarts", "restart_continue_prompt"):
+        if key in user:
+            sessions[key] = user[key]
+    if "agent_commands" in user:
+        sessions["commands"] = {"agent": user["agent_commands"]}
+    if "turn_max_seconds" in user:
+        cfg["limits"]["turn_max_seconds"] = user["turn_max_seconds"]
+    if "plugins" in user:
+        cfg["plugins"] = user["plugins"]
 
 
 def _ccw_config(cluster: Cluster, settings: Settings) -> dict[str, Any]:
@@ -139,6 +180,8 @@ def _ccw_config(cluster: Cluster, settings: Settings) -> dict[str, Any]:
                 for i in range(spec.max_replicas or spec.replicas)
             ],
         }
+    if spec.wrapper:
+        _apply_wrapper(cfg, spec.wrapper)
     return cfg
 
 
