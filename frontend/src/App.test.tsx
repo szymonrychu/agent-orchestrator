@@ -246,7 +246,7 @@ describe('App', () => {
     mount()
     await waitFor(() => expect(tabs()).toHaveLength(2))
     fireEvent.click(screen.getAllByRole('button', { name: 'Cluster actions' })[0])
-    expect(screen.getAllByRole('menuitem').map((m) => m.textContent)).toEqual(['Discard'])
+    expect(screen.getAllByRole('menuitem').map((m) => m.textContent)).toEqual(['Init scripts', 'Discard'])
     expect(screen.queryByRole('menuitem', { name: 'Edit' })).toBeNull()
     expect(screen.queryByRole('button', { name: /edit/i })).toBeNull()
   })

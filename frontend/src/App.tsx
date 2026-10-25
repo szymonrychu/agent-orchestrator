@@ -3,6 +3,7 @@ import Box from '@mui/material/Box'
 import Typography from '@mui/material/Typography'
 import { ChatView } from './chat/ChatView'
 import { DiscardClusterDialog } from './clusters/DiscardClusterDialog'
+import { InitScriptsDialog } from './clusters/InitScriptsDialog'
 import { NewClusterDialog } from './clusters/NewClusterDialog'
 import { FilesPanel } from './files/FilesPanel'
 import type { ClusterView } from './api/client'
@@ -21,6 +22,7 @@ export default function App() {
   // The main area shows the selected cluster or a settings page; no router.
   const [view, setView] = useState<'cluster' | 'presets'>('cluster')
   const [discarding, setDiscarding] = useState<ClusterView | null>(null)
+  const [initScripts, setInitScripts] = useState<ClusterView | null>(null)
   // The first cluster by slug is selected until a tab is chosen, and again when the chosen one disappears.
   const selectedId = state.selectedId !== null && state.selectedId in state.clusters ? state.selectedId : (clusters[0]?.cluster.id ?? null)
   const selected = selectedId === null ? null : state.clusters[selectedId]
@@ -35,6 +37,7 @@ export default function App() {
         selectedId={selectedId}
         onSelect={show}
         onNew={() => setCreating(true)}
+        onInitScripts={setInitScripts}
         onDiscard={setDiscarding}
         settingsCategories={[{ id: 'presets', label: 'Presets', onOpen: () => setView('presets') }]}
       />
@@ -60,6 +63,7 @@ export default function App() {
         )}
       </Box>
       <NewClusterDialog open={creating} onClose={() => setCreating(false)} onCreated={(c) => { setCreating(false); show(c.id) }} />
+      {initScripts && <InitScriptsDialog open cluster={initScripts} onClose={() => setInitScripts(null)} />}
       {discarding && <DiscardClusterDialog open cluster={discarding} onClose={() => setDiscarding(null)} onDiscarded={() => setDiscarding(null)} />}
     </Box>
   )

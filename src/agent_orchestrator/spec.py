@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import secrets
 import string
@@ -119,6 +121,15 @@ class Resources(BaseModel):
 
 # Mount point of the shared workspace; a cluster works in WORKDIR_ROOT/<spec.workdir>.
 WORKDIR_ROOT = "/workdir"
+# Directory under the workdir where init scripts and their log are surfaced to the agent.
+INIT_DIR = ".agent-init"
+INIT_SCRIPTS_MAX = 20
+INIT_SCRIPT_MAX_CHARS = 16384
+
+
+def init_scripts_hash(scripts: list[str]) -> str:
+    """sha256 hex of the compact JSON list; the identity of an init script set."""
+    return hashlib.sha256(json.dumps(scripts, separators=(",", ":")).encode()).hexdigest()
 
 
 class ClusterSpec(BaseModel):
@@ -139,6 +150,7 @@ class ClusterSpec(BaseModel):
     max_attempts: int = Field(default=5, ge=1, le=10)
     auto_compact_pct: int | None = Field(default=None, ge=1, le=100)
     discard_hook_url: str | None = None
+    init_scripts: list[str] = []
 
     @model_validator(mode="after")
     def _cap(self) -> ClusterSpec:
@@ -169,6 +181,20 @@ class ClusterSpec(BaseModel):
     def _workdir(cls, v: str) -> str:
         if not _LABEL_RE.fullmatch(v):
             raise ValueError("workdir must be a DNS-1123 label")
+        return v
+
+    @field_validator("init_scripts")
+    @classmethod
+    def _init_scripts(cls, v: list[str]) -> list[str]:
+        if len(v) > INIT_SCRIPTS_MAX:
+            raise ValueError(f"init_scripts has {len(v)} entries, at most {INIT_SCRIPTS_MAX}")
+        for i, script in enumerate(v):
+            if not script.strip():
+                raise ValueError(f"init_scripts[{i}] must not be empty")
+            if len(script) > INIT_SCRIPT_MAX_CHARS:
+                raise ValueError(
+                    f"init_scripts[{i}] has {len(script)} characters, max {INIT_SCRIPT_MAX_CHARS}"
+                )
         return v
 
     @field_validator("pvc_size")

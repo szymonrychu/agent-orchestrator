@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, Header, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent_orchestrator.api import schemas
-from agent_orchestrator.api.clusters import Cfg, Pool
+from agent_orchestrator.api.clusters import Cfg, Pool, edit_init_scripts, init_scripts_view
 from agent_orchestrator.api.errors import ApiError
 from agent_orchestrator.db import agents as agents_repo
 from agent_orchestrator.db import clusters as clusters_repo
@@ -114,6 +114,30 @@ async def me(agent: Caller, pool: Pool) -> Me:
             for m in members
         ],
     )
+
+
+@router.get(
+    "/init-scripts",
+    response_model=schemas.InitScriptsView,
+    summary="Init scripts and last init run of the caller's cluster",
+)
+async def init_scripts_get(agent: Caller, pool: Pool, settings: Cfg) -> schemas.InitScriptsView:
+    async with pool.connection() as conn:
+        cluster = await clusters_repo.get(conn, agent.cluster_id)
+        assert cluster is not None
+        return init_scripts_view(conn, cluster, settings)
+
+
+@router.put(
+    "/init-scripts",
+    response_model=schemas.InitScriptsView,
+    summary="Replace the init scripts of the caller's cluster and its source preset",
+)
+async def init_scripts_put(
+    body: schemas.InitScriptsIn, agent: Caller, pool: Pool, settings: Cfg
+) -> schemas.InitScriptsView:
+    async with pool.connection() as conn:
+        return await edit_init_scripts(conn, agent.cluster_id, body.scripts, settings)
 
 
 @router.post(

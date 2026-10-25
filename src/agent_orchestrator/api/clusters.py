@@ -16,10 +16,13 @@ from agent_orchestrator.db import clusters as repo
 from agent_orchestrator.db import leadership, presets, views
 from agent_orchestrator.settings import Settings
 from agent_orchestrator.spec import (
+    INIT_DIR,
+    WORKDIR_ROOT,
     ClusterSpec,
     SpecInvalid,
     fill_resource_defaults,
     generated_slug,
+    init_scripts_hash,
     validate_slug,
     validate_spec,
 )
@@ -41,6 +44,14 @@ router = APIRouter(prefix="/api/v1")
 _CREATE_LOCK = 0x4F524348  # serialises cluster creation so max_clusters cannot be overshot
 
 
+def _init_edited(cluster: repo.Cluster) -> bool:
+    """True when a run exists (not skipped) and the stored scripts differ from the ones it ran."""
+    init = cluster.status.get("init")
+    if not isinstance(init, dict) or init.get("state") in (None, "skipped"):
+        return False
+    return init.get("scripts_hash") != init_scripts_hash(cluster.spec.init_scripts)
+
+
 def _view(cluster: repo.Cluster, agg: dict | None, settings: Settings) -> schemas.ClusterView:
     agg = agg or {}
     return schemas.ClusterView(
@@ -60,6 +71,7 @@ def _view(cluster: repo.Cluster, agg: dict | None, settings: Settings) -> schema
         static=cluster.spec.static,
         leader_agent_id=agg.get("leader_agent_id"),
         leader_epoch=agg.get("leader_epoch"),
+        init_edited_since_run=_init_edited(cluster),
     )
 
 
@@ -242,6 +254,62 @@ async def discard_cluster(
         except repo.ClusterNotFound:
             raise not_found("cluster") from None
         return await _one_view(conn, cluster, settings)
+
+
+def init_scripts_view(
+    conn, cluster: repo.Cluster, settings: Settings, preset_updated: bool = False
+) -> schemas.InitScriptsView:
+    """The init scripts of a cluster with the last run; shared with the agent routes."""
+    init = cluster.status.get("init")
+    base = f"{WORKDIR_ROOT}/{cluster.spec.workdir}/{INIT_DIR}"
+    return schemas.InitScriptsView(
+        cluster_id=cluster.id,
+        scripts=cluster.spec.init_scripts,
+        preset_id=cluster.preset_id,
+        preset_name=cluster.preset_name,
+        status=schemas.InitStatus.model_validate(init) if isinstance(init, dict) else None,
+        edited_since_run=_init_edited(cluster),
+        script_path=f"{base}/init.sh",
+        log_path=f"{base}/init.log",
+        preset_updated=preset_updated,
+    )
+
+
+async def edit_init_scripts(
+    conn, cluster_id: uuid.UUID, scripts: list[str], settings: Settings
+) -> schemas.InitScriptsView:
+    """Validate and write the scripts to the cluster and its source preset."""
+    try:
+        ClusterSpec.model_validate({"init_scripts": scripts})
+    except ValidationError as exc:
+        msg = "; ".join(e["msg"].removeprefix("Value error, ") for e in exc.errors())
+        raise ApiError(422, "invalid_request", msg) from None
+    try:
+        cluster, preset_updated = await repo.set_init_scripts(conn, cluster_id, scripts)
+    except repo.ClusterNotFound:
+        raise not_found("cluster") from None
+    except repo.ClusterBeingDeleted:
+        raise ApiError(409, "conflict", "cluster is being deleted") from None
+    return init_scripts_view(conn, cluster, settings, preset_updated)
+
+
+@router.get("/clusters/{cluster_id}/init-scripts", response_model=schemas.InitScriptsView)
+async def get_init_scripts(
+    cluster_id: uuid.UUID, pool: Pool, settings: Cfg
+) -> schemas.InitScriptsView:
+    async with pool.connection() as conn:
+        cluster = await repo.get(conn, cluster_id)
+        if cluster is None:
+            raise not_found("cluster")
+        return init_scripts_view(conn, cluster, settings)
+
+
+@router.put("/clusters/{cluster_id}/init-scripts", response_model=schemas.InitScriptsView)
+async def put_init_scripts(
+    cluster_id: uuid.UUID, body: schemas.InitScriptsIn, pool: Pool, settings: Cfg
+) -> schemas.InitScriptsView:
+    async with pool.connection() as conn:
+        return await edit_init_scripts(conn, cluster_id, body.scripts, settings)
 
 
 @router.get("/clusters/{cluster_id}/agents", response_model=list[schemas.AgentView])

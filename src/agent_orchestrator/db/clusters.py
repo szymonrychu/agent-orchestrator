@@ -25,6 +25,10 @@ class ClusterNotFound(Exception):
     pass
 
 
+class ClusterBeingDeleted(Exception):
+    """The cluster is being deleted and takes no more edits."""
+
+
 @dataclass(frozen=True)
 class Cluster:
     id: uuid.UUID
@@ -124,6 +128,46 @@ async def request_delete(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID) -
     if existing is None:
         raise ClusterNotFound(str(cluster_id))
     return existing
+
+
+async def set_init_scripts(
+    conn: psycopg.AsyncConnection, cluster_id: uuid.UUID, scripts: list[str]
+) -> tuple[Cluster, bool]:
+    """Write the init scripts to the cluster spec and to its source preset, in one transaction.
+
+    No generation bump: the list is never rendered into pods. Lock order is clusters, then
+    presets. Returns the updated cluster and whether a preset row was written.
+    """
+    async with conn.transaction():
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT desired, preset_id FROM clusters WHERE id = %s FOR UPDATE", (cluster_id,)
+            )
+            locked = await cur.fetchone()
+        if locked is None:
+            raise ClusterNotFound(str(cluster_id))
+        desired, preset_id = locked
+        if desired == "deleting":
+            raise ClusterBeingDeleted(str(cluster_id))
+        listed = Jsonb(scripts)
+        rows = await _fetch(
+            conn,
+            "UPDATE clusters SET spec = jsonb_set(spec, '{init_scripts}', %s) WHERE id = %s"
+            " RETURNING *",
+            (listed, cluster_id),
+        )
+        preset_written = False
+        if preset_id is not None:
+            cur = await conn.execute("SELECT 1 FROM presets WHERE id = %s FOR UPDATE", (preset_id,))
+            if await cur.fetchone() is not None:
+                await conn.execute(
+                    "UPDATE presets SET spec = jsonb_set(spec, '{init_scripts}', %s),"
+                    " updated_at = now() WHERE id = %s",
+                    (listed, preset_id),
+                )
+                preset_written = True
+        await _notify(conn, cluster_id)
+    return rows[0], preset_written
 
 
 async def set_status(

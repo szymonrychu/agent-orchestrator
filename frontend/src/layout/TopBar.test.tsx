@@ -16,7 +16,7 @@ const cluster = (id: string, slug: string, state: ClusterView['summary']['state'
 const CLUSTERS = [cluster('c1', 'alpha', 'working', 40), cluster('c2', 'bravo', 'waiting', 90)]
 
 function setup(over: Partial<Parameters<typeof TopBar>[0]> = {}) {
-  const props = { clusters: CLUSTERS, selectedId: 'c2', onSelect: vi.fn(), onNew: vi.fn(), onDiscard: vi.fn(), settingsCategories: [], ...over }
+  const props = { clusters: CLUSTERS, selectedId: 'c2', onSelect: vi.fn(), onNew: vi.fn(), onDiscard: vi.fn(), onInitScripts: vi.fn(), settingsCategories: [], ...over }
   render(<ThemeProvider theme={theme}><TopBar {...props} /></ThemeProvider>)
   return props
 }
@@ -59,14 +59,22 @@ describe('TopBar', () => {
     expect(tabs[1].textContent).toBe('bravo1/190%')
   })
 
-  test('tab_actions_offer_discard_only', () => {
+  test('tab_actions_offer_init_scripts_then_discard', () => {
     const { onDiscard } = setup()
     fireEvent.click(screen.getAllByRole('button', { name: 'Cluster actions' })[0])
     const items = screen.getAllByRole('menuitem')
-    expect(items.map((i) => i.textContent)).toEqual(['Discard'])
+    expect(items.map((i) => i.textContent)).toEqual(['Init scripts', 'Discard'])
     expect(screen.queryByText('Edit')).toBeNull()
-    fireEvent.click(items[0])
+    fireEvent.click(items[1])
     expect(onDiscard).toHaveBeenCalledWith(CLUSTERS[0].cluster)
+  })
+
+  test('init scripts menu item calls onInitScripts', () => {
+    const { onInitScripts, onDiscard } = setup()
+    fireEvent.click(screen.getAllByRole('button', { name: 'Cluster actions' })[0])
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Init scripts' }))
+    expect(onInitScripts).toHaveBeenCalledWith(CLUSTERS[0].cluster)
+    expect(onDiscard).not.toHaveBeenCalled()
   })
 
   test('new_cluster_button', () => {

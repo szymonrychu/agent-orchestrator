@@ -27,6 +27,7 @@ export interface TopBarProps {
   selectedId: string | null
   onSelect: (id: string) => void
   onNew: () => void
+  onInitScripts: (cluster: ClusterView) => void
   onDiscard: (cluster: ClusterView) => void
   settingsCategories: SettingsCategory[]
 }
@@ -36,7 +37,7 @@ interface ActionsMenu {
   cluster: ClusterView
 }
 
-export function TopBar({ clusters, selectedId, onSelect, onNew, onDiscard, settingsCategories }: TopBarProps) {
+export function TopBar({ clusters, selectedId, onSelect, onNew, onInitScripts, onDiscard, settingsCategories }: TopBarProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [actions, setActions] = useState<ActionsMenu | null>(null)
   // MUI Tabs needs a value that matches a tab, or false when none is selected.
@@ -86,6 +87,7 @@ export function TopBar({ clusters, selectedId, onSelect, onNew, onDiscard, setti
       </Tabs>
       <Button variant="outlined" size="small" startIcon={<AddIcon />} onClick={onNew} sx={{ flexShrink: 0 }}>New cluster</Button>
       <Menu anchorEl={actions?.anchor ?? null} open={actions !== null} onClose={() => setActions(null)}>
+        <MenuItem onClick={() => { const target = actions?.cluster; setActions(null); if (target) onInitScripts(target) }}>Init scripts</MenuItem>
         <MenuItem onClick={() => { const target = actions?.cluster; setActions(null); if (target) onDiscard(target) }}>Discard</MenuItem>
       </Menu>
       <SessionsMenu open={menuOpen} onClose={() => setMenuOpen(false)} clusters={clusters} selectedId={selectedId} onSelect={onSelect} settingsCategories={settingsCategories} />

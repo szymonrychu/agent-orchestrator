@@ -254,8 +254,17 @@ Clusters are told apart by labels, not namespaces. Every object of cluster `<slu
 The reconciler is level-triggered: every `ORCH_RECONCILE_POLL_SECONDS` (10 s), and at once on NOTIFY `cluster_changed`, it converges every cluster row:
 
 1. Render the PVC, Secret, ConfigMap, headless Service and StatefulSet, check the label guard, apply them, and prune labelled objects that are no longer desired.
-2. List the cluster's pods and upsert one `agents` row per ordinal, with the per-pod URL `http://<pod>.agent-<slug>.<namespace>.svc.<cluster domain>:<ORCH_WRAPPER_PORT>` and its readiness. An agent whose pod vanished with an ordinal at or above `replicas` is marked gone; one below `replicas` is kept, unready, while its pod is recreated.
-3. Write `status {phase, ready, replicas, message}` (`phase` is `pending`, `ready`, `degraded`, `deleting` or `error`) and `observed_generation`, only when something changed.
+2. Run the init scripts, once per cluster (see Init scripts below).
+3. List the cluster's pods and upsert one `agents` row per ordinal, with the per-pod URL `http://<pod>.agent-<slug>.<namespace>.svc.<cluster domain>:<ORCH_WRAPPER_PORT>` and its readiness. An agent whose pod vanished with an ordinal at or above `replicas` is marked gone; one below `replicas` is kept, unready, while its pod is recreated.
+4. Bootstrap a session on every ready agent that has none, unless the init run holds them.
+5. Write `status {phase, ready, replicas, message}` (`phase` is `pending`, `ready`, `degraded`, `deleting` or `error`) and `observed_generation`, only when something changed.
+
+Init scripts (`spec.init_scripts`) run exactly once per cluster, as Job `agent-<slug>-init`, and the run is recorded in `status.init {state, scripts_hash, started_at, finished_at, exit_code, log_tail, reason, job}`, written only by the reconciler:
+
+- The first converge decides, once. No scripts writes `state: skipped`; scripts write `state: running` and then create the Job. Once `status.init` exists no other Job is ever started for the cluster: an edit of `spec.init_scripts`, also of a `skipped` cluster, applies to the next cluster created from the preset.
+- The Job runs in the agent image (`spec.image` or `ORCH_AGENT_IMAGE`) as uid 1000, with `spec.env`, the agent resources and the cluster PVC, in the cluster workdir, with `backoffLimit: 0` and a 30 min deadline. It writes `<workdir>/.agent-init/init.sh` (the scripts as run, under a header), `init.log` (their output) and a `.gitignore` of `*`, and runs `init.sh` with `sh -eu`; the Job's exit code is the script's. Only the workdir is shared: what a script installs elsewhere in the Job pod does not reach the agent pods.
+- `state` goes `running` then `succeeded` (`exit_code` 0) or `failed` (the container's `exit_code`, or `reason` `timeout`, `job_missing`, `foreign_object` or `job_create_failed: <msg>`); `log_tail` is the last 200 lines (16 KiB) of the pod log. After the outcome is recorded the Job is deleted; it has no TTL, so an offline reconciler still reads the outcome. A converge never prunes it; a discard deletes it.
+- While `status.init` is absent or `running`, no session is bootstrapped: `phase` is `pending` and the message carries `init running`. A `failed` run still starts the sessions, with `phase` `degraded` and `init failed` in the message. `skipped` and `succeeded` change nothing.
 
 A deleting cluster first passes the pre-discard gate, then loses every labelled object including its PVC, and its Secret by name. Once no labelled object or pod is left, its row is deleted, which cascades its agents, messages, events, turns, commands and checks. An error in one cluster is written into its status message and never stops the others. Restart commands are claimed in the same pass: the agent's pod is deleted and the StatefulSet recreates it.
 
@@ -268,7 +277,7 @@ A deleting cluster first passes the pre-discard gate, then loses every labelled 
 3. **Hook**: deliver the export; a failed hook blocks the deletion and is retried with backoff.
 4. **Delete** everything.
 
-A discard deletes the cluster's Kubernetes objects (check Jobs, StatefulSet and its pods, headless Service, ConfigMap, the Secret by name and the RWX PVC with the workspace) and, last, the cluster row, which cascades its whole chat history: agents, messages, turns, commands, checks and events.
+A discard deletes the cluster's Kubernetes objects (check Jobs, the init Job, StatefulSet and its pods, headless Service, ConfigMap, the Secret by name and the RWX PVC with the workspace) and, last, the cluster row, which cascades its whole chat history: agents, messages, turns, commands, checks and events.
 
 ### Hook
 
@@ -428,7 +437,7 @@ Plain SQL migrations (`src/agent_orchestrator/db/migrations`), psycopg 3, no ORM
 
 | Table | Holds |
 |---|---|
-| `clusters` | id, unique slug, `spec` (jsonb ClusterSpec), `generation` / `observed_generation` (the reconcile queue), `desired` (`active`, `deleting`), `status`, `preset_id` (nullable; the `ON DELETE SET NULL` cascade sets it to null when the api deletes the preset, an api-originated write, so `clusters` keeps a single writer) and `preset_name` (the name at create, kept) |
+| `clusters` | id, unique slug, `spec` (jsonb ClusterSpec), `generation` / `observed_generation` (the reconcile queue), `desired` (`active`, `deleting`), `status` (phase, message and the once-per-cluster init run in `status.init`), `preset_id` (nullable; the `ON DELETE SET NULL` cascade sets it to null when the api deletes the preset, an api-originated write, so `clusters` keeps a single writer) and `preset_name` (the name at create, kept) |
 | `presets` | named ClusterSpec templates: unique case-insensitive `name` (1 to 40 characters), `spec` (jsonb, only what the user set), `is_default`; migration `0002` seeds `Default` with `{"replicas": 1}`, which can be edited but not renamed or deleted |
 | `agents` | one row per pod: ordinal, pod name, url, readiness, session id, `last_dispatched_at`, `gone_at` |
 | `agent_status` | wrapper state (`unknown`, `booting`, `idle`, `busy`, `dead`), `free_since`, current turn, context tokens and percentage, last seq, peers |
@@ -491,13 +500,13 @@ All clusters as a list of cluster views. Response 200.
 Schedules a cluster. The body holds exactly one of `spec` and `preset_id`, else 422 `invalid_request` ("exactly one of spec or preset_id"):
 
 - From a preset: `{"preset_id": "<uuid>", "slug": "<dns label, optional>"}`. Without `slug` the API generates `<preset name as a dns label>-<4 random letters>` (for example `default-qkzt`) and retries a clash with a fresh suffix up to 5 times, then answers 409 `conflict`. The preset spec is validated against the current settings when you schedule (a preset that has become invalid is 422 `invalid_request` with a message starting `preset '<name>': `), empty resource keys and an unset `replicas` are filled from the current defaults (`ORCH_DEFAULT_*`, `ORCH_DEFAULT_REPLICAS`), and the result is stored as the cluster's own spec: a snapshot. Editing or deleting the preset afterwards never changes the cluster, its `spec` or its `generation`; the cluster view keeps `preset_name` and `preset_id` becomes null once the preset is deleted. An unknown `preset_id` is 404 `not_found`.
-- Raw spec, for headless callers: `{"slug": "<dns label>", "spec": {...}}`; `slug` is required with `spec` (422 otherwise). `spec` fields (all optional): `replicas`, `max_replicas`, `static`, `image`, `model`, `effort`, `peers`, `workdir`, `pvc_size`, `resources`, `env`, `any_mcp_config`, `max_attempts`, `auto_compact_pct`, `discard_hook_url`. `max_replicas` (1 to 16, at most `ORCH_MAX_REPLICAS`, at least `replicas`) is the replica cap and defaults to `replicas`; `static` (default false) pins the size and requires `max_replicas == replicas`. A cluster with `max_replicas > 1` is a hive (no switch): it may run several agents; `static` only forbids scaling. A cluster with `max_replicas == 1` runs alone. The any-mcp plugin name and namespace `orchestrator` are reserved for the rendered plugin (422 `invalid_request`). Presets stay sparse: unset `max_replicas` and `static` are not stored. Such a cluster has null `preset_id` and `preset_name`.
+- Raw spec, for headless callers: `{"slug": "<dns label>", "spec": {...}}`; `slug` is required with `spec` (422 otherwise). `spec` fields (all optional): `replicas`, `max_replicas`, `static`, `image`, `model`, `effort`, `peers`, `workdir`, `pvc_size`, `resources`, `env`, `any_mcp_config`, `max_attempts`, `auto_compact_pct`, `discard_hook_url`, `init_scripts`. `max_replicas` (1 to 16, at most `ORCH_MAX_REPLICAS`, at least `replicas`) is the replica cap and defaults to `replicas`; `static` (default false) pins the size and requires `max_replicas == replicas`. A cluster with `max_replicas > 1` is a hive (no switch): it may run several agents; `static` only forbids scaling. A cluster with `max_replicas == 1` runs alone. The any-mcp plugin name and namespace `orchestrator` are reserved for the rendered plugin (422 `invalid_request`). `init_scripts` (list of shell scripts, default empty; at most 20 entries, each non-empty after strip and at most 16384 characters, 422 `invalid_request` naming the index otherwise) runs once per cluster, not per pod or restart; an edit (on a preset or a cluster) applies to the next cluster and is never rendered into pods, so changing it never rolls them; a cluster created from a preset snapshots the preset's scripts. Presets stay sparse: unset `max_replicas`, `static` and `init_scripts` are not stored. Such a cluster has null `preset_id` and `preset_name`.
 
 Response 201 with the cluster view. Errors: 422 `invalid_request` (bad slug, both or neither of `spec` and `preset_id`, `spec` without `slug`, image outside `ORCH_AGENT_IMAGES`, reserved env key, replicas or PVC size above the caps, invalid `any_mcp_config`, an invalid preset), 404 `not_found` (unknown preset), 409 `conflict` (slug exists, or no free generated slug), 409 `cluster_limit`, 403 `forbidden`.
 
 ### `GET /api/v1/clusters/{cluster_id}`
 
-One cluster view: `id`, `slug`, `spec`, `desired`, `status`, `generation`, `observed_generation`, `created_at`, `preset_id` (null for a raw-spec cluster or once the preset is deleted), `preset_name`, `summary` (`state` of `working`, `waiting`, `booting`, `error`, `deleting`; `ready`, `replicas`, `context_pct_max`, `auto_compact_pct`, `queued`, `failed`), `hive`, `max_replicas` (the cap), `static`, `leader_agent_id` and `leader_epoch` (both null for an alone cluster or before the first election). Response 200. Errors: 404 `not_found`.
+One cluster view: `id`, `slug`, `spec`, `desired`, `status`, `generation`, `observed_generation`, `created_at`, `preset_id` (null for a raw-spec cluster or once the preset is deleted), `preset_name`, `summary` (`state` of `working`, `waiting`, `booting`, `error`, `deleting`; `ready`, `replicas`, `context_pct_max`, `auto_compact_pct`, `queued`, `failed`), `hive`, `max_replicas` (the cap), `static`, `leader_agent_id` and `leader_epoch` (both null for an alone cluster or before the first election), and `init_edited_since_run` (same rule as `edited_since_run` of the init-scripts view; also in the list and the status stream). Response 200. Errors: 404 `not_found`.
 
 ### `DELETE /api/v1/clusters/{cluster_id}`
 
@@ -506,6 +515,14 @@ Discards the cluster: after the optional history-export hook, deletes every Kube
 ### `POST /api/v1/clusters/{cluster_id}/leader`
 
 Queues a user leadership override (the UI "Make leader"): body `{agent_id}`, any agent of the cluster. A user request overrides the handover-only rule; the dispatcher applies it and bumps the epoch. Response 202 `{request_id}`. Errors: 404 `not_found` (unknown cluster, or an agent that is not in this cluster), 409 `alone` (a single-agent cluster has no leader).
+
+### `GET /api/v1/clusters/{cluster_id}/init-scripts`
+
+The cluster's init scripts and the last init run: `cluster_id`, `scripts` (the stored `spec.init_scripts`), `preset_id` and `preset_name` (null for a raw-spec cluster or once the preset is deleted), `status` (the init run from `status.init`, or null before any run: `state` of `skipped`, `running`, `succeeded`, `failed`; `scripts_hash`; and, when known, `started_at`, `finished_at`, `exit_code`, `log_tail`, `reason`), `edited_since_run` (true when a run exists, is not `skipped`, and its `scripts_hash` differs from the hash of the stored scripts), `script_path` and `log_path` (`<workdir>/.agent-init/init.sh` and `init.log` inside the agent pods, under `/workdir/<spec.workdir>`), and `preset_updated` (always false on GET). Response 200. Errors: 404 `not_found`, 403 `forbidden`.
+
+### `PUT /api/v1/clusters/{cluster_id}/init-scripts`
+
+Replaces the cluster's init scripts. Body `{"scripts": ["<shell script>", ...]}` (at most 20 entries, each non-empty after strip and at most 16384 characters). One transaction writes the cluster's stored `spec.init_scripts` and, when the cluster has a source preset that still exists (the Default preset included), that preset's `spec.init_scripts` too, bumping the preset's `updated_at`. `generation` is not bumped and no pod rolls. The running cluster never re-runs its init; the next cluster created from the preset runs the new list. Response 200 with the same view as the GET, with `preset_updated` true when a preset was written and false for a raw-spec cluster or a deleted preset. Errors: 422 `invalid_request` (invalid list, naming the index; nothing is written), 404 `not_found`, 409 `conflict` (the cluster is being deleted), 403 `forbidden`.
 
 ### `GET /api/v1/clusters/{cluster_id}/agents`
 
@@ -743,6 +760,14 @@ The caller's identity, the leader and the hive members.
 ### `POST /agent/v1/leadership/handover`
 
 The current leader hands leadership away. Body `{to?, reason, epoch}`: `to` is the pod name of a member (omitted: any agent), `reason` is 1 to 500 characters, `epoch` is the epoch the caller read from `GET /agent/v1/me`. Queues a `handover` request and sends `NOTIFY leadership_requested {cluster_id}`; the dispatcher re-checks everything at apply time. There is no takeover route. Response 202 `{request_id}`. Errors, checked in this order: 409 `alone` (a single-agent cluster), 409 `not_leader` (the caller is not the current leader, or there is none), 409 `stale_epoch` (`epoch` differs from the current epoch), 404 `not_found` (unknown `to`), 422 `invalid_request`.
+
+### `GET /agent/v1/init-scripts`
+
+The init scripts of the caller's cluster and the last init run, so the agent knows how its cluster was initialised. The cluster is always the token's; there is no way to name another. Response 200, the same view as the public `GET /api/v1/clusters/{id}/init-scripts` (`cluster_id`, `scripts`, `preset_id`, `preset_name`, `status`, `edited_since_run`, `script_path`, `log_path`, `preset_updated` always false). The scripts and the run log are also files under `.agent-init/` in the workdir. Any agent of the cluster may call it. Errors: the 401 and 403 above.
+
+### `PUT /agent/v1/init-scripts`
+
+Replaces the caller's cluster init scripts. Body `{"scripts": ["<shell script>", ...]}` with the same limits as the public PUT. Writes the cluster's stored `spec.init_scripts` and its source preset's (when it still exists) in one transaction, with no generation bump and no pod roll; the edit applies to the next cluster created from the preset and never re-runs here. Response 200 with the view above and `preset_updated` true when a preset was written. Errors: 422 `invalid_request` (nothing is written), 409 `conflict` (the cluster is being deleted), plus the 401 and 403 above. These two routes back the plugin tools `orchestrator_init_scripts_get` and `orchestrator_init_scripts_edit`.
 
 ### File locks
 
