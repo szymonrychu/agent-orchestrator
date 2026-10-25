@@ -22,26 +22,31 @@ from agent_orchestrator.api.errors import error_response
 
 log = logging.getLogger(__name__)
 
-_ID = r"[^/]+"
+# Segments match only the id format each route accepts, so `..`, a stray separator or a
+# trailing newline never reaches the router; patterns are applied with fullmatch.
+_UUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+_INT = r"[0-9]+"
 
 ALLOWED_ROUTES: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
-    (method, re.compile(f"^{path.replace('{id}', _ID)}$"))
+    (method, re.compile(path.replace("{uuid}", _UUID).replace("{int}", _INT)))
     for method, path in (
         ("GET", "/api/v1/meta"),
         ("GET", "/api/v1/presets"),
-        ("GET", "/api/v1/presets/{id}"),
+        ("GET", "/api/v1/presets/{uuid}"),
         ("GET", "/api/v1/clusters"),
         ("POST", "/api/v1/clusters"),
-        ("GET", "/api/v1/clusters/{id}"),
-        ("GET", "/api/v1/clusters/{id}/messages"),
-        ("POST", "/api/v1/clusters/{id}/messages"),
-        ("GET", "/api/v1/messages/{id}"),
+        ("GET", "/api/v1/clusters/{uuid}"),
+        ("GET", "/api/v1/clusters/{uuid}/messages"),
+        ("POST", "/api/v1/clusters/{uuid}/messages"),
+        ("GET", "/api/v1/messages/{int}"),
     )
 )
 
+HEALTH_METHODS = frozenset({"GET", "HEAD"})
+
 
 def route_allowed(method: str, path: str) -> bool:
-    return any(m == method and p.match(path) for m, p in ALLOWED_ROUTES)
+    return any(m == method and p.fullmatch(path) for m, p in ALLOWED_ROUTES)
 
 
 def _bearer(scope: Scope) -> str | None:
@@ -78,13 +83,13 @@ class ServiceGate:
             await send({"type": "websocket.close", "code": 1008})
             return
         method, path = scope["method"], scope.get("path", "")
-        if path in EXEMPT_PATHS:
+        if path in EXEMPT_PATHS and method in HEALTH_METHODS:
             await self.app(scope, receive, send)
             return
         token = _bearer(scope)
         service = self.authenticate(token) if token is not None else None
         if service is None:
-            log.info("service request service=- method=%s path=%s status=401", method, path)
+            log.info("service request service=- method=%s path=%r status=401", method, path)
             response = error_response(
                 401,
                 "unauthorized",
@@ -95,7 +100,7 @@ class ServiceGate:
             return
         if not route_allowed(method, path):
             log.info(
-                "service request service=%s method=%s path=%s status=403", service, method, path
+                "service request service=%s method=%s path=%r status=403", service, method, path
             )
             response = error_response(403, "forbidden", "route is not served on the service port")
             await response(scope, receive, send)
@@ -104,7 +109,7 @@ class ServiceGate:
         async def logged_send(message: Message) -> None:
             if message["type"] == "http.response.start":
                 log.info(
-                    "service request service=%s method=%s path=%s status=%s",
+                    "service request service=%s method=%s path=%r status=%s",
                     service,
                     method,
                     path,

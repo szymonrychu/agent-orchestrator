@@ -272,3 +272,77 @@ def test_service_tokens_validation(monkeypatch, tmp_path):
         Settings()
     monkeypatch.setenv("ORCH_SERVICE_PORT", "9002")
     assert Settings().service_port == 9002
+
+
+async def asgi_status(app, method: str, path: str, token: str | None = TOKEN) -> int:
+    """One request with a raw scope path, bypassing httpx URL normalisation."""
+    sent: list[dict] = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    headers = [(b"authorization", f"Bearer {token}".encode())] if token else []
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": method,
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": headers,
+        "client": OUTSIDE,
+        "server": ("orch", 8002),
+        "state": {},
+    }
+    await app(scope, receive, send)
+    return next(m["status"] for m in sent if m["type"] == "http.response.start")
+
+
+async def test_route_matching_is_exact(app):
+    cid = str(uuid.uuid4())
+    for path in [
+        "/api/v1/meta\n",
+        "/api/v1/clusters\n",
+        f"/api/v1/clusters/{cid}\n",
+        "/api/v1/messages/1\n",
+        "/api/v1/clusters/..",
+        "/api/v1/clusters/../messages",
+        "/api/v1/presets/..",
+        "/api/v1/messages/..",
+        "/api/v1/presets/not-a-uuid",
+        "/api/v1/clusters/not-a-uuid/messages",
+        "/api/v1/messages/abc",
+        f"/api/v1/messages/{cid}",
+    ]:
+        assert not service_auth.route_allowed("GET", path), path
+        assert await asgi_status(app, "GET", path) == 403, path
+    assert service_auth.route_allowed("GET", f"/api/v1/clusters/{cid}")
+    assert service_auth.route_allowed("GET", f"/api/v1/presets/{cid.upper()}")
+    assert service_auth.route_allowed("GET", "/api/v1/messages/42")
+    async with client(app, 8002) as c:
+        assert_error(await c.get("/api/v1/meta%0A"), 403, "forbidden")
+
+
+async def test_health_unauthenticated_only_for_get_and_head(app):
+    for path in ("/healthz", "/readyz"):
+        assert await asgi_status(app, "GET", path, token=None) == 200
+        assert await asgi_status(app, "HEAD", path, token=None) != 401
+        for method in ("POST", "PUT", "DELETE", "PATCH", "OPTIONS"):
+            assert await asgi_status(app, method, path, token=None) == 401, (method, path)
+            assert await asgi_status(app, method, path) == 403, (method, path)
+
+
+async def test_logged_path_cannot_inject_lines(app, caplog):
+    caplog.set_level(logging.INFO)
+    injected = "/api/v1/meta\nservice request service=admin method=GET path=/x status=200"
+    assert await asgi_status(app, "GET", injected, token=None) == 401
+    assert await asgi_status(app, "GET", injected) == 403
+    lines = [rec.getMessage() for rec in caplog.records if rec.name == service_auth.log.name]
+    assert len(lines) == 2, lines
+    assert all("\n" not in m for m in lines), lines
