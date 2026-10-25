@@ -18,6 +18,7 @@ from agent_orchestrator.spec import parse_quantity
 PREFIX = "ORCH_"
 MIN_MASTER_KEY_BYTES = 32
 _TAG_RE = re.compile(r"^v\d+\.\d+\.\d+$")
+_SERVICE_TOKEN_RE = re.compile(r"^([a-z0-9][a-z0-9-]{0,62}):([0-9a-f]{64})$")
 
 CsvList = Annotated[list[str], NoDecode]
 
@@ -116,6 +117,9 @@ class Settings(BaseSettings):
     http_host: str = "0.0.0.0"
     http_port: int = 8000
     agent_port: int = 8001
+    service_port: int = 8002
+    service_tokens_file: str = ""
+    service_tokens: CsvList = Field(default=[], validate_default=True)
     agent_api_url: str | None = None
     dispatch_poll_seconds: float = 2
     reconcile_poll_seconds: float = 10
@@ -179,6 +183,45 @@ class Settings(BaseSettings):
     # Checks are field validators (not one mode="after" model validator) so they still run
     # when an unrelated field fails type or required checks; cross-field checks skip
     # silently when a dependency already failed (that failure is reported on its own).
+
+    @field_validator("service_port")
+    @classmethod
+    def _check_service_port(cls, v: int, info: ValidationInfo) -> int:
+        clashes = [
+            _var(other) for other in ("http_port", "agent_port") if info.data.get(other) == v
+        ]
+        if clashes:
+            raise _Bad("must differ from " + " and ".join(clashes))
+        return v
+
+    @field_validator("service_tokens", mode="before")
+    @classmethod
+    def _read_service_tokens(cls, v: object, info: ValidationInfo) -> object:
+        path = info.data.get("service_tokens_file")
+        if path:
+            try:
+                v = Path(path).read_text()
+            except OSError as exc:
+                raise _Bad(
+                    f"ORCH_SERVICE_TOKENS_FILE::cannot read {path}: {type(exc).__name__}"
+                ) from None
+        if isinstance(v, str):
+            return [p for p in re.split(r"[,\s]+", v) if p]
+        return v
+
+    @field_validator("service_tokens")
+    @classmethod
+    def _check_service_tokens(cls, v: list[str]) -> list[str]:
+        # Entries are never echoed: a typo can put the raw token where the hash belongs.
+        seen: set[str] = set()
+        for n, entry in enumerate(v, start=1):
+            match = _SERVICE_TOKEN_RE.match(entry)
+            if match is None:
+                raise _Bad(f"entry {n} is not <name>:<64 lowercase hex sha256>")
+            if match.group(1) in seen:
+                raise _Bad(f"entry {n} repeats a service name")
+            seen.add(match.group(1))
+        return v
 
     @field_validator("allowed_cidrs")
     @classmethod
@@ -364,6 +407,10 @@ class Settings(BaseSettings):
         return min(
             self.retry_backoff_base_seconds * 2 ** (attempts - 1), self.retry_backoff_max_seconds
         )
+
+    def service_token_hashes(self) -> dict[str, str]:
+        """Service name to the sha256 hex of its bearer token."""
+        return dict(entry.split(":", 1) for entry in self.service_tokens)
 
     def allowed_networks(self) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
         return [ipaddress.ip_network(c, strict=False) for c in self.allowed_cidrs]

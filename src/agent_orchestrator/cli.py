@@ -67,13 +67,13 @@ def _settings():
 
 
 def bind_sockets(settings) -> list:
-    """The main and agent listening sockets, bound here so one server can serve both."""
+    """The main, agent and service listening sockets, bound here so one server serves all."""
     import socket
 
     family = socket.AF_INET6 if ":" in settings.http_host else socket.AF_INET
     socks = []
     try:
-        for port in (settings.http_port, settings.agent_port):
+        for port in (settings.http_port, settings.agent_port, settings.service_port):
             sock = socket.socket(family, socket.SOCK_STREAM)
             socks.append(sock)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

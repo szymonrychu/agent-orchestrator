@@ -28,25 +28,30 @@ def _port(scope: Scope) -> int | None:
 
 
 class PortGate:
-    """Splits the two listening sockets of `orch api` by the accepting port.
+    """Splits the listening sockets of `orch api` by the accepting port.
 
     The agent port serves only /agent/v1/*, /healthz and /readyz; the main port never serves
-    /agent/v1/*. Everything else is 404 not_found.
+    /agent/v1/*. The service port never serves /agent/v1/* nor a WebSocket; `ServiceGate`
+    narrows it further to its route list. Everything else is 404 not_found.
     """
 
-    def __init__(self, app: ASGIApp, agent_port: int):
+    def __init__(self, app: ASGIApp, agent_port: int, service_port: int | None = None):
         self.app = app
         self.agent_port = agent_port
+        self.service_port = service_port
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return
         path = scope.get("path", "")
-        on_agent = _port(scope) == self.agent_port
-        served = (
-            (is_agent_path(path) or path in EXEMPT_PATHS) if on_agent else not is_agent_path(path)
-        )
+        port = _port(scope)
+        if port == self.agent_port:
+            served = is_agent_path(path) or path in EXEMPT_PATHS
+        elif port is not None and port == self.service_port:
+            served = scope["type"] == "http" and not is_agent_path(path)
+        else:
+            served = not is_agent_path(path)
         if served:
             await self.app(scope, receive, send)
             return
@@ -57,10 +62,19 @@ class PortGate:
 
 
 class SourceAllowlist:
-    def __init__(self, app: ASGIApp, networks: list, skip_port: int | None = None):
+    """Refuses peers outside the allowlist on the main port; the agent and service ports
+    authenticate on their own and are skipped."""
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        networks: list,
+        skip_port: int | None = None,
+        service_port: int | None = None,
+    ):
         self.app = app
         self.networks = list(networks)
-        self.skip_port = skip_port
+        self.skip_ports = frozenset(p for p in (skip_port, service_port) if p is not None)
 
     def allowed(self, scope: Scope) -> bool:
         client = scope.get("client")
@@ -78,7 +92,7 @@ class SourceAllowlist:
         if scope["type"] not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return
-        if self.skip_port is not None and _port(scope) == self.skip_port:
+        if _port(scope) in self.skip_ports:
             await self.app(scope, receive, send)
             return
         if scope["type"] == "http" and scope.get("path") in EXEMPT_PATHS:

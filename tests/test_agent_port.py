@@ -96,17 +96,18 @@ def test_main_port_unchanged():
     assert allowed.status_code == 200
 
 
-def test_two_sockets_bound():
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        a = probe.getsockname()[1]
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        b = probe.getsockname()[1]
-    settings = Settings(http_host="127.0.0.1", http_port=a, agent_port=b)
+def _free_port(host: str = "127.0.0.1", family: int = socket.AF_INET) -> int:
+    with socket.socket(family) as probe:
+        probe.bind((host, 0))
+        return probe.getsockname()[1]
+
+
+def test_three_sockets_bound():
+    a, b, c = _free_port(), _free_port(), _free_port()
+    settings = Settings(http_host="127.0.0.1", http_port=a, agent_port=b, service_port=c)
     socks = cli.bind_sockets(settings)
     try:
-        assert sorted(s.getsockname()[1] for s in socks) == sorted([a, b])
+        assert sorted(s.getsockname()[1] for s in socks) == sorted([a, b, c])
         config = cli.build_uvicorn_config(settings)
         assert config.proxy_headers is False
     finally:
@@ -123,10 +124,9 @@ def test_bind_sockets_ipv6_host():
         except OSError:
             pytest.skip("ipv6 loopback unavailable")
         a = probe.getsockname()[1]
-    with socket.socket(socket.AF_INET6) as probe:
-        probe.bind(("::1", 0))
-        b = probe.getsockname()[1]
-    socks = cli.bind_sockets(Settings(http_host="::1", http_port=a, agent_port=b))
+    b = _free_port("::1", socket.AF_INET6)
+    c = _free_port("::1", socket.AF_INET6)
+    socks = cli.bind_sockets(Settings(http_host="::1", http_port=a, agent_port=b, service_port=c))
     try:
         assert all(s.family == socket.AF_INET6 for s in socks)
     finally:

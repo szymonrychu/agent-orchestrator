@@ -23,6 +23,9 @@ Every process reads `ORCH_*` variables (the contract `agent-orchestrator-setting
 | `ORCH_MASTER_KEY` | unset | api (file and terminal proxies), reconciler | secret key, at least 32 bytes after stripping; only for commands that call require_master_key() |
 | `ORCH_MASTER_KEY_FILE` | empty | api (file and terminal proxies), reconciler | file holding the master key; wins over ORCH_MASTER_KEY |
 | `ORCH_AGENT_PORT` | `8001` | api | second listener (same server) serving only `/agent/v1/*`, `/healthz` and `/readyz` to agent pods; the source allowlist is skipped there |
+| `ORCH_SERVICE_PORT` | `8002` | api | third listener (same server) for in-cluster services; every request but `/healthz` and `/readyz` needs `Authorization: Bearer <service token>`, only the trigger-service routes answer (others 403), never `/agent/v1/*` or a WebSocket; the source allowlist is skipped there. Must differ from `ORCH_HTTP_PORT` and `ORCH_AGENT_PORT` |
+| `ORCH_SERVICE_TOKENS` | empty | api | CSV of `<name>:<sha256 hex of the token>` (name `^[a-z0-9][a-z0-9-]{0,62}$`, 64 lowercase hex, names unique); empty refuses every service request with 401 |
+| `ORCH_SERVICE_TOKENS_FILE` | empty | api | file holding the ORCH_SERVICE_TOKENS entries (comma or newline separated); wins over ORCH_SERVICE_TOKENS |
 | `ORCH_AGENT_API_URL` | unset | api, reconciler | URL agent pods use to reach the agent port (set by the chart to the agents Service) |
 | `ORCH_NAMESPACE` | `agents` | api, reconciler, dispatcher | the one namespace of the orchestrator and every agent cluster |
 | `ORCH_AGENT_IMAGE` | empty | api, reconciler | claude-code-wrapper image the agent pods run (required to create clusters) |
