@@ -162,7 +162,7 @@ HOOK_ACTIONS_MAX = 20
 HOOK_RUN_MAX_CHARS = 16384
 INSTRUCTIONS_MAX = 2000
 SYSTEM_APPEND_MAX = 16384
-RESERVED_MCP_SERVER = "any-mcp"
+RESERVED_MCP_SERVERS = ("any-mcp", "ccw")
 WELL_KNOWN_MARKETPLACES = frozenset({"claude-plugins-official"})
 AGENT_COMMANDS = ("compact", "context", "mcp", "reload-plugins", "reload-skills")
 _MCP_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -344,7 +344,7 @@ class WrapperSettings(_Strict):
     @classmethod
     def _mcp_names(cls, v: dict[str, McpServer] | None):
         for name in v or {}:
-            if name == RESERVED_MCP_SERVER:
+            if name in RESERVED_MCP_SERVERS:
                 raise ValueError(f"wrapper.mcp_servers.{name}: the name is reserved")
             if not _MCP_NAME_RE.fullmatch(name):
                 raise ValueError(

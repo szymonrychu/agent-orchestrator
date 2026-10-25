@@ -122,6 +122,10 @@ def test_hook_rules_refused(hooks: dict[str, Any], path: str) -> None:
             "wrapper.mcp_servers",
         ),
         (
+            {"mcp_servers": {"ccw": {"type": "http", "url": "http://x"}}},
+            "wrapper.mcp_servers.ccw: the name is reserved",
+        ),
+        (
             {"mcp_servers": {"bad name": {"type": "http", "url": "http://x"}}},
             "wrapper.mcp_servers",
         ),
