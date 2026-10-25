@@ -52,15 +52,20 @@ def test_alone_has_no_orchestrator_entry():
     assert "orchestrator" not in entries(spec)
 
 
+def test_static_hive_has_no_scale_tool():
+    spec = ClusterSpec(replicas=2, static=True)
+    assert on_start.orchestrator_allow(spec) == HIVE_TOOLS
+
+
 def test_hive_entry_and_allow():
     spec = ClusterSpec(replicas=2, max_replicas=4, auto_compact_pct=70)
-    assert on_start.orchestrator_allow(spec) == HIVE_TOOLS
+    assert on_start.orchestrator_allow(spec) == [*HIVE_TOOLS, "scale"]
     entry = entries(spec)["orchestrator"]
     assert entry == {
         "name": "orchestrator",
         "plugin": "any_mcp.orchestrator:OrchestratorPlugin",
         "namespace": "orchestrator",
-        "allow": HIVE_TOOLS,
+        "allow": [*HIVE_TOOLS, "scale"],
         "config": {
             "base_url": "${ORCH_AGENT_URL}",
             "token": "${ORCH_AGENT_TOKEN}",

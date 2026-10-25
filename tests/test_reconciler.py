@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import time
 import uuid
+from datetime import UTC, datetime
 
 import httpx2
 import pytest
@@ -17,6 +19,7 @@ from factories import (
     insert_event,
     insert_message,
     insert_turn,
+    set_agent_status,
 )
 from fakes.fake_kube import FakeKube
 from lightkube import AsyncClient, KubeConfig
@@ -33,9 +36,11 @@ from agent_orchestrator.k8s.kube import (
     LightkubeApi,
 )
 from agent_orchestrator.k8s.labels import CLUSTER_LABEL, MANAGED_BY_LABEL, cluster_labels
+from agent_orchestrator.k8s.render import render_cluster
 from agent_orchestrator.reconciler import Reconciler
-from agent_orchestrator.settings import Settings
+from agent_orchestrator.settings import Settings, SettingsError
 from agent_orchestrator.spec import ClusterSpec
+from agent_orchestrator.tokens import tokens_for
 
 KEY = "k" * 32
 IMAGE = "harbor.example/containers/claude-code-wrapper:ca2ddf3"
@@ -296,6 +301,161 @@ async def test_scale_down_marks_gone(env):
     agents = {a.ordinal: a for a in await env.agents(c.id)}
     assert agents[1].id == before[1] and agents[1].gone_at is None
     assert agents[2].gone_at is not None
+
+
+# ---------------------------------------------------------------- scale-down drain
+
+
+def sts_replicas(env) -> int:
+    return env.kube.get("StatefulSet", "agent-alpha")["spec"]["replicas"]
+
+
+async def scaled_down(env, *, start: int = 3, target: int = 1, busy=(), messages=()):
+    """A cluster of `start` agents scaled to `target`; `busy` ordinals report state busy and
+    `messages` maps ordinals to the status of a message dispatched to them."""
+    c = await env.cluster("alpha", replicas=start, max_replicas=start)
+    await env.rec.reconcile_once()
+    agents = {a.ordinal: a for a in await env.agents(c.id)}
+    for ordinal in busy:
+        await set_agent_status(env.pool, agents[ordinal].id, state="busy")
+    for ordinal, status in dict(messages).items():
+        await insert_message(env.pool, c.id, status=status, agent_id=agents[ordinal].id)
+    await env.update(c.id, replicas=target, max_replicas=start)
+    return c, agents
+
+
+async def test_scale_down_keeps_busy_agent_until_idle(env):
+    env.kube.pods_ready = True
+    c, agents = await scaled_down(env, busy=(2,))
+    await env.rec.reconcile_once()
+    assert sts_replicas(env) == 3
+    assert env.kube.has("Pod", "agent-alpha-2")
+    now = {a.ordinal: a for a in await env.agents(c.id)}
+    assert [now[i].gone_at for i in (1, 2)] == [None, None]
+    assert not now[1].ready and not now[2].ready  # draining agents are never picked
+    got = await env.get(c.id)
+    assert (got.status["replicas"], got.status["ready"], got.status["phase"]) == (1, 1, "ready")
+
+    await env.rec.reconcile_once()  # still busy: the pod stays
+    assert sts_replicas(env) == 3
+
+    await set_agent_status(env.pool, agents[2].id, state="idle")
+    await env.rec.reconcile_once()
+    assert sts_replicas(env) == 1
+    now = {a.ordinal: a for a in await env.agents(c.id)}
+    assert now[1].gone_at is not None and now[2].gone_at is not None
+    assert now[0].gone_at is None
+
+
+async def test_scale_down_removes_idle_agents_at_once(env):
+    # ordinal 1 is busy through a message mid-dispatch; 2 and 3 are idle above it
+    c, _ = await scaled_down(env, start=4, messages={1: "dispatching"})
+    await env.rec.reconcile_once()
+    assert sts_replicas(env) == 2
+    now = {a.ordinal: a for a in await env.agents(c.id)}
+    assert now[2].gone_at is not None and now[3].gone_at is not None
+    assert now[1].gone_at is None and now[0].gone_at is None
+
+    # a message being verified keeps the agent just the same
+    c2 = await env.cluster("bravo", replicas=3, max_replicas=3)
+    await env.rec.reconcile_once()
+    bravo = {a.ordinal: a for a in await env.agents(c2.id)}
+    await insert_message(env.pool, c2.id, status="verifying", agent_id=bravo[2].id)
+    await insert_message(env.pool, c2.id, status="sent", agent_id=bravo[1].id)  # done: idle
+    await env.update(c2.id, replicas=1, max_replicas=3)
+    await env.rec.reconcile_once()
+    assert env.kube.get("StatefulSet", "agent-bravo")["spec"]["replicas"] == 3
+
+    # nothing busy: every draining agent goes in the first tick
+    c3 = await env.cluster("charlie", replicas=3, max_replicas=3)
+    await env.rec.reconcile_once()
+    await env.update(c3.id, replicas=1, max_replicas=3)
+    await env.rec.reconcile_once()
+    assert env.kube.get("StatefulSet", "agent-charlie")["spec"]["replicas"] == 1
+    assert "drain" not in (await env.get(c3.id)).status
+
+
+async def test_scale_down_drain_deadline(env):
+    c, agents = await scaled_down(env, busy=(2,))
+    await env.rec.reconcile_once()
+    assert sts_replicas(env) == 3
+    # the deadline counts from status.drain.since, so it survives a reconciler failover
+    async with env.pool.connection() as conn:
+        await conn.execute(
+            "UPDATE clusters SET status = jsonb_set(status, '{drain,since}',"
+            " to_jsonb((now() - make_interval(secs => %s))::text)) WHERE id = %s",
+            (env.settings.scale_drain_seconds + 1, c.id),
+        )
+    await env.rec.reconcile_once()
+    assert sts_replicas(env) == 1
+    now = {a.ordinal: a for a in await env.agents(c.id)}
+    assert now[2].gone_at is not None and now[1].gone_at is not None
+    assert "drain" not in (await env.get(c.id)).status
+
+
+async def test_scale_drain_seconds_setting(env):
+    assert env.settings.scale_drain_seconds == 900
+    assert make_settings(env.dsn, scale_drain_seconds=5).scale_drain_seconds == 5
+    for bad in (0, -1):
+        with pytest.raises(SettingsError, match="ORCH_SCALE_DRAIN_SECONDS"):
+            make_settings(env.dsn, scale_drain_seconds=bad)
+
+
+async def test_scale_up_cancels_drain(env):
+    c, agents = await scaled_down(env, busy=(2,))
+    await env.rec.reconcile_once()
+    assert "drain" in (await env.get(c.id)).status
+    uids = {i: env.kube.get("Pod", f"agent-alpha-{i}")["metadata"]["uid"] for i in range(3)}
+
+    env.kube.reset_records()
+    await env.update(c.id, replicas=3, max_replicas=3)
+    await env.rec.reconcile_once()
+    assert sts_replicas(env) == 3
+    assert {i: env.kube.get("Pod", f"agent-alpha-{i}")["metadata"]["uid"] for i in range(3)} == uids
+    assert env.kube.deleted() == []
+    got = await env.get(c.id)
+    assert "drain" not in got.status and "draining" not in got.status["message"]
+    assert all(a.gone_at is None for a in await env.agents(c.id))
+
+
+async def test_drain_changes_only_statefulset_replicas(env):
+    c, _ = await scaled_down(env, busy=(2,))
+    env.kube.reset_records()
+    await env.rec.reconcile_once()
+    cluster = await env.get(c.id)
+    target = {
+        (o["kind"], o["metadata"]["name"]): o
+        for o in render_cluster(cluster, env.settings, tokens_for(env.settings, c.id))
+    }
+    applied = {(a.kind, a.name): copy.deepcopy(a.obj) for a in env.kube.applied()}
+    assert applied.keys() == target.keys()
+    sts = applied[("StatefulSet", "agent-alpha")]
+    assert sts["spec"].pop("replicas") == 3
+    assert target[("StatefulSet", "agent-alpha")]["spec"].pop("replicas") == 1
+    for key, obj in applied.items():
+        assert obj == target[key], key
+
+
+async def test_drain_status_reported(env):
+    c, agents = await scaled_down(env, busy=(2,))
+    await env.rec.reconcile_once()
+    got = await env.get(c.id)
+    drain = got.status["drain"]
+    assert (drain["target"], drain["waiting"]) == (1, [2])
+    since = datetime.fromisoformat(drain["since"])
+    assert abs((datetime.now(UTC) - since).total_seconds()) < 60
+    assert "draining 2 agents" in got.status["message"]
+    assert got.status["replicas"] == 1
+
+    await env.rec.reconcile_once()  # the drain goes on: since is kept, nothing rewritten
+    again = await env.get(c.id)
+    assert again.status == got.status
+
+    await set_agent_status(env.pool, agents[2].id, state="idle")
+    await env.rec.reconcile_once()
+    done = await env.get(c.id)
+    assert "drain" not in done.status
+    assert "draining" not in done.status["message"]
 
 
 async def test_vanished_pod_below_replicas_is_unready_not_gone(env):

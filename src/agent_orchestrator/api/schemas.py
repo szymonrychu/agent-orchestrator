@@ -298,5 +298,18 @@ class MakeLeaderIn(BaseModel):
     agent_id: uuid.UUID
 
 
+class ScaleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    replicas: int
+
+
+class ScaleResult(BaseModel):
+    cluster_id: uuid.UUID
+    replicas: int
+    previous_replicas: int
+    max_replicas: int
+
+
 class LeadershipRequested(BaseModel):
     request_id: int

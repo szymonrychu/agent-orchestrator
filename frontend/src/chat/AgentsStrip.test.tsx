@@ -21,15 +21,30 @@ const agent = (id: string, ordinal: number, o: Partial<AgentView> = {}): AgentVi
   context: { used_percentage: 25, used_tokens: 1, window_tokens: 4 }, current_turn_id: null, free_since: null, gone: false, id, ordinal, leader: false, context_pct: null, peers: 0, pod_name: `alpha-${ordinal}`, ready: true, state: 'busy', ...o,
 })
 
-function mount(agents: AgentView[], selected: string[] = [], onToggle: (id: string) => void = () => {}, hive?: { clusterId: string; leaderEpoch: number | null }) {
+function mount(agents: AgentView[], selected: string[] = [], onToggle: (id: string) => void = () => {}, hive?: { clusterId: string; leaderEpoch: number | null }, scale: { replicas?: number; drainWaiting?: number[] } = {}) {
   return render(
     <ThemeProvider theme={theme}>
-      <AgentsStrip agents={agents} selected={selected} onToggle={onToggle} autoCompactPct={80} hive={hive} />
+      <AgentsStrip agents={agents} selected={selected} onToggle={onToggle} autoCompactPct={80} hive={hive} replicas={scale.replicas} drainWaiting={scale.drainWaiting} />
     </ThemeProvider>,
   )
 }
 
 describe('AgentsStrip', () => {
+  test('leaving_labels', () => {
+    const agents = [agent('a0', 0), agent('a1', 1), agent('a2', 2), agent('a3', 3, { gone: true })]
+    mount(agents, [], () => {}, undefined, { replicas: 1, drainWaiting: [2] })
+    expect(screen.getByRole('button', { name: 'agent 1, leaving' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'agent 2, leaving after its turn' })).toBeTruthy()
+    expect(screen.getByText('leaving after its turn')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'agent 0' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'agent 3' })).toBeTruthy()
+  })
+
+  test('no_leaving_label_within_replicas', () => {
+    mount([agent('a0', 0), agent('a1', 1)], [], () => {}, undefined, { replicas: 2, drainWaiting: [] })
+    expect(screen.queryByText(/leaving/)).toBeNull()
+  })
+
   test('shows_agent_rows', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-01-01T00:10:00Z'))

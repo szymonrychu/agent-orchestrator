@@ -2021,6 +2021,49 @@
         "title": "Resources",
         "type": "object"
       },
+      "ScaleRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "replicas": {
+            "title": "Replicas",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "replicas"
+        ],
+        "title": "ScaleRequest",
+        "type": "object"
+      },
+      "ScaleResult": {
+        "properties": {
+          "cluster_id": {
+            "format": "uuid",
+            "title": "Cluster Id",
+            "type": "string"
+          },
+          "max_replicas": {
+            "title": "Max Replicas",
+            "type": "integer"
+          },
+          "previous_replicas": {
+            "title": "Previous Replicas",
+            "type": "integer"
+          },
+          "replicas": {
+            "title": "Replicas",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "cluster_id",
+          "replicas",
+          "previous_replicas",
+          "max_replicas"
+        ],
+        "title": "ScaleResult",
+        "type": "object"
+      },
       "TerminalList": {
         "properties": {
           "terminals": {
@@ -2855,6 +2898,81 @@
           }
         },
         "summary": "Identity, leader and members of the caller",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
+    "/agent/v1/scale": {
+      "post": {
+        "operationId": "scale_agent_v1_scale_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-orch-cluster",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Orch-Cluster"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScaleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScaleResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Scale the caller's cluster (leader only)",
         "tags": [
           "agent"
         ]
@@ -3964,6 +4082,57 @@
           }
         },
         "summary": "Post Message"
+      }
+    },
+    "/api/v1/clusters/{cluster_id}/scale": {
+      "post": {
+        "description": "Set spec.replicas in place (no caller agent: the public route has no leader check).",
+        "operationId": "scale_cluster_api_v1_clusters__cluster_id__scale_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cluster_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Cluster Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScaleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScaleResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Scale Cluster"
       }
     },
     "/api/v1/clusters/{cluster_id}/terminals": {

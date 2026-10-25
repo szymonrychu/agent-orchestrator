@@ -8,9 +8,16 @@ import { AgentsStrip } from './AgentsStrip'
 import { ChatLog } from './ChatLog'
 import { Composer } from './Composer'
 import { QueueStrip } from './QueueStrip'
+import { ScaleControl } from './ScaleControl'
 import { filterByAgents } from './chatModel'
 import { useClusterChat } from './useClusterChat'
 import { TOKENS } from '../theme'
+
+/** status is a free-form dict: read status.drain.waiting defensively (absent when no drain). */
+function drainWaiting(cluster: ClusterView): number[] {
+  const drain = (cluster.status as Record<string, unknown> | null | undefined)?.drain as { waiting?: unknown } | null | undefined
+  return Array.isArray(drain?.waiting) ? drain.waiting.filter((n): n is number => typeof n === 'number') : []
+}
 
 export interface ChatViewProps {
   cluster: ClusterView
@@ -35,8 +42,11 @@ export function ChatView({ cluster, agents, maxItems }: ChatViewProps) {
         <Typography variant="caption" sx={{ color: 'text.secondary' }}>
           {cluster.desired === 'deleting' ? 'deleting' : cluster.summary.state}
         </Typography>
+        <ScaleControl cluster={cluster} />
         <AgentsStrip
           agents={agents}
+          replicas={cluster.spec.replicas}
+          drainWaiting={drainWaiting(cluster)}
           selected={selected}
           onToggle={toggle}
           autoCompactPct={cluster.summary.auto_compact_pct}

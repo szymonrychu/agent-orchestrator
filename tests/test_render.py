@@ -553,3 +553,36 @@ def _on_start_plugins(cluster) -> list[str]:
 def test_on_start_orchestrator_entry_only_for_hive():
     assert _on_start_plugins(make_cluster(replicas=2)) == ["orchestrator"]
     assert _on_start_plugins(make_cluster(replicas=1)) == []
+
+
+def _on_start_body(cluster) -> tuple[str, dict]:
+    objs = render.render_cluster(cluster, make_settings(agent_api_url=AGENT_URL), TOKENS)
+    script = by_kind(objs)["ConfigMap"]["data"]["on-start.sh"]
+    body = script.split("<<'ANY_MCP_CONFIG_EOF'\n")[1].split("\nANY_MCP_CONFIG_EOF")[0]
+    return script, json.loads(body)
+
+
+def _allow(cluster) -> list[str]:
+    plugins = _on_start_body(cluster)[1].get("plugins", [])
+    return plugins[0]["allow"] if plugins else []
+
+
+@pytest.mark.parametrize(
+    "spec,scalable",
+    [
+        ({"replicas": 1}, False),
+        ({"replicas": 1, "static": True}, False),
+        ({"replicas": 3, "static": True}, False),
+        ({"replicas": 1, "max_replicas": 4}, True),
+        ({"replicas": 4, "max_replicas": 4}, True),
+    ],
+)
+def test_scale_tool_allowed_only_when_scalable(spec, scalable):
+    assert ("scale" in _allow(make_cluster(**spec))) is scalable
+
+
+def test_scale_allow_independent_of_replicas():
+    low = _on_start_body(make_cluster(replicas=1, max_replicas=4))
+    high = _on_start_body(make_cluster(replicas=4, max_replicas=4))
+    assert low == high
+    assert "scale" in low[1]["plugins"][0]["allow"]

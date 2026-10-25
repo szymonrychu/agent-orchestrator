@@ -16,6 +16,7 @@ from xml.sax.saxutils import escape
 from fastapi import APIRouter, Depends, Header, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from agent_orchestrator.api import clusters as clusters_api
 from agent_orchestrator.api import schemas
 from agent_orchestrator.api.clusters import Cfg, Pool, edit_init_scripts, init_scripts_view
 from agent_orchestrator.api.errors import ApiError
@@ -113,6 +114,31 @@ async def me(agent: Caller, pool: Pool) -> Me:
             )
             for m in members
         ],
+    )
+
+
+_SCALE_STATUS = {**clusters_api.SCALE_STATUS, "not_leader": 403}
+
+
+@router.post(
+    "/scale",
+    status_code=202,
+    response_model=schemas.ScaleResult,
+    summary="Scale the caller's cluster (leader only)",
+)
+async def scale(agent: Caller, body: schemas.ScaleRequest, pool: Pool) -> schemas.ScaleResult:
+    async with pool.connection() as conn:
+        try:
+            out = await clusters_repo.set_replicas(
+                conn, agent.cluster_id, body.replicas, caller_agent_id=agent.id
+            )
+        except clusters_repo.ScaleRefused as exc:
+            raise ApiError(_SCALE_STATUS.get(exc.code, 409), exc.code, str(exc)) from None
+    return schemas.ScaleResult(
+        cluster_id=out.cluster_id,
+        replicas=out.replicas,
+        previous_replicas=out.previous_replicas,
+        max_replicas=out.max_replicas,
     )
 
 

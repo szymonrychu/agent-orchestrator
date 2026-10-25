@@ -71,6 +71,7 @@ Every process reads `ORCH_*` variables (the contract `agent-orchestrator-setting
 | `ORCH_DISCARD_HOOK_COMMAND` | empty | api, reconciler | pre-discard hook command (exclusive with URL) |
 | `ORCH_DISCARD_HOOK_URL` | empty | api, reconciler | pre-discard hook http(s) webhook URL |
 | `ORCH_DISCARD_HOOK_TIMEOUT_SECONDS` | `120` | api, reconciler | discard hook timeout |
+| `ORCH_SCALE_DRAIN_SECONDS` | `900` | reconciler | scale-down drain deadline (> 0): after it the StatefulSet gets the target replicas even while a draining agent is busy |
 | `ORCH_ANY_MCP_REPO` | `https://github.com/szymonrychu/any-mcp` | api, reconciler | any-mcp git repository |
 | `ORCH_ANY_MCP_REF` | `v0.2.0` | api, reconciler | any-mcp pinned release tag vX.Y.Z (never a branch) |
 | `ORCH_ON_START_TIMEOUT_SECONDS` | `600` | api, reconciler | onStart hook timeout |
@@ -258,6 +259,8 @@ The reconciler is level-triggered: every `ORCH_RECONCILE_POLL_SECONDS` (10 s), a
 3. List the cluster's pods and upsert one `agents` row per ordinal, with the per-pod URL `http://<pod>.agent-<slug>.<namespace>.svc.<cluster domain>:<ORCH_WRAPPER_PORT>` and its readiness. An agent whose pod vanished with an ordinal at or above `replicas` is marked gone; one below `replicas` is kept, unready, while its pod is recreated.
 4. Bootstrap a session on every ready agent that has none, unless the init run holds them.
 5. Write `status {phase, ready, replicas, message}` (`phase` is `pending`, `ready`, `degraded`, `deleting` or `error`) and `observed_generation`, only when something changed.
+
+A scale-down drains: agents at or above `spec.replicas` that are not gone are draining, and a busy one (`agent_status.state` `busy`, or a message to it still `dispatching` or `verifying`) finishes its turn before its pod goes. The StatefulSet is applied with replicas `max(spec.replicas, 1 + highest busy draining ordinal)`, never above the replicas already applied, so idle agents above the highest busy one go at once (a StatefulSet removes from the top) and the rest go as they become idle. Only `StatefulSet.spec.replicas` differs from the target render: the ConfigMap, Secret, Service and pod template are unchanged, so no pod rolls. Draining agents are never `ready`, so the dispatcher, leader selection and session bootstrap never pick them. `ORCH_SCALE_DRAIN_SECONDS` (900) after the first tick that saw the drain the target applies regardless, and an interrupted turn takes the verify path. While draining, `status.drain {target, since, waiting}` (`waiting`: the busy draining ordinals) is set and the message carries `draining <n> agents`; `since` lives in the status, so the deadline survives a reconciler failover. `status.replicas` and the phase keep counting the target. Raising replicas during a drain ends it with no pod restart.
 
 Init scripts (`spec.init_scripts`) run exactly once per cluster, as Job `agent-<slug>-init`, and the run is recorded in `status.init {state, scripts_hash, started_at, finished_at, exit_code, log_tail, reason, job}`, written only by the reconciler:
 
@@ -461,7 +464,7 @@ In-place fields (amends the exception above): `spec.replicas` and `spec.init_scr
 
 Source allowlist: the api checks the direct socket peer against `ORCH_ALLOWED_CIDRS` (default `192.168.1.0/24`). `Forwarded`, `X-Forwarded-For` and `X-Real-IP` are never read. A caller outside the list gets `403 forbidden`. `/healthz` and `/readyz` are exempt.
 
-Error codes: `bad_request` (400), `forbidden` (403), `forbidden_origin` (403, `Origin` not in `ORCH_ALLOWED_ORIGINS` on a terminal POST or DELETE or a WebSocket upgrade), `not_found` (404), `conflict` (409, slug or preset name exists), `preset_default` (409, renaming or deleting the default preset), `last_preset` (409, deleting the only preset), `cluster_deleting` (409), `cluster_limit` (409, `ORCH_MAX_CLUSTERS` reached), `not_queued` (409), `not_failed` (409), `agent_gone` (409), `agent_not_ready` (409, no ready agent for a file or terminal proxy), `invalid_path` (400, a file path is absolute, holds a NUL byte or leaves the workdir), `not_a_directory` (400, listing a file), `not_a_file` (400, reading a directory or special file), `terminal_limit` (409, the wrapper's per-pod terminal cap is reached), `session_not_active` (409, the agent's wrapper session is not active), `terminal_not_found` (404, no such shell on that agent), `invalid_size` (422, rows or cols outside 1..1000), `invalid_request` (422, also a terminal id that is not `term_` plus 12 lowercase hex digits), `target_gone` (422), `internal` (500, 503 on `/readyz`), `wrapper_error` (502, the wrapper answered 5xx), `wrapper_unreachable` (502, the wrapper pod could not be reached), `unavailable` (503, no master key for the proxies).
+Error codes: `bad_request` (400), `forbidden` (403), `forbidden_origin` (403, `Origin` not in `ORCH_ALLOWED_ORIGINS` on a terminal POST or DELETE or a WebSocket upgrade), `not_found` (404), `conflict` (409, slug or preset name exists), `preset_default` (409, renaming or deleting the default preset), `last_preset` (409, deleting the only preset), `cluster_deleting` (409, also a scale of a cluster being deleted), `static_cluster` (409, scaling a static cluster), `leader_would_leave` (409, a scale-down that would remove the leader), `out_of_range` (422, replicas outside 1..`max_replicas`), `cluster_limit` (409, `ORCH_MAX_CLUSTERS` reached), `not_queued` (409), `not_failed` (409), `agent_gone` (409), `agent_not_ready` (409, no ready agent for a file or terminal proxy), `invalid_path` (400, a file path is absolute, holds a NUL byte or leaves the workdir), `not_a_directory` (400, listing a file), `not_a_file` (400, reading a directory or special file), `terminal_limit` (409, the wrapper's per-pod terminal cap is reached), `session_not_active` (409, the agent's wrapper session is not active), `terminal_not_found` (404, no such shell on that agent), `invalid_size` (422, rows or cols outside 1..1000), `invalid_request` (422, also a terminal id that is not `term_` plus 12 lowercase hex digits), `target_gone` (422), `internal` (500, 503 on `/readyz`), `wrapper_error` (502, the wrapper answered 5xx), `wrapper_unreachable` (502, the wrapper pod could not be reached), `unavailable` (503, no master key for the proxies).
 
 ### `GET /api/v1/meta`
 
@@ -515,6 +518,10 @@ Discards the cluster: after the optional history-export hook, deletes every Kube
 ### `POST /api/v1/clusters/{cluster_id}/leader`
 
 Queues a user leadership override (the UI "Make leader"): body `{agent_id}`, any agent of the cluster. A user request overrides the handover-only rule; the dispatcher applies it and bumps the epoch. Response 202 `{request_id}`. Errors: 404 `not_found` (unknown cluster, or an agent that is not in this cluster), 409 `alone` (a single-agent cluster has no leader).
+
+### `POST /api/v1/clusters/{cluster_id}/scale`
+
+Sets the running replica count: body `{"replicas": <int>}` (extra fields are rejected). Response 202 `{cluster_id, replicas, previous_replicas, max_replicas}`; the cluster view then shows the new `spec.replicas` with an unchanged `generation`. Setting the current value changes nothing. Errors: 404 `not_found`, 409 `static_cluster`, 409 `cluster_deleting`, 409 `leader_would_leave`, 422 `out_of_range` (outside 1..`max_replicas`), 422 `invalid_request` (malformed body). See Scaling below.
 
 ### `GET /api/v1/clusters/{cluster_id}/init-scripts`
 
@@ -724,6 +731,18 @@ The `/clusters/{cluster_id}/events/stream` frames are named by the stored wrappe
 | `cluster_removed` | `/stream` | `{"cluster_id"}` when a discard completed |
 | `leader_changed` | `/stream` | `{"cluster_id", "agent_id", "epoch"}` on NOTIFY `leader_changed`; the `cluster_status` and `agent_status` frames that follow carry the new leader |
 
+### Scaling
+
+How API callers size a cluster:
+
+- `max_replicas` is the cap: 1 to `ORCH_MAX_REPLICAS` (at most 16), default `replicas`, fixed when the cluster is created.
+- `static` (default false) pins the size and requires `max_replicas == replicas`; scaling a static cluster is 409 `static_cluster`.
+- Hive, alone and scalable are derived: `max_replicas > 1` is a hive, `max_replicas == 1` runs alone, and a cluster is scalable when it is not static and `max_replicas > 1`.
+- `POST /api/v1/clusters/{cluster_id}/scale` (and the leader's scale tool on the agent API) changes `spec.replicas` in place: no generation bump and no restart of surviving pods.
+- Scale-down removes the highest ordinals, after the drain of their queued and running work.
+- The leader is never removed: a scale-down below the leader's ordinal is 409 `leader_would_leave`. Make another agent leader first (`POST /api/v1/clusters/{cluster_id}/leader`), then scale.
+- New pods never re-run init scripts; those run once per cluster.
+
 ## Agent API
 
 Agent pods call the orchestrator on `/agent/v1`. It is served only on the agent port (`ORCH_AGENT_PORT`, default 8001, reached through the agents Service); the main port answers 404 for it, and the agent port serves nothing else except `/healthz` and `/readyz`. The pod env carries `ORCH_AGENT_URL`, `ORCH_CLUSTER_ID` and `ORCH_AGENT_TOKEN`.
@@ -768,6 +787,10 @@ The init scripts of the caller's cluster and the last init run, so the agent kno
 ### `PUT /agent/v1/init-scripts`
 
 Replaces the caller's cluster init scripts. Body `{"scripts": ["<shell script>", ...]}` with the same limits as the public PUT. Writes the cluster's stored `spec.init_scripts` and its source preset's (when it still exists) in one transaction, with no generation bump and no pod roll; the edit applies to the next cluster created from the preset and never re-runs here. Response 200 with the view above and `preset_updated` true when a preset was written. Errors: 422 `invalid_request` (nothing is written), 409 `conflict` (the cluster is being deleted), plus the 401 and 403 above. These two routes back the plugin tools `orchestrator_init_scripts_get` and `orchestrator_init_scripts_edit`.
+
+### `POST /agent/v1/scale`
+
+The leader grows or shrinks its own cluster. Body `{replicas}`; sets `spec.replicas` in place (no generation bump, no pod roll) through the same writer as the public `POST /api/v1/clusters/{id}/scale`, with the caller checked as leader. Response 202 `{cluster_id, replicas, previous_replicas, max_replicas}`. Errors: 403 `not_leader` (the caller is not the current leader), 409 `static_cluster`, 422 `out_of_range` (outside 1 to `max_replicas`), 409 `leader_would_leave` (the leader's ordinal would be removed), 409 `cluster_deleting`, 422 `invalid_request`, plus the 401 and 403 above. Served only on the agent port; the public scale route is not reachable there. Backs the plugin tool `orchestrator_scale`.
 
 ### File locks
 

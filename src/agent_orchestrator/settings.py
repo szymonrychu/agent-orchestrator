@@ -147,6 +147,7 @@ class Settings(BaseSettings):
     discard_hook_timeout_seconds: float = 120
     discard_quiesce_timeout_seconds: float = 120
     discard_drain_seconds: float = 5
+    scale_drain_seconds: float = 900
 
     any_mcp_repo: str = "https://github.com/szymonrychu/any-mcp"
     any_mcp_ref: str = "v0.2.0"
@@ -313,9 +314,9 @@ class Settings(BaseSettings):
             raise _Bad("must exceed ORCH_AMBIGUOUS_SETTLE_SECONDS")
         return v
 
-    @field_validator("retry_backoff_base_seconds")
+    @field_validator("retry_backoff_base_seconds", "scale_drain_seconds")
     @classmethod
-    def _check_base(cls, v: float) -> float:
+    def _check_positive(cls, v: float) -> float:
         if v <= 0:
             raise _Bad("must be greater than 0")
         return v
