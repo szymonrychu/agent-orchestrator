@@ -72,6 +72,9 @@ SESSION_CONFIGS = (
 READY_TIMEOUT = 900  # onStart pip-installs any-mcp from GitHub in every pod
 TURN_TIMEOUT = 300
 DISCARD_TIMEOUT = 180
+LEADER_TIMEOUT = 90  # election and handover are applied within the dispatcher poll
+HIVE_PUSH_TIMEOUT = 150  # hive push every 10 s, feed rows settle for 5 s
+ALONE_SLUG = "e2e-alone"
 SHELL_TIMEOUT = 60
 EVIL_ORIGIN = "http://evil.example"
 
@@ -170,6 +173,91 @@ def all_events(api: httpx.Client, cluster_id: str) -> list[list[dict[str, Any]]]
         if not body["has_more_before"] or not body["events"]:
             return pages
         params = {"limit": 500, "before_id": body["events"][0]["id"]}
+
+
+def leader_view(api: httpx.Client, cluster_id: str) -> tuple[dict[str, Any] | None, int | None]:
+    """(the leader's agent view, the epoch) from the public cluster view; (None, None) before
+    the first election."""
+    view = api.get(f"/clusters/{cluster_id}").json()
+    leader_id = view.get("leader_agent_id")
+    if not leader_id:
+        return None, None
+    leader = next((a for a in agents_of(api, cluster_id) if a["id"] == leader_id), None)
+    return leader, view["leader_epoch"]
+
+
+def wait_leader(
+    api: httpx.Client, cluster_id: str, epoch: int, agent_id: str | None = None
+) -> dict[str, Any]:
+    """Wait (at most LEADER_TIMEOUT) until the cluster view shows `epoch` (and `agent_id`)."""
+
+    def probe() -> dict[str, Any] | None:
+        leader, current = leader_view(api, cluster_id)
+        ok = leader and current == epoch and (agent_id is None or leader["id"] == agent_id)
+        return leader if ok else None
+
+    return wait_for(f"leader at epoch {epoch}", probe, LEADER_TIMEOUT)
+
+
+# Run inside an agent pod: one agent-API call with the pod's own URL, token and cluster id.
+# argv: method, path, JSON body or "", "token"/"notoken". Prints `RESULT [status, body]`.
+AGENT_CALL = (
+    "import json, os, sys, urllib.request, urllib.error\n"
+    "method, path, body, auth = sys.argv[1:5]\n"
+    "headers = {'X-Orch-Cluster': os.environ['ORCH_CLUSTER_ID']}\n"
+    "if auth == 'token':\n"
+    "    headers['Authorization'] = 'Bearer ' + os.environ['ORCH_AGENT_TOKEN']\n"
+    "data = None\n"
+    "if body:\n"
+    "    data = body.encode()\n"
+    "    headers['Content-Type'] = 'application/json'\n"
+    "url = os.environ['ORCH_AGENT_URL'] + path\n"
+    "req = urllib.request.Request(url, data, headers, method=method)\n"
+    "try:\n"
+    "    r = urllib.request.urlopen(req, timeout=15)\n"
+    "    out = [r.status, r.read().decode()]\n"
+    "except urllib.error.HTTPError as e:\n"
+    "    out = [e.code, e.read().decode()]\n"
+    "print('RESULT ' + json.dumps(out))\n"
+)
+
+
+def pod_exec(pod: str, *argv: str) -> str:
+    return kubectl("exec", pod, "-c", "ccw", "--", *argv, timeout=60).stdout
+
+
+def agent_call(
+    pod: str, method: str, path: str, body: dict[str, Any] | None = None, token: bool = True
+) -> tuple[int, Any]:
+    """Call the agent API from inside `pod` (kubectl exec + python3 urllib); (status, JSON)."""
+    out = pod_exec(
+        pod,
+        "python3",
+        "-c",
+        AGENT_CALL,
+        method,
+        path,
+        json.dumps(body) if body is not None else "",
+        "token" if token else "notoken",
+    )
+    line = next(ln for ln in out.splitlines() if ln.startswith("RESULT "))
+    status, text = json.loads(line.removeprefix("RESULT "))
+    try:
+        return status, json.loads(text)
+    except ValueError:
+        return status, text
+
+
+def pod_name_of(agent: dict[str, Any]) -> str:
+    return agent["pod_name"]
+
+
+def on_start_any_mcp(configmap: dict[str, Any]) -> dict[str, Any]:
+    """The any-mcp JSON a cluster's on-start.sh writes (the heredoc body)."""
+    script = configmap["data"]["on-start.sh"]
+    match = re.search(r"<<'(\w+)'\n(.*?)\n\1\n", script, re.DOTALL)
+    assert match, script
+    return json.loads(match.group(2))
 
 
 def ws_url(api: httpx.Client, agent_id: str, terminal_id: str) -> str:
@@ -326,15 +414,21 @@ def first_idle_after(events: list[dict[str, Any]], agent_id: str, after_id: int)
 def round_robin(api: httpx.Client, cluster: dict[str, Any]) -> dict[str, Any]:
     """Three slow (4 s) messages; each awaited until its turn completed.
 
-    The second is sent DISPATCH_STAGGER seconds after the first was dispatched and the third
-    right after the second was dispatched, so both agents are busy when the third arrives and
-    the first agent frees well before the second.
+    The cluster is a hive, so untargeted messages go to the leader: the first is untargeted
+    (the leader), the second targets the other agent explicitly (an explicit target wins) and
+    the third is untargeted again and waits for the leader. The second is sent DISPATCH_STAGGER
+    seconds after the first was dispatched and the third right after the second was dispatched,
+    so both agents are busy when the third arrives and the leader frees well before the other.
     """
     cid = cluster["id"]
-    by_free = sorted(agents_of(api, cid), key=lambda a: a["free_since"])
+    leader = wait_for("a leader", lambda: leader_view(api, cid)[0], LEADER_TIMEOUT)
+    other = next(a for a in agents_of(api, cid) if a["id"] != leader["id"])
 
-    def send(n: int) -> int:
-        resp = api.post(f"/clusters/{cid}/messages", json={"text": SLOW_PROMPT.format(n=n)})
+    def send(n: int, target: str | None = None) -> int:
+        body: dict[str, Any] = {"text": SLOW_PROMPT.format(n=n)}
+        if target:
+            body["target_agent_id"] = target
+        resp = api.post(f"/clusters/{cid}/messages", json=body)
         assert resp.status_code == 202, resp.text
         return resp.json()["message_id"]
 
@@ -348,7 +442,7 @@ def round_robin(api: httpx.Client, cluster: dict[str, Any]) -> dict[str, Any]:
     ids = [send(1)]
     wait_for("message 1 dispatched", dispatched(ids[0]), TURN_TIMEOUT, interval=0.2)
     time.sleep(DISPATCH_STAGGER)
-    ids.append(send(2))
+    ids.append(send(2, other["id"]))
     wait_for("message 2 dispatched", dispatched(ids[1]), TURN_TIMEOUT, interval=0.2)
 
     def both_busy() -> dict[str, str] | None:
@@ -375,7 +469,8 @@ def round_robin(api: httpx.Client, cluster: dict[str, Any]) -> dict[str, Any]:
         m["agent_id"]: first_idle_after(events, m["agent_id"], both_started) for m in messages[:2]
     }
     return {
-        "by_free_since": by_free,
+        "leader": leader,
+        "other": other,
         "busy_before_third": busy,
         "messages": messages,
         "freed_event_id": freed,
@@ -419,20 +514,17 @@ def test_chart_installed_and_helm_test_passes(api: httpx.Client) -> None:
 
 
 def test_round_robin_by_free_since(round_robin: dict[str, Any]) -> None:
-    by_free = round_robin["by_free_since"]
+    leader, other = round_robin["leader"], round_robin["other"]
     m1, m2, m3 = round_robin["messages"]
-    assert len({a["id"] for a in by_free}) == 2
-    # the first two go to different agents, the longest-free one first
-    assert m1["agent_id"] == by_free[0]["id"], (m1, by_free)
-    assert m2["agent_id"] == by_free[1]["id"], (m2, by_free)
-    assert m1["agent_id"] != m2["agent_id"]
-    # both were busy when the third arrived; it goes to the agent that freed first, which
-    # is the one whose idle transition (free_since) the ingester recorded first
+    # untargeted goes to the leader of a hive, an explicit target wins
+    assert m1["agent_id"] == leader["id"], (m1, leader)
+    assert m2["agent_id"] == other["id"], (m2, other)
+    # both were busy when the third arrived; it waited for the leader, which freed first
     assert set(round_robin["busy_before_third"].values()) == {"busy"}, round_robin
     freed = round_robin["freed_event_id"]
     first_freed = min(freed, key=freed.__getitem__)
     assert first_freed == m1["agent_id"], (freed, m1, m2)
-    assert m3["agent_id"] == first_freed, (freed, m1, m2, m3)
+    assert m3["agent_id"] == leader["id"] == first_freed, (freed, m1, m2, m3)
     for m in (m1, m2, m3):
         assert m["attempts"] == 0 and m["error"] is None, m  # sent first time, no retry
         assert m["turn_id"], m
@@ -677,6 +769,233 @@ def test_terminal_websocket_refuses_foreign_origin(
         with attach(api, agent_id, term["terminal_id"]) as ws:
             ws.send(b"echo still-$((6*7))\n")
             read_until(ws, r"^still-42$")
+
+
+# ------------------------------------------------------------------ hive tests (API only)
+
+WRITE_PROMPT = (
+    "write note file"  # the scenario turn that Writes NOTE_FILE (e2e/agent-test.scenario.json)
+)
+NOTE_FILE = "e2e-note.txt"
+
+
+def test_agent_api_identity(api: httpx.Client, cluster: dict[str, Any]) -> None:
+    pod0 = f"agent-{SLUG}-0"
+    status, me = agent_call(pod0, "GET", "/agent/v1/me")
+    assert status == 200, me
+    assert me["pod_name"] == pod0 and me["cluster_id"] == cluster["id"], me
+    assert {m["pod_name"] for m in me["members"]} == {pod0, f"agent-{SLUG}-1"}, me
+    assert me["static"] is False and me["max_replicas"] == 2, me
+
+    status, body = agent_call(pod0, "GET", "/agent/v1/me", token=False)
+    assert status == 401, body
+
+    # the agents port serves nothing but /agent/v1, /healthz and /readyz
+    status, body = agent_call(pod0, "GET", "/api/v1/clusters")
+    assert status == 404, body
+
+    # a pod that is not an agent of the cluster is refused even with a valid token
+    token = pod_exec(pod0, "printenv", "ORCH_AGENT_TOKEN").strip()
+    url = pod_exec(pod0, "printenv", "ORCH_AGENT_URL").strip()
+    image = kube_json("get", "deployment", f"{RELEASE}-api")["spec"]["template"]["spec"][
+        "containers"
+    ][0]["image"]
+    script = (
+        "import json, urllib.request, urllib.error\n"
+        f"req = urllib.request.Request('{url}/agent/v1/me', headers={{\n"
+        f"    'Authorization': 'Bearer {token}', 'X-Orch-Cluster': '{cluster['id']}'}})\n"
+        "try:\n"
+        "    r = urllib.request.urlopen(req, timeout=10)\n"
+        "    out = [r.status, r.read().decode()]\n"
+        "except urllib.error.HTTPError as e:\n"
+        "    out = [e.code, e.read().decode()]\n"
+        "print('RESULT ' + json.dumps(out))\n"
+    )
+    pod = f"identity-probe-{uuid.uuid4().hex[:6]}"
+    overrides = {
+        "spec": {
+            "restartPolicy": "Never",
+            "automountServiceAccountToken": False,
+            "containers": [
+                {
+                    "name": "probe",
+                    "image": image,
+                    "imagePullPolicy": "IfNotPresent",
+                    "command": ["python", "-c", script],
+                }
+            ],
+        }
+    }
+    kubectl(
+        "run", pod, f"--image={image}", "--restart=Never", f"--overrides={json.dumps(overrides)}"
+    )
+    try:
+        kubectl("wait", f"pod/{pod}", "--for=jsonpath={.status.phase}=Succeeded", "--timeout=180s")
+        logs = kubectl("logs", pod).stdout
+    finally:
+        kubectl("delete", "pod", pod, "--wait=false", check=False)
+    line = next(ln for ln in logs.splitlines() if ln.startswith("RESULT "))
+    code, text = json.loads(line.removeprefix("RESULT "))
+    assert code == 403, (code, text)
+    assert json.loads(text)["error"]["code"] == "forbidden", text
+
+
+def test_leadership_handover_routes(api: httpx.Client, cluster: dict[str, Any]) -> None:
+    cid = cluster["id"]
+    first = wait_leader(api, cid, 1)
+    other = next(a for a in agents_of(api, cid) if a["id"] != first["id"])
+    status, me = agent_call(first["pod_name"], "GET", "/agent/v1/me")
+    assert status == 200 and me["leader"] == first["pod_name"] and me["epoch"] == 1, me
+
+    status, body = agent_call(
+        first["pod_name"],
+        "POST",
+        "/agent/v1/leadership/handover",
+        {"to": other["pod_name"], "reason": "e2e handover", "epoch": 1},
+    )
+    assert status == 202 and body["request_id"], body
+    wait_leader(api, cid, 2, other["id"])
+
+    resp = api.post(f"/clusters/{cid}/messages", json={"text": "hello after the handover"})
+    assert resp.status_code == 202, resp.text
+    mid = resp.json()["message_id"]
+
+    def done() -> dict[str, Any] | None:
+        view = message(api, mid)
+        turn = view["turn"]
+        return view if view["status"] == "sent" and turn and turn["completed_at"] else None
+
+    view = wait_for("untargeted message completed", done, TURN_TIMEOUT, interval=1)
+    assert view["agent_id"] == other["id"], (view, other)
+
+
+def test_user_make_leader(api: httpx.Client, cluster: dict[str, Any]) -> None:
+    cid = cluster["id"]
+    leader, epoch = leader_view(api, cid)
+    assert leader is not None and epoch is not None
+    target = next(a for a in agents_of(api, cid) if a["id"] != leader["id"])
+    resp = api.post(f"/clusters/{cid}/leader", json={"agent_id": target["id"]})
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["request_id"], resp.text
+    wait_leader(api, cid, epoch + 1, target["id"])
+    assert next(a for a in agents_of(api, cid) if a["id"] == target["id"])["leader"] is True
+
+
+def test_advisory_locks(api: httpx.Client, cluster: dict[str, Any]) -> None:
+    cid = cluster["id"]
+    leader, _ = leader_view(api, cid)
+    assert leader is not None
+    agents = sorted(agents_of(api, cid), key=lambda a: a["ordinal"])
+    pod0, pod1 = (pod_name_of(a) for a in agents)
+    member = next(pod for pod in (pod0, pod1) if pod != leader["pod_name"])
+    path = f"e2e-lock-{uuid.uuid4().hex[:6]}.txt"
+
+    status, body = agent_call(pod0, "POST", "/agent/v1/locks/claim", {"paths": [path]})
+    assert status == 200 and body == {"claimed": [path], "held": []}, body
+
+    status, body = agent_call(pod1, "GET", "/agent/v1/locks")
+    assert status == 200, body
+    assert [(x["path"], x["agent"]) for x in body["locks"] if x["path"] == path] == [(path, pod0)]
+
+    status, body = agent_call(pod1, "POST", "/agent/v1/locks/claim", {"paths": [path]})
+    assert status == 200 and body["claimed"] == [], body
+    assert body["held"] == [{"path": path, "agent": pod0}], body
+
+    hook = {"data": {"tool_name": "Write", "tool_input": {"file_path": f"/workdir/workdir/{path}"}}}
+    status, body = agent_call(pod1, "POST", "/agent/v1/locks/check", hook)
+    assert status == 200 and body["decision"] == "allow", body
+    assert pod0 in body["additional_context"] and path in body["additional_context"], body
+
+    status, body = agent_call(
+        member, "POST", "/agent/v1/locks/reassign", {"path": path, "to": None}
+    )
+    assert status == 403, body
+    assert body["error"]["code"] == "not_leader", body
+
+    status, body = agent_call(
+        leader["pod_name"], "POST", "/agent/v1/locks/reassign", {"path": path, "to": None}
+    )
+    assert status == 200 and body == {"path": path, "agent": None}, body
+    status, body = agent_call(pod1, "GET", "/agent/v1/locks")
+    assert all(x["path"] != path for x in body["locks"]), body
+
+
+def test_hive_notes_delivered(api: httpx.Client, cluster: dict[str, Any]) -> None:
+    cid = cluster["id"]
+    writer, reader = sorted(agents_of(api, cid), key=lambda a: a["ordinal"])
+    resp = api.post(
+        f"/clusters/{cid}/messages",
+        json={"text": WRITE_PROMPT, "target_agent_id": writer["id"]},
+    )
+    assert resp.status_code == 202, resp.text
+
+    def notes() -> list[dict[str, Any]]:
+        events = (e for page in all_events(api, cid) for e in page)
+        return [e for e in events if e["type"] == "note_received"]
+
+    def feed_on_reader() -> bool:
+        return any(
+            e["agent_id"] == reader["id"]
+            and e["data"].get("key") is None
+            and NOTE_FILE in e["data"].get("text", "")
+            for e in notes()
+        )
+
+    wait_for(
+        f"a feed note naming {NOTE_FILE} on the other agent", feed_on_reader, HIVE_PUSH_TIMEOUT, 3
+    )
+    received = notes()
+    for agent in (writer, reader):
+        keyed = [
+            e
+            for e in received
+            if e["agent_id"] == agent["id"] and e["data"].get("key") == "hive_state"
+        ]
+        assert keyed, (agent["pod_name"], received)
+        assert "hive-state" in keyed[-1]["data"]["text"], keyed[-1]
+
+
+def test_alone_cluster_has_no_hive_tools(api: httpx.Client, cluster: dict[str, Any]) -> None:
+    resp = api.post(
+        "/clusters",
+        json={
+            "slug": ALONE_SLUG,
+            "spec": {"replicas": 1, "static": True, "env": FAKE_TURN_ENV},
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    alone = resp.json()
+    try:
+        assert alone["hive"] is False and alone["leader_agent_id"] is None, alone
+        name = f"agent-{ALONE_SLUG}-config"
+
+        def rendered() -> dict[str, Any] | None:
+            proc = kubectl("get", "configmap", name, "-o", "json", check=False)
+            return json.loads(proc.stdout) if proc.returncode == 0 else None
+
+        configmap = wait_for("the alone cluster's ConfigMap", rendered, 120)
+        config = yaml.safe_load(configmap["data"]["config.yaml"])
+        assert config["notes"] == {"enabled": False}, config
+        assert "peers" not in config or not config["peers"].get("enabled"), config
+        assert "onAgentToolCall" not in config["hooks"], config["hooks"]
+        plugins = on_start_any_mcp(configmap).get("plugins", [])
+        assert "orchestrator" not in {p.get("name") for p in plugins}, plugins
+
+        # the hive cluster of the same release renders the plugin entry, so the parse is sound
+        hive_map = kube_json("get", "configmap", f"agent-{SLUG}-config")
+        hive_plugins = on_start_any_mcp(hive_map).get("plugins", [])
+        assert "orchestrator" in {p.get("name") for p in hive_plugins}, hive_plugins
+        assert yaml.safe_load(hive_map["data"]["config.yaml"])["notes"] == {"enabled": True}
+    finally:
+        api.delete(f"/clusters/{alone['id']}")
+
+        def gone() -> bool:
+            return (
+                not labelled_objects(ALONE_SLUG)
+                and api.get(f"/clusters/{alone['id']}").status_code == 404
+            )
+
+        wait_for(f"cluster {ALONE_SLUG} objects to be deleted", gone, DISCARD_TIMEOUT)
 
 
 def pods_of(slug: str) -> dict[str, str]:
