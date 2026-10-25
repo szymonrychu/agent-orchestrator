@@ -94,6 +94,31 @@ env:
       secretKeyRef:
         name: {{ include "agent-orchestrator.masterKeySecretName" . }}
         key: {{ .Values.masterKey.existingSecretKey | default "master-key" }}
+{{- if or .Values.serviceApi.existingSecret .Values.serviceApi.tokenHashes }}
+  - name: ORCH_SERVICE_TOKENS
+    valueFrom:
+      secretKeyRef:
+        name: {{ include "agent-orchestrator.serviceTokensSecretName" . }}
+        key: {{ .Values.serviceApi.existingSecretKey | default "service-tokens" }}
+{{- end }}
+{{- end }}
+
+{{/* Name of the Secret holding ORCH_SERVICE_TOKENS: existingSecret wins over the chart Secret. */}}
+{{- define "agent-orchestrator.serviceTokensSecretName" -}}
+{{- default (printf "%s-services" (include "agent-orchestrator.fullname" .)) .Values.serviceApi.existingSecret -}}
+{{- end }}
+
+{{/* CSV name:sha256hex of serviceApi.tokenHashes sorted by name; a malformed hash fails the render. */}}
+{{- define "agent-orchestrator.serviceTokensCsv" -}}
+{{- $pairs := list -}}
+{{- range $name := keys .Values.serviceApi.tokenHashes | sortAlpha -}}
+{{- $hash := index $.Values.serviceApi.tokenHashes $name | toString -}}
+{{- if not (regexMatch "^[0-9a-f]{64}$" $hash) -}}
+{{- fail (printf "agent-orchestrator: serviceApi.tokenHashes.%s must be 64 lowercase hex characters (sha256)" $name) -}}
+{{- end -}}
+{{- $pairs = append $pairs (printf "%s:%s" $name $hash) -}}
+{{- end -}}
+{{- join "," $pairs -}}
 {{- end }}
 
 {{/*

@@ -61,6 +61,18 @@ service:
 agentApi:
   port: 8001
 
+# Service API port (other microservices). The api container listens on it (named port
+# "services", never "http", so the oauth2-proxy injector does not front it) and the
+# cluster-internal Service <fullname>-services exposes it. It is never on the ingress.
+# Becomes ORCH_SERVICE_PORT. ORCH_SERVICE_TOKENS comes from existingSecret/existingSecretKey,
+# or from the chart Secret built from tokenHashes (service name -> sha256 hex of its token;
+# each service's values file adds its own key). existingSecret wins when set.
+serviceApi:
+  port: 8002
+  existingSecret: ""
+  existingSecretKey: service-tokens
+  tokenHashes: {}
+
 # The reconciler Role and RoleBinding (namespaced, release namespace only). The Role is
 # bound to the <fullname>-reconciler ServiceAccount.
 rbac:

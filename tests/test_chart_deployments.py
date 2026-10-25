@@ -96,6 +96,7 @@ def test_api_service_and_probes() -> None:
     assert api["ports"] == [
         {"name": "http", "containerPort": 8000, "protocol": "TCP"},
         {"name": "agents", "containerPort": 8001, "protocol": "TCP"},
+        {"name": "services", "containerPort": 8002, "protocol": "TCP"},
     ]
     assert api["livenessProbe"]["httpGet"] == {"path": "/healthz", "port": "http"}
     assert api["readinessProbe"]["httpGet"] == {"path": "/readyz", "port": "http"}
@@ -172,7 +173,7 @@ def test_agents_service() -> None:
     ports = {
         p["name"]: p["containerPort"] for p in _container(_deployments()[f"{FULL}-api"])["ports"]
     }
-    assert ports == {"http": 8000, "agents": 8001}
+    assert ports == {"http": 8000, "agents": 8001, "services": 8002}
     custom = {d["metadata"]["name"]: d for d in _kind("Service", {"agentApi": {"port": 9100}})}
     assert custom[f"{FULL}-agents"]["spec"]["ports"][0]["port"] == 9100
     assert custom[f"{FULL}-agents"]["spec"]["ports"][0]["targetPort"] == "agents"
