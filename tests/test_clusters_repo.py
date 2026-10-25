@@ -1,5 +1,8 @@
 import inspect
+import json
+import uuid
 
+import psycopg
 import pytest
 from factories import (
     insert_agent,
@@ -215,3 +218,129 @@ def test_validate_spec_stored_exception_kept():
         validate_spec(ClusterSpec(model="other-model", effort="legacy-effort"), settings, stored)
     with pytest.raises(SpecInvalid):
         validate_spec(ClusterSpec(model="legacy-model", effort="other-effort"), settings, stored)
+
+
+async def _spec_row(pool, cluster_id):
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT spec, generation, observed_generation FROM clusters WHERE id = %s",
+            (cluster_id,),
+        )
+        return await cur.fetchone()
+
+
+async def _make_leader(pool, cluster_id, agent_id):
+    async with pool.connection() as conn:
+        await conn.execute(
+            "INSERT INTO cluster_leaders (cluster_id, agent_id, epoch, since, reason)"
+            " VALUES (%s, %s, 1, now(), 'test')",
+            (cluster_id, agent_id),
+        )
+
+
+async def _scalable(pool, **spec):
+    from factories import insert_cluster
+
+    body = {"replicas": 2, "max_replicas": 4, **spec}
+    return await insert_cluster(pool, spec=body, generation=3, observed_generation=3)
+
+
+class _Listener:
+    """A LISTEN connection on cluster_changed; payloads() drains what arrived so far."""
+
+    def __init__(self, dsn):
+        self.dsn = dsn
+
+    async def __aenter__(self):
+        self.conn = await psycopg.AsyncConnection.connect(self.dsn, autocommit=True)
+        await self.conn.execute("LISTEN cluster_changed")
+        return self
+
+    async def __aexit__(self, *exc):
+        await self.conn.close()
+
+    async def payloads(self, wait=0.5):
+        got = []
+        gen = self.conn.notifies(timeout=wait)
+        async for n in gen:
+            got.append(n.payload)
+        return got
+
+
+async def test_set_replicas_updates_spec_without_generation_bump(pool, dsn):
+    c = await _scalable(pool, image="img:9")
+    before = await _spec_row(pool, c["id"])
+    async with _Listener(dsn) as lis, pool.connection() as conn:
+        out = await clusters.set_replicas(conn, c["id"], 4)
+        got = await lis.payloads()
+    assert (out.cluster_id, out.replicas, out.previous_replicas, out.max_replicas) == (
+        c["id"],
+        4,
+        2,
+        4,
+    )
+    assert got == [json.dumps({"cluster_id": str(c["id"])})]
+    spec, gen, obs = await _spec_row(pool, c["id"])
+    assert (gen, obs) == (before[1], before[2])
+    assert spec["replicas"] == 4
+    assert {k: v for k, v in spec.items() if k != "replicas"} == {
+        k: v for k, v in before[0].items() if k != "replicas"
+    }
+    async with pool.connection() as conn:
+        assert (await clusters.get(conn, c["id"])).spec.replicas == 4
+
+
+async def _refused(pool, cluster_id, replicas, **kw):
+    async with pool.connection() as conn:
+        with pytest.raises(clusters.ScaleRefused) as e:
+            await clusters.set_replicas(conn, cluster_id, replicas, **kw)
+    return e.value.code
+
+
+async def test_set_replicas_refusals(pool):
+    from factories import insert_cluster
+
+    c = await _scalable(pool)
+    before = await _spec_row(pool, c["id"])
+    assert await _refused(pool, c["id"], 0) == "out_of_range"
+    assert await _refused(pool, c["id"], 5) == "out_of_range"
+    static = await insert_cluster(pool, spec={"replicas": 2, "static": True})
+    assert await _refused(pool, static["id"], 1) == "static_cluster"
+    dying = await insert_cluster(pool, spec={"replicas": 2, "max_replicas": 4}, desired="deleting")
+    assert await _refused(pool, dying["id"], 3) == "cluster_deleting"
+    assert await _spec_row(pool, c["id"]) == before
+    assert (await _spec_row(pool, dying["id"]))[0]["replicas"] == 2
+    assert (await _spec_row(pool, static["id"]))[0]["replicas"] == 2
+    async with pool.connection() as conn:
+        with pytest.raises(clusters.ClusterNotFound):
+            await clusters.set_replicas(conn, uuid.uuid4(), 2)
+
+
+async def test_set_replicas_leader_rules(pool):
+    c = await _scalable(pool, replicas=4)
+    free = await _scalable(pool)
+    async with pool.connection() as conn:
+        out = await clusters.set_replicas(conn, free["id"], 1)
+    assert out.replicas == 1
+    zero = await insert_agent(pool, c["id"], ordinal=0)
+    two = await insert_agent(pool, c["id"], ordinal=2)
+    await _make_leader(pool, c["id"], two["id"])
+    assert await _refused(pool, c["id"], 3, caller_agent_id=zero["id"]) == "not_leader"
+    assert await _refused(pool, c["id"], 2, caller_agent_id=two["id"]) == "leader_would_leave"
+    assert await _refused(pool, c["id"], 2) == "leader_would_leave"
+    async with pool.connection() as conn:
+        out = await clusters.set_replicas(conn, c["id"], 3, caller_agent_id=two["id"])
+    assert (out.replicas, out.previous_replicas) == (3, 4)
+
+
+async def test_set_replicas_unchanged_is_noop(pool, dsn):
+    c = await _scalable(pool)
+    async with pool.connection() as conn:
+        await conn.execute("UPDATE clusters SET status = '{}'::jsonb WHERE id = %s", (c["id"],))
+    before = await _spec_row(pool, c["id"])
+    async with _Listener(dsn) as lis, pool.connection() as conn:
+        out = await clusters.set_replicas(conn, c["id"], 2)
+        got = await lis.payloads()
+    assert (out.replicas, out.previous_replicas, out.max_replicas) == (2, 2, 4)
+    assert got == []
+    assert await _spec_row(pool, c["id"]) == before

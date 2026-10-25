@@ -29,6 +29,23 @@ class ClusterBeingDeleted(Exception):
     """The cluster is being deleted and takes no more edits."""
 
 
+class ScaleRefused(Exception):
+    """A replica change was refused; `code` is one of cluster_deleting, not_leader,
+    static_cluster, out_of_range, leader_would_leave."""
+
+    def __init__(self, code: str, message: str = "") -> None:
+        super().__init__(message or code)
+        self.code = code
+
+
+@dataclass(frozen=True)
+class ScaleOutcome:
+    cluster_id: uuid.UUID
+    replicas: int
+    previous_replicas: int
+    max_replicas: int
+
+
 @dataclass(frozen=True)
 class Cluster:
     id: uuid.UUID
@@ -168,6 +185,57 @@ async def set_init_scripts(
                 preset_written = True
         await _notify(conn, cluster_id)
     return rows[0], preset_written
+
+
+async def set_replicas(
+    conn: psycopg.AsyncConnection,
+    cluster_id: uuid.UUID,
+    replicas: int,
+    *,
+    caller_agent_id: uuid.UUID | None = None,
+) -> ScaleOutcome:
+    """The one writer of the runtime replica count: spec.replicas, in place.
+
+    No generation bump: a replica change never touches the pod template. Lock order is the
+    cluster row, then a read of cluster_leaders joined to agents (never written here).
+    Refusals, in order: cluster_deleting, not_leader, static_cluster, out_of_range,
+    leader_would_leave. An unchanged value writes and notifies nothing.
+    """
+    async with conn.transaction():
+        locked = await _fetch(
+            conn, "SELECT * FROM clusters WHERE id = %s FOR UPDATE", (cluster_id,)
+        )
+        if not locked:
+            raise ClusterNotFound(str(cluster_id))
+        cluster = locked[0]
+        spec = cluster.spec
+        if cluster.desired != "active":
+            raise ScaleRefused("cluster_deleting")
+        cur = await conn.execute(
+            "SELECT l.agent_id, a.ordinal FROM cluster_leaders l"
+            " JOIN agents a ON a.id = l.agent_id WHERE l.cluster_id = %s",
+            (cluster_id,),
+        )
+        leader = await cur.fetchone()
+        if caller_agent_id is not None and (leader is None or leader[0] != caller_agent_id):
+            raise ScaleRefused("not_leader")
+        if spec.static:
+            raise ScaleRefused("static_cluster")
+        max_replicas = spec.max_replicas or spec.replicas
+        if not 1 <= replicas <= max_replicas:
+            raise ScaleRefused("out_of_range", f"replicas must be 1..{max_replicas}")
+        if leader is not None and leader[1] >= replicas:
+            raise ScaleRefused("leader_would_leave")
+        outcome = ScaleOutcome(cluster_id, replicas, spec.replicas, max_replicas)
+        if replicas == spec.replicas:
+            return outcome
+        await conn.execute(
+            "UPDATE clusters SET spec = jsonb_set(spec, '{replicas}', to_jsonb(%s::int))"
+            " WHERE id = %s AND desired = 'active'",
+            (replicas, cluster_id),
+        )
+        await _notify(conn, cluster_id)
+    return outcome
 
 
 async def set_status(
