@@ -38,6 +38,7 @@ from agent_orchestrator.k8s.labels import cluster_labels, object_names, prefix
 from agent_orchestrator.k8s.render import pod_url, render_cluster
 from agent_orchestrator.reconciler.checks import CheckRunner
 from agent_orchestrator.reconciler.discard_hook import HookResult, resolve_hook, run_discard_hook
+from agent_orchestrator.reconciler.init import InitGate, InitRunner
 from agent_orchestrator.reconciler.sessions import SessionBootstrapper
 from agent_orchestrator.settings import Settings
 from agent_orchestrator.tokens import tokens_for
@@ -48,8 +49,8 @@ CHANNELS = ("cluster_changed",)
 GUARDED_KINDS = frozenset({"StatefulSet", "Service", "ConfigMap", "PersistentVolumeClaim"})
 # Deletion order: the StatefulSet first so its pods stop using the config and the volume.
 PRUNE_ORDER = ("StatefulSet", "Service", "ConfigMap", "PersistentVolumeClaim")
-# A discard also deletes the check Jobs, ahead of the PVC they mount. A converge never prunes
-# them: they are created per check, not rendered.
+# A discard also deletes the check Jobs and the init Job, ahead of the PVC they mount. A converge
+# never prunes them: they are created per check and once per cluster, not rendered.
 DISCARD_ORDER = ("Job", *PRUNE_ORDER)
 
 _HOOK_FAILURE_KEYS = ("discard_hook_failed", "discard_hook_failures", "discard_hook_next_at")
@@ -73,6 +74,7 @@ class Reconciler:
         self._warned_no_agent_url: set[UUID] = set()
         self.hook_transport: httpx.AsyncBaseTransport | None = None
         self.checks = CheckRunner(pool, kube, settings)
+        self.init = InitRunner(pool, kube, settings, write_status=self._write_status)
         self.bootstrapper = (
             SessionBootstrapper(pool, wrapper_factory) if wrapper_factory is not None else None
         )
@@ -222,6 +224,7 @@ class Reconciler:
             await self.kube.apply(obj, field_manager=FIELD_MANAGER, force=True)
         desired = {(o["kind"], o["metadata"]["name"]) for o in objs}
         await self._prune(slug, desired)
+        gate = await self.init.step(cluster)
 
         replicas = cluster.spec.replicas
         ready = await self._observe(cluster)
@@ -230,9 +233,14 @@ class Reconciler:
         else:
             phase = "pending" if ready == 0 else "degraded"
             message = f"{ready} of {replicas} pods ready"
-        problems = await self._bootstrap_sessions(cluster)
-        if problems:
-            message = "; ".join(filter(None, [message, *problems]))
+        problems: list[str] = []
+        if gate.hold:  # sessions wait for the init run
+            phase = "pending"
+        else:
+            problems = await self._bootstrap_sessions(cluster)
+            if gate.degraded:  # a failed init starts the sessions anyway
+                phase = "degraded"
+        message = "; ".join(filter(None, [message, gate.message, *problems]))
         log.debug("cluster %s in %s: %s", slug, ns, phase)
         await self._write_status(
             cluster,
@@ -495,6 +503,9 @@ class Reconciler:
         agent = replace(agent, session_id=None, session_created_at=None)
         if self.bootstrapper is None or not agent.ready:
             return "done", {"cleared": True, "bootstrapped": False}
+        gate = InitGate.of(cluster.status.get("init"), cluster.spec.init_scripts)
+        if gate.hold:  # the converge bootstraps it once the init run is over
+            return "done", {"cleared": True, "bootstrapped": False, "message": gate.message}
         token = tokens_for(self.settings, cluster.id).auth
         problem = await self.bootstrapper.bootstrap(agent, cluster.spec, token)
         if problem:  # the session stays cleared; the next reconcile tick bootstraps it again (D6)

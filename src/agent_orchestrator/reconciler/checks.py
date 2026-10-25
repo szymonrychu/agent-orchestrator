@@ -77,14 +77,14 @@ def render_job(cluster: Cluster, check: queue.Check, settings: Settings) -> Obj:
     }
 
 
-def _condition(job: Obj, kind: str) -> dict[str, Any] | None:
+def job_condition(job: Obj, kind: str) -> dict[str, Any] | None:
     for cond in (job.get("status") or {}).get("conditions") or []:
         if cond.get("type") == kind and cond.get("status") == "True":
             return cond
     return None
 
 
-def _tail(log_text: str) -> str:
+def log_tail(log_text: str) -> str:
     lines = log_text.splitlines()[-TAIL_LINES:]
     data = "\n".join(lines).encode()
     if len(data) > TAIL_BYTES:
@@ -160,10 +160,12 @@ class CheckRunner:
         if not is_owned(job, cluster.slug):
             await self._complete(check, "failed", None, "foreign_object")
             return
-        failed = _condition(job, "Failed")
+        failed = job_condition(job, "Failed")
         if failed is not None and failed.get("reason") == "DeadlineExceeded":
             await self._complete(check, "failed", None, "timeout")
-        elif _condition(job, "Complete") is not None or (job.get("status") or {}).get("succeeded"):
+        elif job_condition(job, "Complete") is not None or (job.get("status") or {}).get(
+            "succeeded"
+        ):
             await self._finish(check, cluster, name, "passed")
         elif failed is not None or (job.get("status") or {}).get("failed"):
             await self._finish(check, cluster, name, "failed")
@@ -179,13 +181,13 @@ class CheckRunner:
         tail: str | None = None
         if pod is not None:
             if status == "failed":
-                exit_code = _exit_code(pod)
+                exit_code = container_exit_code(pod)
             text = await self.kube.read_pod_log(ns, pod["metadata"]["name"], TAIL_LINES)
-            tail = _tail(text)
+            tail = log_tail(text)
         await self._complete(check, status, exit_code, tail)
 
 
-def _exit_code(pod: Obj) -> int | None:
+def container_exit_code(pod: Obj) -> int | None:
     for cs in (pod.get("status") or {}).get("containerStatuses") or []:
         terminated = (cs.get("state") or {}).get("terminated")
         if terminated is not None and "exitCode" in terminated:
