@@ -313,6 +313,12 @@ Delivery is at-least-once. Success writes `status.discard_hook_delivered` (datab
 
 A failing hook holds the discard: nothing is deleted, the cluster stays `deleting`, and the status records `discard_hook_failed` (the reason), `discard_hook_failures` (the count) and `discard_hook_next_at`. The hook is retried on a later reconcile once the database clock passes `discard_hook_next_at`, with the backoff `ORCH_RETRY_BACKOFF_BASE_SECONDS` doubling up to `ORCH_RETRY_BACKOFF_MAX_SECONDS`. One cluster's failing hook never stops the other clusters reconciling.
 
+### Autoclose
+
+A cluster whose spec sets `autoclose_after_seconds` closes itself: once `created_at` plus that many seconds has passed, the api sweeper marks it `deleting`, and the reconciler discards it exactly as for `DELETE /api/v1/clusters/{id}` (discard hook export included, no handoff turn). The time is counted from `created_at`, not from the last activity. The value must be at least `ORCH_AUTOCLOSE_MIN_SECONDS` (default 300). The sweeper polls every 10 s, so a cluster closes up to about 10 s after its deadline. Every api replica runs the sweeper; the update is status-guarded (`WHERE desired = 'active'`), so each cluster is flipped once.
+
+The `clusters` table keeps one writer, the api: the sweeper is an api background task that writes `desired` and `generation` (the same write as `DELETE`), never the reconciler.
+
 ## Architecture
 
 One repo and one image; the entrypoint is `orch <cmd>`. The processes coordinate only through Postgres.

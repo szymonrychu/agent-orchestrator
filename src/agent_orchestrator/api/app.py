@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -10,7 +12,16 @@ from fastapi.responses import JSONResponse
 from psycopg_pool import AsyncConnectionPool
 
 from agent_orchestrator import __version__
-from agent_orchestrator.api import agent, clusters, errors, messages, presets, streams, workspace
+from agent_orchestrator.api import (
+    agent,
+    autoclose,
+    clusters,
+    errors,
+    messages,
+    presets,
+    streams,
+    workspace,
+)
 from agent_orchestrator.api.allowlist import PortGate, SourceAllowlist
 from agent_orchestrator.api.errors import error_response
 from agent_orchestrator.api.listener import Listener
@@ -32,9 +43,14 @@ def create_app(
         if owns_pool:
             app.state.pool = await open_pool(settings.database_url)
         await listener.start()
+        sweeper = asyncio.create_task(autoclose.sweep(app.state.pool), name="autoclose")
+        app.state.autoclose_task = sweeper
         try:
             yield
         finally:
+            sweeper.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await sweeper
             await listener.stop()
             await workspace.close_client(app)
             if owns_pool:
