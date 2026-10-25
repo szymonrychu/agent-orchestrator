@@ -16,6 +16,7 @@ CONFIG_PATH = f"{ROOT}/etc/any-mcp.yaml"
 
 PLUGIN_NAME = "orchestrator"
 PLUGIN_CLASS = "any_mcp.orchestrator:OrchestratorPlugin"
+SCALE_TOOL = "scale"
 HIVE_TOOLS = [
     "me",
     "leadership_handover",
@@ -28,7 +29,9 @@ HIVE_TOOLS = [
 
 def orchestrator_allow(spec: ClusterSpec) -> list[str]:
     """The orchestrator tools this cluster's agents may call; empty means no plugin entry."""
-    return list(HIVE_TOOLS) if spec.hive else []
+    if not spec.hive:
+        return []
+    return [*HIVE_TOOLS, SCALE_TOOL] if spec.scalable else list(HIVE_TOOLS)
 
 
 def _orchestrator_entry(
