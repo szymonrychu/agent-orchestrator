@@ -13,7 +13,7 @@ from agents_orchestrator.api.errors import ApiError, not_found
 from agents_orchestrator.api.sessions import Cfg, Pool, check_spec
 from agents_orchestrator.db import presets as repo
 from agents_orchestrator.settings import Settings
-from agents_orchestrator.spec import SessionSpec
+from agents_orchestrator.spec import SessionSpec, default_cache_key
 
 router = APIRouter(prefix="/api/v1")
 
@@ -40,7 +40,10 @@ def _checked_name(name: str) -> str:
 
 
 def _validated(
-    body: schemas.PresetIn, settings: Settings, stored: dict[str, Any] | None = None
+    body: schemas.PresetIn,
+    settings: Settings,
+    stored: dict[str, Any] | None = None,
+    preset_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     """Check name and spec; return the spec as the caller sent it (no defaults filled)."""
     _checked_name(body.name)
@@ -50,7 +53,8 @@ def _validated(
             stored_spec = SessionSpec.model_validate(stored)
         except ValidationError:
             stored_spec = None
-    check_spec(body.spec, settings, stored_spec)
+    derived = default_cache_key(preset_id) if preset_id is not None else None
+    check_spec(body.spec, settings, stored_spec, derived_cache_key=derived)
     return body.spec.model_dump(mode="json", exclude_unset=True)
 
 
@@ -106,7 +110,7 @@ async def replace_preset(
         stored = await repo.get(conn, preset_id)
         if stored is None:
             raise not_found("preset")
-        spec = _validated(body, settings, stored.spec)
+        spec = _validated(body, settings, stored.spec, preset_id)
         try:
             return _view(await repo.update(conn, preset_id, body.name, spec))
         except repo.PresetNotFound:

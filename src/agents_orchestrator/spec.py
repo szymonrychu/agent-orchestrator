@@ -368,6 +368,22 @@ def default_cache_key(preset_id: uuid.UUID) -> str:
     return "preset-" + digest[:16]
 
 
+CACHE_KEY_RESERVED_PREFIX = "preset-"
+
+
+def check_caller_cache_key(spec: "SessionSpec", derived_key: str | None = None) -> None:
+    """Reject a caller-supplied cache key in the prefix reserved for preset-derived keys.
+
+    `derived_key` is the one reserved key the spec may carry (its own preset's). Applied at the
+    API input boundary only: derived specs the server writes never pass through it.
+    """
+    key = spec.cache.key if spec.cache is not None else None
+    if key and key.startswith(CACHE_KEY_RESERVED_PREFIX) and key != derived_key:
+        raise ValueError(
+            f"cache.key prefix {CACHE_KEY_RESERVED_PREFIX} is reserved for preset-derived keys"
+        )
+
+
 class WorkspaceCache(_Strict):
     key: str | None = None
     exclude: list[str] = []

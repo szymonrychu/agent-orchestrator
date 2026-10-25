@@ -86,3 +86,32 @@ async def test_meta_cache(pool, dsn):
 def test_default_cache_key_is_pinned():
     # Changing the salt or slice would orphan every existing cache in S3.
     assert default_cache_key(uuid.UUID(int=1)) == "preset-4660fe5f5bc805e5"
+
+
+async def test_preset_prefix_reserved(pool, dsn):
+    async with app_client(pool, dsn) as http:
+        msg = "cache.key prefix preset- is reserved for preset-derived keys"
+        victim = await make_preset(http, "victim", {"cache": {}})
+        stolen = default_cache_key(uuid.UUID(victim["id"]))
+        for key in (stolen, "preset-anything"):
+            r = await http.post(C, json={"slug": "raw", "spec": {"cache": {"key": key}}})
+            assert_error(r, 422, "invalid_request")
+            assert msg in r.json()["error"]["message"]
+            r = await http.post(P, json={"name": "evil", "spec": {"cache": {"key": key}}})
+            assert_error(r, 422, "invalid_request")
+            assert msg in r.json()["error"]["message"]
+            r = await http.put(
+                f"{P}/{victim['id']}", json={"name": "victim", "spec": {"cache": {"key": "preset-x"}}}
+            )
+            assert_error(r, 422, "invalid_request")
+            assert msg in r.json()["error"]["message"]
+        # a preset may carry its own derived key; other slugs keep working
+        own = await http.put(
+            f"{P}/{victim['id']}", json={"name": "victim", "spec": {"cache": {"key": stolen}}}
+        )
+        assert own.status_code == 200, own.text
+        r = await http.post(C, json={"preset_id": victim["id"]})
+        assert r.status_code == 201, r.text
+        assert r.json()["spec"]["cache"]["key"] == stolen
+        ok = await http.post(C, json={"slug": "okslug", "spec": {"cache": {"key": "presets-x"}}})
+        assert ok.status_code == 201, ok.text

@@ -21,6 +21,7 @@ from agents_orchestrator.spec import (
     WORKDIR_ROOT,
     SessionSpec,
     SpecInvalid,
+    check_caller_cache_key,
     default_cache_key,
     fill_resource_defaults,
     generated_slug,
@@ -115,13 +116,21 @@ async def _one_view(conn, session: repo.Session, settings: Settings) -> schemas.
 
 
 def check_spec(
-    spec: SessionSpec, settings: Settings, stored: SessionSpec | None = None
+    spec: SessionSpec,
+    settings: Settings,
+    stored: SessionSpec | None = None,
+    derived_cache_key: str | None = None,
 ) -> SessionSpec:
     """Validate the spec and return it with empty resource keys filled from the defaults.
 
     A model, effort or image equal to the one in `stored` is accepted even when it has left the
     settings lists; scheduling and preset creation pass no `stored` and validate fully.
+    `derived_cache_key` is the one `preset-` cache key the spec may carry (its own preset's).
     """
+    try:
+        check_caller_cache_key(spec, derived_cache_key)
+    except ValueError as exc:
+        raise ApiError(422, "invalid_request", str(exc)) from None
     try:
         validate_spec(spec, settings, stored)
     except SpecInvalid as exc:
@@ -223,7 +232,11 @@ async def _create_from_preset(
     raw = dict(preset.spec)
     raw.setdefault("replicas", settings.default_replicas)
     try:
-        spec = check_spec(SessionSpec.model_validate(raw), settings)
+        spec = check_spec(
+            SessionSpec.model_validate(raw),
+            settings,
+            derived_cache_key=default_cache_key(preset.id),
+        )
     except ValidationError as exc:
         raise ApiError(422, "invalid_request", f"preset '{preset.name}': {exc}") from None
     except ApiError as exc:

@@ -363,7 +363,7 @@ A session can keep its workspace between runs in an S3-compatible store, so a ne
 
 ### Spec and key
 
-`spec.cache` is `{"key": "<key>", "exclude": ["<glob>", ...]}`; absent means no cache. The key matches `^[a-z0-9][a-z0-9._-]{0,62}$`. `exclude` holds up to 50 relative globs (1 to 256 characters, no leading `/`, no `..` segment) that are left out of the archive. A session created from a preset whose `spec.cache` has no key gets `default_cache_key(preset.id)`: `preset-` plus 16 hex digits derived from the immutable preset id, so renaming the preset keeps its cache. A raw spec (a session created without a preset) must set the key itself.
+`spec.cache` is `{"key": "<key>", "exclude": ["<glob>", ...]}`; absent means no cache. The key matches `^[a-z0-9][a-z0-9._-]{0,62}$`. `exclude` holds up to 50 relative globs (1 to 256 characters, no leading `/`, no `..` segment) that are left out of the archive. A session created from a preset whose `spec.cache` has no key gets `default_cache_key(preset.id)`: `preset-` plus 16 hex digits derived from the immutable preset id, so renaming the preset keeps its cache. A raw spec (a session created without a preset) must set the key itself. The `preset-` prefix is reserved for derived keys: a caller-supplied `cache.key` starting with `preset-` (raw spec, preset create or update, session create) is rejected with 422 `invalid_request` "cache.key prefix preset- is reserved for preset-derived keys", except a preset's own derived key on that preset. Other slugs work as before.
 
 ### Lifecycle
 
