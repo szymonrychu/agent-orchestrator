@@ -372,6 +372,42 @@ def test_save_upload_failed_hides_signature(tmp_path, capsys, caplog, respond):
     assert list((tmp_path / "scratch").iterdir()) == []
 
 
+@pytest.mark.parametrize(
+    ("value", "verify"),
+    [(None, True), ("", True), ("true", True), ("True", True), ("false", False), ("FALSE", False)],
+)
+@pytest.mark.parametrize("action", ["restore", "save"])
+def test_verify_tls_reaches_httpx(tmp_path, monkeypatch, capsys, action, value, verify):
+    _make_src(tmp_path / "work")
+    seen: list[object] = []
+    real_client = httpx.Client
+
+    def client(*args, **kwargs):
+        seen.append(kwargs.get("verify", True))
+        kwargs["transport"] = httpx.MockTransport(lambda request: httpx.Response(404))
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(transfer.httpx, "Client", client)
+    env = _env(tmp_path)
+    if value is not None:
+        env["CACHE_VERIFY_TLS"] = value
+    getattr(transfer, action)(env)
+    capsys.readouterr()
+    assert seen == [verify]
+
+
+@pytest.mark.parametrize("action", ["restore", "save"])
+def test_bad_verify_tls_fails_before_any_request(tmp_path, capsys, action):
+    _make_src(tmp_path / "work")
+    rec = _Recorder(lambda request: httpx.Response(200))
+    code = getattr(transfer, action)(
+        _env(tmp_path, CACHE_VERIFY_TLS="maybe"), transport=rec.transport
+    )
+    assert code == 1
+    assert "CACHE_VERIFY_TLS" in _outcome(capsys.readouterr().out)["reason"]
+    assert rec.requests == []
+
+
 def test_redact_strips_the_query_string():
     redacted = transfer.redact(f"failed for {URL} after retry", URL)
     assert redacted == (

@@ -131,6 +131,7 @@ def test_job_env_has_no_credentials(action):
         {"name": "CACHE_MAX_BYTES", "value": "1073741824"},
         {"name": "CACHE_EXCLUDE", "value": json.dumps(["node_modules", "*.log"])},
         {"name": "CACHE_SCRATCH", "value": "/scratch"},
+        {"name": "CACHE_VERIFY_TLS", "value": "true"},
         {"name": "HOME", "value": "/tmp"},
     ]
     assert "envFrom" not in c
@@ -141,6 +142,13 @@ def test_job_env_has_no_credentials(action):
         assert leaked not in dumped
     # Exactly one URL: the one given.
     assert dumped.count("https://") == 1
+
+
+@pytest.mark.parametrize(("verify", "value"), [(True, "true"), (False, "false")])
+def test_job_env_carries_verify_tls(verify, value):
+    job = render_cache_job(make_session(), make_settings(cache_s3_verify_tls=verify), "save", URL)
+    env = {e["name"]: e["value"] for e in container_of(job)["env"]}
+    assert env["CACHE_VERIFY_TLS"] == value
 
 
 def test_save_job_volumes():

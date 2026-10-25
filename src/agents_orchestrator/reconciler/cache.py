@@ -75,6 +75,7 @@ def render_cache_job(session: Session, settings: Settings, action: CacheAction, 
             {"name": "CACHE_MAX_BYTES", "value": str(settings.cache_max_bytes)},
             {"name": "CACHE_EXCLUDE", "value": json.dumps(spec.cache.exclude)},
             {"name": "CACHE_SCRATCH", "value": SCRATCH_DIR},
+            {"name": "CACHE_VERIFY_TLS", "value": str(settings.cache_s3_verify_tls).lower()},
             {"name": "HOME", "value": TMP_DIR},
         ],
         "securityContext": {

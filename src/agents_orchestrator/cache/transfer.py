@@ -1,9 +1,10 @@
 """Job-side workspace transfer: `orch cache restore|save` (contract orch-cache-job-cli; D1, D11).
 
 Runs in the hardened cache Job with only the `CACHE_*` env: `CACHE_URL` (one presigned GET or
-PUT URL), `CACHE_DIR` (the workdir), `CACHE_MAX_BYTES`, `CACHE_EXCLUDE` (a JSON list of globs)
-and `CACHE_SCRATCH` (where the save writes its archive). It never builds `Settings` or reads
-`ORCH_*`. The last stdout line is one JSON object `{"outcome", "bytes", "reason"}` that the
+PUT URL), `CACHE_DIR` (the workdir), `CACHE_MAX_BYTES`, `CACHE_EXCLUDE` (a JSON list of globs),
+`CACHE_SCRATCH` (where the save writes its archive) and `CACHE_VERIFY_TLS` (`false` turns off
+certificate checks for a private-CA endpoint; unset is `true`). It never builds `Settings` or
+reads `ORCH_*`. The last stdout line is one JSON object `{"outcome", "bytes", "reason"}` that the
 reconciler reads from the pod log tail; nothing is printed after it.
 
 Restore streams the GET body straight into `archive.unpack`; save packs into a scratch file and
@@ -19,7 +20,7 @@ import os
 import sys
 from collections.abc import Buffer, Iterator, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO, cast
 
 import httpx
 
@@ -80,6 +81,15 @@ def _workdir(env: Mapping[str, str]) -> Path:
     if not workdir:
         raise _BadEnv("CACHE_DIR is not set")
     return Path(workdir)
+
+
+def _verify_tls(env: Mapping[str, str]) -> bool:
+    raw = env.get("CACHE_VERIFY_TLS", "").strip().lower()
+    if raw in ("", "true"):
+        return True
+    if raw == "false":
+        return False
+    raise _BadEnv(f"CACHE_VERIFY_TLS must be true or false: {raw!r}")
 
 
 def _max_bytes(env: Mapping[str, str]) -> int:
@@ -145,13 +155,14 @@ def restore(env: Mapping[str, str], *, transport: httpx.BaseTransport | None = N
     try:
         url = _url(env)
         workdir = _workdir(env)
+        verify = _verify_tls(env)
     except _BadEnv as exc:
         _emit("failed", reason=f"download_failed: {exc}")
         return EXIT_FAILED
     reader: _BodyReader | None = None
     try:
         with (
-            httpx.Client(transport=transport, timeout=TIMEOUT) as client,
+            httpx.Client(transport=transport, timeout=TIMEOUT, verify=verify) as client,
             client.stream("GET", url) as response,
         ):
             if response.status_code == 404:
@@ -161,7 +172,7 @@ def restore(env: Mapping[str, str], *, transport: httpx.BaseTransport | None = N
                 _emit("failed", reason=f"download_failed: HTTP {response.status_code}")
                 return EXIT_FAILED
             reader = _BodyReader(response.iter_bytes())
-            archive.unpack(reader, workdir)
+            archive.unpack(cast(BinaryIO, reader), workdir)
             while reader.read(io.DEFAULT_BUFFER_SIZE):
                 pass  # the zstd epilogue past the tar end: count the whole object
             delivered = reader.delivered
@@ -191,6 +202,7 @@ def save(env: Mapping[str, str], *, transport: httpx.BaseTransport | None = None
     try:
         url = _url(env)
         max_bytes = _max_bytes(env)
+        verify = _verify_tls(env)
         exclude = _exclude(env)
     except _BadEnv as exc:
         _emit("failed", reason=f"upload_failed: {exc}")
@@ -209,11 +221,11 @@ def save(env: Mapping[str, str], *, transport: httpx.BaseTransport | None = None
             _emit("failed", reason=f"upload_failed: archive: {_error(exc, url)}")
             return EXIT_FAILED
         size = packed.compressed_bytes
-        extra = {"skipped_links": packed.skipped_links}
+        skipped_links = packed.skipped_links
         try:
             with (
                 path.open("rb") as body,
-                httpx.Client(transport=transport, timeout=TIMEOUT) as client,
+                httpx.Client(transport=transport, timeout=TIMEOUT, verify=verify) as client,
             ):
                 response = client.put(
                     url,
@@ -221,12 +233,18 @@ def save(env: Mapping[str, str], *, transport: httpx.BaseTransport | None = None
                     headers={"Content-Length": str(size), "Content-Type": CONTENT_TYPE},
                 )
         except Exception as exc:  # noqa: BLE001
-            _emit("failed", reason=f"upload_failed: {_error(exc, url)}", **extra)
+            _emit(
+                "failed", reason=f"upload_failed: {_error(exc, url)}", skipped_links=skipped_links
+            )
             return EXIT_FAILED
         if not response.is_success:
-            _emit("failed", reason=f"upload_failed: HTTP {response.status_code}", **extra)
+            _emit(
+                "failed",
+                reason=f"upload_failed: HTTP {response.status_code}",
+                skipped_links=skipped_links,
+            )
             return EXIT_FAILED
-        _emit("saved", nbytes=size, **extra)
+        _emit("saved", nbytes=size, skipped_links=skipped_links)
         return EXIT_OK
     finally:
         path.unlink(missing_ok=True)
