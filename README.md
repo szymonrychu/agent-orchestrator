@@ -788,6 +788,10 @@ The init scripts of the caller's cluster and the last init run, so the agent kno
 
 Replaces the caller's cluster init scripts. Body `{"scripts": ["<shell script>", ...]}` with the same limits as the public PUT. Writes the cluster's stored `spec.init_scripts` and its source preset's (when it still exists) in one transaction, with no generation bump and no pod roll; the edit applies to the next cluster created from the preset and never re-runs here. Response 200 with the view above and `preset_updated` true when a preset was written. Errors: 422 `invalid_request` (nothing is written), 409 `conflict` (the cluster is being deleted), plus the 401 and 403 above. These two routes back the plugin tools `orchestrator_init_scripts_get` and `orchestrator_init_scripts_edit`.
 
+### `POST /agent/v1/scale`
+
+The leader grows or shrinks its own cluster. Body `{replicas}`; sets `spec.replicas` in place (no generation bump, no pod roll) through the same writer as the public `POST /api/v1/clusters/{id}/scale`, with the caller checked as leader. Response 202 `{cluster_id, replicas, previous_replicas, max_replicas}`. Errors: 403 `not_leader` (the caller is not the current leader), 409 `static_cluster`, 422 `out_of_range` (outside 1 to `max_replicas`), 409 `leader_would_leave` (the leader's ordinal would be removed), 409 `cluster_deleting`, 422 `invalid_request`, plus the 401 and 403 above. Served only on the agent port; the public scale route is not reachable there. Backs the plugin tool `orchestrator_scale`.
+
 ### File locks
 
 Advisory locks on files, so agents claim what they edit and are warned before writing a file another live agent holds. Paths are relative to the cluster workdir (`/workdir/<spec.workdir>`); an absolute path under it is converted, and an empty path, a `..` escape or a path outside the workdir is `400 invalid_path`. The workdir root constant `WORKDIR_ROOT` lives in `spec.py`, shared by the renderer and the api.

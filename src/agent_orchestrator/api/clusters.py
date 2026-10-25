@@ -321,7 +321,7 @@ async def list_agents(cluster_id: uuid.UUID, pool: Pool) -> list[schemas.AgentVi
     return [agent_view(r) for r in rows]
 
 
-_SCALE_STATUS = {
+SCALE_STATUS = {
     "static_cluster": 409,
     "out_of_range": 422,
     "leader_would_leave": 409,
@@ -340,7 +340,7 @@ async def scale_cluster(
         except repo.ClusterNotFound:
             raise not_found("cluster") from None
         except repo.ScaleRefused as exc:
-            status = _SCALE_STATUS.get(exc.code, 409)
+            status = SCALE_STATUS.get(exc.code, 409)
             raise ApiError(status, exc.code, str(exc)) from None
     return schemas.ScaleResult(
         cluster_id=out.cluster_id,
