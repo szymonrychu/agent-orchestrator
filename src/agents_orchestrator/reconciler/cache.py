@@ -9,10 +9,12 @@ hardened (uid 1000, non-root, read-only root filesystem with an emptyDir `/tmp` 
 privilege escalation, all capabilities dropped, seccomp RuntimeDefault). The save archives into an
 emptyDir `/scratch` sized to `cache_max_bytes`. Like the init Job, neither carries a TTL.
 
-The restore is recorded in `sessions.status.cache.restore` (contract orch-session-status-cache)
-with the crash-safe shape of the init run: the state is written before the create and `job` only
-after it, the outcome is recorded and then the Job deleted. The outcome is the last line of the
-pod log, the JSON the CLI prints; a line that cannot be read is a failure, never a success.
+The restore and the save are recorded in `sessions.status.cache.restore|save` (contract
+orch-session-status-cache) with the crash-safe shape of the init run: the state is written before
+the create and `job` only after it, the outcome is recorded and then the Job deleted. The outcome
+is the last line of the pod log, the JSON the CLI prints; a line that cannot be read is a failure,
+never a success. The save runs from the discard once the agent pods are gone; whatever its
+outcome, it never holds the discard.
 """
 
 from __future__ import annotations
@@ -47,6 +49,17 @@ CacheAction = Literal["restore", "save"]
 BACKOFF_LIMIT = 2
 TMP_DIR = "/tmp"
 SCRATCH_DIR = "/scratch"
+# A save is pointless after a restore that failed with one of these (the head word of its reason).
+SAVE_SKIP_RESTORE_REASONS = frozenset(
+    {
+        "download_failed",
+        "timeout",
+        "job_missing",
+        "foreign_object",
+        "job_create_failed",
+        "not_configured",
+    }
+)
 
 
 def restore_job_name(slug: str) -> str:
@@ -55,6 +68,10 @@ def restore_job_name(slug: str) -> str:
 
 def save_job_name(slug: str) -> str:
     return f"{prefix(slug)}-cache-save"
+
+
+def job_name(slug: str, action: CacheAction) -> str:
+    return save_job_name(slug) if action == "save" else restore_job_name(slug)
 
 
 def cache_labels(slug: str, action: CacheAction) -> dict[str, str]:
@@ -124,7 +141,7 @@ def render_cache_job(session: Session, settings: Settings, action: CacheAction, 
         "apiVersion": "batch/v1",
         "kind": "Job",
         "metadata": {
-            "name": save_job_name(slug) if save else restore_job_name(slug),
+            "name": job_name(slug, action),
             "namespace": settings.namespace,
             "labels": dict(labels),
         },
@@ -187,91 +204,143 @@ class CacheRunner:
 
     async def restore_step(self, session: Session) -> CacheGate:
         """Advance the one restore run by at most one transition; the gate for init and sessions."""
-        spec_cache = session.spec.cache
-        if spec_cache is None:
+        if session.spec.cache is None:
             return CacheGate()
         cache = session.status.get("cache")
         restore = (cache or {}).get("restore")
         if restore is None:
-            key = spec_cache.key or ""
-            cache = {"key": key, "object": object_name(self.settings, key) if key else None}
-            restore = {
-                "state": "running",
-                "started_at": (await self._now()).isoformat(),
-                "finished_at": None,
-                "bytes": None,
-                "reason": None,
-                "job": None,
-            }
-            cache = await self._write(session, cache, restore)
-            restore = await self._start(session, cache, restore)
+            restore = await self._begin(session, "restore")
         elif restore.get("state") == "running":
-            restore = await self._observe(session, cache or {}, restore)
+            restore = await self._observe(session, cache or {}, "restore", restore)
         elif restore.get("job"):
-            await self._delete_job(session)  # crashed between the outcome and the delete
+            await self._delete_job(session, "restore")  # crashed between the outcome and the delete
         return CacheGate.of({"restore": restore}, True)
+
+    async def save_step(self, session: Session) -> bool:
+        """Advance the one save run by at most one transition; True lets the discard go on.
+
+        Skipped (no Job) when the restore did not finish well enough to trust the workdir; after
+        an `extract_failed` restore it runs, so a corrupt archive is replaced. A failed or
+        timed-out save is logged and recorded, never held.
+        """
+        if session.spec.cache is None:
+            return True
+        cache = session.status.get("cache") or {}
+        save = cache.get("save")
+        if save is None:
+            skip = self._skip_save(cache)
+            if skip is not None:
+                await self._write(session, cache, "save", {"state": "skipped", "reason": skip})
+                log.info("cache save of session %s skipped: %s", session.slug, skip)
+                return True
+            save = await self._begin(session, "save")
+        elif save.get("state") == "running":
+            save = await self._observe(session, cache, "save", save)
+        elif save.get("job"):
+            await self._delete_job(session, "save")  # crashed between the outcome and the delete
+        return save.get("state") != "running"
+
+    def _skip_save(self, cache: dict[str, Any]) -> str | None:
+        restore = cache.get("restore")
+        state = (restore or {}).get("state")
+        if restore is None or state == "running":
+            return "restore_running"
+        if state == "failed":
+            head = str(restore.get("reason") or "").split(":")[0].split(" ")[0]
+            if head in SAVE_SKIP_RESTORE_REASONS:
+                return head
+        if not self.settings.cache_available:
+            return "not_configured"
+        return None
 
     # ------------------------------------------------------------------ transitions
 
+    async def _begin(self, session: Session, action: CacheAction) -> dict[str, Any]:
+        stored = session.status.get("cache") or {}
+        key = session.spec.cache.key or "" if session.spec.cache else ""
+        cache = {
+            **stored,
+            "key": stored.get("key") or key,
+            "object": stored.get("object") or (object_name(self.settings, key) if key else None),
+        }
+        run = {
+            "state": "running",
+            "started_at": (await self._now()).isoformat(),
+            "finished_at": None,
+            "bytes": None,
+            "reason": None,
+            "job": None,
+        }
+        cache = await self._write(session, cache, action, run)
+        return await self._start(session, cache, action, run)
+
     async def _start(
-        self, session: Session, cache: dict[str, Any], restore: dict[str, Any]
+        self, session: Session, cache: dict[str, Any], action: CacheAction, run: dict[str, Any]
     ) -> dict[str, Any]:
-        ns, name = self.settings.namespace, restore_job_name(session.slug)
+        ns, name = self.settings.namespace, job_name(session.slug, action)
         if not self.settings.cache_available:
-            return await self._finish(session, cache, restore, "failed", reason="not_configured")
+            return await self._finish(
+                session, cache, action, run, "failed", reason="not_configured"
+            )
         if not cache.get("key"):
-            return await self._finish(session, cache, restore, "failed", reason="no_cache_key")
+            return await self._finish(session, cache, action, run, "failed", reason="no_cache_key")
         existing = await self.kube.get_job(ns, name)
         if existing is not None:
             if not is_owned(existing, session.slug):
                 return await self._finish(
-                    session, cache, restore, "failed", reason="foreign_object"
+                    session, cache, action, run, "failed", reason="foreign_object"
                 )
         else:
             try:
-                url = presign(self.settings, "GET", cache["key"])
-                await self.kube.create_job(render_cache_job(session, self.settings, "restore", url))
+                method = "PUT" if action == "save" else "GET"
+                url = presign(self.settings, method, cache["key"])
+                await self.kube.create_job(render_cache_job(session, self.settings, action, url))
             except Exception as exc:
-                log.exception("creating the cache restore Job of session %s failed", session.slug)
+                log.exception(
+                    "creating the cache %s Job of session %s failed", action, session.slug
+                )
                 reason = f"job_create_failed: {exc}"[:REASON_MAX]
-                return await self._finish(session, cache, restore, "failed", reason=reason)
-        restore = {**restore, "job": name}
-        await self._write(session, cache, restore)
-        return restore
+                return await self._finish(session, cache, action, run, "failed", reason=reason)
+        run = {**run, "job": name}
+        await self._write(session, cache, action, run)
+        return run
 
     async def _observe(
-        self, session: Session, cache: dict[str, Any], restore: dict[str, Any]
+        self, session: Session, cache: dict[str, Any], action: CacheAction, run: dict[str, Any]
     ) -> dict[str, Any]:
-        ns, name = self.settings.namespace, restore_job_name(session.slug)
+        ns, name = self.settings.namespace, job_name(session.slug, action)
         job = await self.kube.get_job(ns, name)
         if job is None:
-            if restore.get("job") is None:  # crashed between the running write and the create
-                return await self._start(session, cache, restore)
-            return await self._finish(session, cache, restore, "failed", reason="job_missing")
+            if run.get("job") is None:  # crashed between the running write and the create
+                return await self._start(session, cache, action, run)
+            return await self._finish(session, cache, action, run, "failed", reason="job_missing")
         if not is_owned(job, session.slug):
-            return await self._finish(session, cache, restore, "failed", reason="foreign_object")
-        if restore.get("job") is None:  # crashed between the create and the job write
-            restore = {**restore, "job": name}
-            await self._write(session, cache, restore)
+            return await self._finish(
+                session, cache, action, run, "failed", reason="foreign_object"
+            )
+        if run.get("job") is None:  # crashed between the create and the job write
+            run = {**run, "job": name}
+            await self._write(session, cache, action, run)
         status = job.get("status") or {}
         failed = job_condition(job, "Failed")
         if failed is not None and failed.get("reason") == "DeadlineExceeded":
-            return await self._outcome(session, cache, restore, reason="timeout")
+            return await self._outcome(session, cache, action, run, reason="timeout")
         if job_condition(job, "Complete") is not None or status.get("succeeded"):
-            return await self._outcome(session, cache, restore)
+            return await self._outcome(session, cache, action, run)
         if failed is not None or status.get("failed"):
-            return await self._outcome(session, cache, restore, failed=True)
-        started = datetime.fromisoformat(restore["started_at"])
+            return await self._outcome(session, cache, action, run, failed=True)
+        started = datetime.fromisoformat(run["started_at"])
         limit = self.settings.cache_timeout_seconds + DEADLINE_GRACE_SECONDS
         if (await self._now() - started).total_seconds() > limit:
-            return await self._outcome(session, cache, restore, reason="timeout")
-        return restore
+            return await self._outcome(session, cache, action, run, reason="timeout")
+        return run
 
     async def _outcome(
         self,
         session: Session,
         cache: dict[str, Any],
-        restore: dict[str, Any],
+        action: CacheAction,
+        run: dict[str, Any],
         *,
         reason: str | None = None,
         failed: bool = False,
@@ -280,7 +349,7 @@ class CacheRunner:
         ns = self.settings.namespace
         pods = [
             p
-            for p in await self.kube.list_pods(ns, cache_labels(session.slug, "restore"))
+            for p in await self.kube.list_pods(ns, cache_labels(session.slug, action))
             if is_owned(p, session.slug)
         ]
         pod = pods[-1] if pods else None
@@ -293,30 +362,35 @@ class CacheRunner:
             except KubeError as exc:
                 log.warning("reading the cache log of session %s failed: %s", session.slug, exc)
         if reason is not None:
-            restore = await self._finish(session, cache, restore, "failed", reason=reason)
+            run = await self._finish(session, cache, action, run, "failed", reason=reason)
         else:
-            restore = await self._finish_from_log(session, cache, restore, pod, tail, failed)
-        await self._delete_job(session)
-        return restore
+            run = await self._finish_from_log(session, cache, action, run, pod, tail, failed)
+        await self._delete_job(session, action)
+        return run
 
     async def _finish_from_log(
         self,
         session: Session,
         cache: dict[str, Any],
-        restore: dict[str, Any],
+        action: CacheAction,
+        run: dict[str, Any],
         pod: Obj | None,
         tail: str | None,
         failed: bool,
     ) -> dict[str, Any]:
         outcome = parse_outcome(tail)
         kind = outcome["outcome"] if outcome else None
-        if not failed and kind == "restored":
+        done = "saved" if action == "save" else "restored"
+        if not failed and kind == done:
             nbytes = outcome.get("bytes") if outcome else None
             if isinstance(nbytes, int) and not isinstance(nbytes, bool):
-                return await self._finish(session, cache, restore, "restored", nbytes=nbytes)
-            return await self._finish(session, cache, restore, "failed", reason="bad_output")
-        if not failed and kind == "miss":
-            return await self._finish(session, cache, restore, "miss")
+                return await self._finish(session, cache, action, run, done, nbytes=nbytes)
+            return await self._finish(session, cache, action, run, "failed", reason="bad_output")
+        if not failed and action == "restore" and kind == "miss":
+            return await self._finish(session, cache, action, run, "miss")
+        if not failed and action == "save" and kind == "skipped" and outcome:
+            reason = str(outcome.get("reason") or "skipped")[:REASON_MAX]
+            return await self._finish(session, cache, action, run, "skipped", reason=reason)
         if kind == "failed" and outcome and outcome.get("reason"):
             reason = str(outcome["reason"])[:REASON_MAX]
         elif failed:
@@ -324,53 +398,54 @@ class CacheRunner:
             reason = f"exit {code}" if code is not None else "failed"
         else:  # a finished Job whose last line says nothing we can trust
             reason = "bad_output"
-        return await self._finish(session, cache, restore, "failed", reason=reason)
+        return await self._finish(session, cache, action, run, "failed", reason=reason)
 
     async def _finish(
         self,
         session: Session,
         cache: dict[str, Any],
-        restore: dict[str, Any],
+        action: CacheAction,
+        run: dict[str, Any],
         state: str,
         *,
         nbytes: int | None = None,
         reason: str | None = None,
     ) -> dict[str, Any]:
-        restore = {
-            **restore,
+        run = {
+            **run,
             "state": state,
             "finished_at": (await self._now()).isoformat(),
             "bytes": nbytes,
             "reason": reason,
         }
-        await self._write(session, cache, restore)
-        log.info(
-            "cache restore of session %s %s%s", session.slug, state, f": {reason}" if reason else ""
-        )
-        return restore
+        await self._write(session, cache, action, run)
+        detail = f": {reason}" if reason else ""
+        if action == "save" and state == "failed":
+            log.warning(
+                "cache save of session %s (key %s) failed%s", session.slug, cache.get("key"), detail
+            )
+        else:
+            log.info("cache %s of session %s %s%s", action, session.slug, state, detail)
+        return run
 
-    async def _delete_job(self, session: Session) -> None:
-        """Delete the session's own restore Job (background propagation); never a foreign one."""
-        ns, name = self.settings.namespace, restore_job_name(session.slug)
+    async def _delete_job(self, session: Session, action: CacheAction) -> None:
+        """Delete the session's own cache Job (background propagation); never a foreign one."""
+        ns, name = self.settings.namespace, job_name(session.slug, action)
         try:
             job = await self.kube.get_job(ns, name)
             if job is not None and is_owned(job, session.slug):
                 await self.kube.delete("Job", ns, name)
         except KubeError as exc:  # the outcome is recorded; a later tick deletes it
-            log.warning("deleting the restore Job of session %s failed: %s", session.slug, exc)
+            log.warning("deleting the %s Job of session %s failed: %s", action, session.slug, exc)
 
     # ------------------------------------------------------------------ helpers
 
     async def _write(
-        self, session: Session, cache: dict[str, Any], restore: dict[str, Any]
+        self, session: Session, cache: dict[str, Any], action: CacheAction, run: dict[str, Any]
     ) -> dict[str, Any]:
-        """Write status.cache with this restore, keeping any save state the row carries."""
+        """Write status.cache with this run, keeping the other action's state the row carries."""
         stored = session.status.get("cache") or {}
-        merged = {
-            **stored,
-            **{k: v for k, v in cache.items() if k != "restore"},
-            "restore": restore,
-        }
+        merged = {**stored, **{k: v for k, v in cache.items() if k != action}, action: run}
         await self.write_status(session, {"cache": merged}, session.observed_generation)
         return merged
 

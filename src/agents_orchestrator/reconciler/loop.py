@@ -395,6 +395,13 @@ class Reconciler:
             await queue.cancel_checks(conn, session.id)
         if not await self._quiesce(session):
             return
+        if not await self.cache.save_step(session):
+            await self._write_status(
+                session,
+                {"phase": "deleting", "message": "saving the workspace cache"},
+                session.observed_generation,
+            )
+            return
         if not await self.pre_discard(session):
             await self._write_status(
                 session,
@@ -424,21 +431,27 @@ class Reconciler:
             return (await (await conn.execute("SELECT now()")).fetchone())[0]
 
     async def _quiesce(self, session: Session) -> bool:
-        """Stop the agents and let the ingester drain before the history is exported.
+        """Stop the agents and let the ingester drain before the history is exported or saved.
 
-        Only when an export is still owed (a hook that has not delivered). The StatefulSet is
-        scaled to zero; once no agent pod is left, the ingester gets `discard_drain_seconds`
-        to store the last events of their streams. The wait is bounded by
-        `discard_quiesce_timeout_seconds` from the first pass, after which the discard goes on
-        and logs what it could not confirm. True means the export may run.
+        Only when an export is still owed (a hook that has not delivered) or a workspace cache
+        save is (`spec.cache` set, no save outcome yet). The StatefulSet is scaled to zero; once
+        no agent pod is left, the ingester gets `discard_drain_seconds` to store the last events
+        of their streams. The wait is bounded by `discard_quiesce_timeout_seconds` from the first
+        pass, after which the discard goes on and logs what it could not confirm. True means the
+        export and the save may run.
         """
-        if resolve_hook(session, self.settings) is None or session.status.get(
+        status = session.status
+        hook_owed = resolve_hook(session, self.settings) is not None and not status.get(
             "discard_hook_delivered"
-        ):
+        )
+        save = (status.get("cache") or {}).get("save")
+        save_owed = session.spec.cache is not None and (
+            save is None or save.get("state") == "running"
+        )
+        if not hook_owed and not save_owed:
             return True
         ns, slug = self.settings.namespace, session.slug
         now = await self._db_now()
-        status = session.status
         started = datetime.fromisoformat(status.get("discard_quiesce_started") or now.isoformat())
         fields: dict[str, Any] = {"discard_quiesce_started": started.isoformat()}
 
