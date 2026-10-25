@@ -68,6 +68,33 @@ class ClusterView(BaseModel):
     static: bool
     leader_agent_id: uuid.UUID | None
     leader_epoch: int | None
+    init_edited_since_run: bool
+
+
+class InitScriptsIn(BaseModel):
+    scripts: list[str]
+
+
+class InitStatus(BaseModel):
+    state: Literal["skipped", "running", "succeeded", "failed"]
+    scripts_hash: str
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    exit_code: int | None = None
+    log_tail: str | None = None
+    reason: str | None = None
+
+
+class InitScriptsView(BaseModel):
+    cluster_id: uuid.UUID
+    scripts: list[str]
+    preset_id: uuid.UUID | None
+    preset_name: str | None
+    status: InitStatus | None
+    edited_since_run: bool
+    script_path: str
+    log_path: str
+    preset_updated: bool
 
 
 class AgentContext(BaseModel):

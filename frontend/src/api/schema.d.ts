@@ -381,6 +381,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/clusters/{cluster_id}/init-scripts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Init Scripts */
+        get: operations["get_init_scripts_api_v1_clusters__cluster_id__init_scripts_get"];
+        /** Put Init Scripts */
+        put: operations["put_init_scripts_api_v1_clusters__cluster_id__init_scripts_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/clusters/{cluster_id}/leader": {
         parameters: {
             query?: never;
@@ -753,6 +771,8 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** Init Edited Since Run */
+            init_edited_since_run: boolean;
             /** Leader Agent Id */
             leader_agent_id: string | null;
             /** Leader Epoch */
@@ -944,6 +964,54 @@ export interface components {
             reason: string;
             /** To */
             to?: string | null;
+        };
+        /** InitScriptsIn */
+        InitScriptsIn: {
+            /** Scripts */
+            scripts: string[];
+        };
+        /** InitScriptsView */
+        InitScriptsView: {
+            /**
+             * Cluster Id
+             * Format: uuid
+             */
+            cluster_id: string;
+            /** Edited Since Run */
+            edited_since_run: boolean;
+            /** Log Path */
+            log_path: string;
+            /** Preset Id */
+            preset_id: string | null;
+            /** Preset Name */
+            preset_name: string | null;
+            /** Preset Updated */
+            preset_updated: boolean;
+            /** Script Path */
+            script_path: string;
+            /** Scripts */
+            scripts: string[];
+            status: components["schemas"]["InitStatus"] | null;
+        };
+        /** InitStatus */
+        InitStatus: {
+            /** Exit Code */
+            exit_code?: number | null;
+            /** Finished At */
+            finished_at?: string | null;
+            /** Log Tail */
+            log_tail?: string | null;
+            /** Reason */
+            reason?: string | null;
+            /** Scripts Hash */
+            scripts_hash: string;
+            /** Started At */
+            started_at?: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "skipped" | "running" | "succeeded" | "failed";
         };
         /** LeadershipRequested */
         LeadershipRequested: {
@@ -2070,6 +2138,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FileContent"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_init_scripts_api_v1_clusters__cluster_id__init_scripts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cluster_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InitScriptsView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_init_scripts_api_v1_clusters__cluster_id__init_scripts_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cluster_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InitScriptsIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InitScriptsView"];
                 };
             };
             /** @description Validation Error */

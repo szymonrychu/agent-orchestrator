@@ -497,7 +497,7 @@ Response 201 with the cluster view. Errors: 422 `invalid_request` (bad slug, bot
 
 ### `GET /api/v1/clusters/{cluster_id}`
 
-One cluster view: `id`, `slug`, `spec`, `desired`, `status`, `generation`, `observed_generation`, `created_at`, `preset_id` (null for a raw-spec cluster or once the preset is deleted), `preset_name`, `summary` (`state` of `working`, `waiting`, `booting`, `error`, `deleting`; `ready`, `replicas`, `context_pct_max`, `auto_compact_pct`, `queued`, `failed`), `hive`, `max_replicas` (the cap), `static`, `leader_agent_id` and `leader_epoch` (both null for an alone cluster or before the first election). Response 200. Errors: 404 `not_found`.
+One cluster view: `id`, `slug`, `spec`, `desired`, `status`, `generation`, `observed_generation`, `created_at`, `preset_id` (null for a raw-spec cluster or once the preset is deleted), `preset_name`, `summary` (`state` of `working`, `waiting`, `booting`, `error`, `deleting`; `ready`, `replicas`, `context_pct_max`, `auto_compact_pct`, `queued`, `failed`), `hive`, `max_replicas` (the cap), `static`, `leader_agent_id` and `leader_epoch` (both null for an alone cluster or before the first election), and `init_edited_since_run` (same rule as `edited_since_run` of the init-scripts view; also in the list and the status stream). Response 200. Errors: 404 `not_found`.
 
 ### `DELETE /api/v1/clusters/{cluster_id}`
 
@@ -506,6 +506,14 @@ Discards the cluster: after the optional history-export hook, deletes every Kube
 ### `POST /api/v1/clusters/{cluster_id}/leader`
 
 Queues a user leadership override (the UI "Make leader"): body `{agent_id}`, any agent of the cluster. A user request overrides the handover-only rule; the dispatcher applies it and bumps the epoch. Response 202 `{request_id}`. Errors: 404 `not_found` (unknown cluster, or an agent that is not in this cluster), 409 `alone` (a single-agent cluster has no leader).
+
+### `GET /api/v1/clusters/{cluster_id}/init-scripts`
+
+The cluster's init scripts and the last init run: `cluster_id`, `scripts` (the stored `spec.init_scripts`), `preset_id` and `preset_name` (null for a raw-spec cluster or once the preset is deleted), `status` (the init run from `status.init`, or null before any run: `state` of `skipped`, `running`, `succeeded`, `failed`; `scripts_hash`; and, when known, `started_at`, `finished_at`, `exit_code`, `log_tail`, `reason`), `edited_since_run` (true when a run exists, is not `skipped`, and its `scripts_hash` differs from the hash of the stored scripts), `script_path` and `log_path` (`<workdir>/.agent-init/init.sh` and `init.log` inside the agent pods, under `/workdir/<spec.workdir>`), and `preset_updated` (always false on GET). Response 200. Errors: 404 `not_found`, 403 `forbidden`.
+
+### `PUT /api/v1/clusters/{cluster_id}/init-scripts`
+
+Replaces the cluster's init scripts. Body `{"scripts": ["<shell script>", ...]}` (at most 20 entries, each non-empty after strip and at most 16384 characters). One transaction writes the cluster's stored `spec.init_scripts` and, when the cluster has a source preset that still exists (the Default preset included), that preset's `spec.init_scripts` too, bumping the preset's `updated_at`. `generation` is not bumped and no pod rolls. The running cluster never re-runs its init; the next cluster created from the preset runs the new list. Response 200 with the same view as the GET, with `preset_updated` true when a preset was written and false for a raw-spec cluster or a deleted preset. Errors: 422 `invalid_request` (invalid list, naming the index; nothing is written), 404 `not_found`, 409 `conflict` (the cluster is being deleted), 403 `forbidden`.
 
 ### `GET /api/v1/clusters/{cluster_id}/agents`
 

@@ -482,6 +482,10 @@
             "title": "Id",
             "type": "string"
           },
+          "init_edited_since_run": {
+            "title": "Init Edited Since Run",
+            "type": "boolean"
+          },
           "leader_agent_id": {
             "anyOf": [
               {
@@ -572,7 +576,8 @@
           "max_replicas",
           "static",
           "leader_agent_id",
-          "leader_epoch"
+          "leader_epoch",
+          "init_edited_since_run"
         ],
         "title": "ClusterView",
         "type": "object"
@@ -1047,6 +1052,181 @@
           "epoch"
         ],
         "title": "HandoverIn",
+        "type": "object"
+      },
+      "InitScriptsIn": {
+        "properties": {
+          "scripts": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Scripts",
+            "type": "array"
+          }
+        },
+        "required": [
+          "scripts"
+        ],
+        "title": "InitScriptsIn",
+        "type": "object"
+      },
+      "InitScriptsView": {
+        "properties": {
+          "cluster_id": {
+            "format": "uuid",
+            "title": "Cluster Id",
+            "type": "string"
+          },
+          "edited_since_run": {
+            "title": "Edited Since Run",
+            "type": "boolean"
+          },
+          "log_path": {
+            "title": "Log Path",
+            "type": "string"
+          },
+          "preset_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preset Id"
+          },
+          "preset_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preset Name"
+          },
+          "preset_updated": {
+            "title": "Preset Updated",
+            "type": "boolean"
+          },
+          "script_path": {
+            "title": "Script Path",
+            "type": "string"
+          },
+          "scripts": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Scripts",
+            "type": "array"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InitStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "cluster_id",
+          "scripts",
+          "preset_id",
+          "preset_name",
+          "status",
+          "edited_since_run",
+          "script_path",
+          "log_path",
+          "preset_updated"
+        ],
+        "title": "InitScriptsView",
+        "type": "object"
+      },
+      "InitStatus": {
+        "properties": {
+          "exit_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Code"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "log_tail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Log Tail"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "scripts_hash": {
+            "title": "Scripts Hash",
+            "type": "string"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "state": {
+            "enum": [
+              "skipped",
+              "running",
+              "succeeded",
+              "failed"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "scripts_hash"
+        ],
+        "title": "InitStatus",
         "type": "object"
       },
       "LeadershipRequested": {
@@ -3387,6 +3567,94 @@
           }
         },
         "summary": "File Content"
+      }
+    },
+    "/api/v1/clusters/{cluster_id}/init-scripts": {
+      "get": {
+        "operationId": "get_init_scripts_api_v1_clusters__cluster_id__init_scripts_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cluster_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Cluster Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InitScriptsView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Init Scripts"
+      },
+      "put": {
+        "operationId": "put_init_scripts_api_v1_clusters__cluster_id__init_scripts_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cluster_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Cluster Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InitScriptsIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InitScriptsView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Init Scripts"
       }
     },
     "/api/v1/clusters/{cluster_id}/leader": {
