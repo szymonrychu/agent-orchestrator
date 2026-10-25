@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import httpx
 from any_mcp.orchestrator import OrchestratorPlugin
 from any_mcp.testing import PluginHarness
@@ -172,7 +174,12 @@ async def test_plugin_scale_tool_contract(pool, dsn):
     async with PluginHarness(OrchestratorPlugin, config=config("a0"), transport=leader) as h:
         res = await h.call("scale", {"replicas": 4})
     assert not res.is_error, res.text
-    assert '"previous_replicas"' in res.text or "previous_replicas" in str(res.structured)
+    assert json.loads(res.text) == {
+        "cluster_id": str(c["id"]),
+        "replicas": 4,
+        "previous_replicas": 3,
+        "max_replicas": 4,
+    }
     assert await replicas_of(pool, c["id"]) == 4
 
     other = httpx.ASGITransport(app=app, client=(IP1, 4321))
