@@ -1125,6 +1125,211 @@ def test_delete_default_preset_refused(api: httpx.Client) -> None:
     assert api.get(f"/presets/{default['id']}").status_code == 200
 
 
+# ------------------------------------------------------------------ scaling (D1-D4)
+
+HASH_ANNOTATION = "agents.szymonrichert.pl/config-hash"
+SCALE_SLUG_PREFIX = "e2e-scale"
+
+
+@contextlib.contextmanager
+def scale_cluster(api: httpx.Client, suffix: str, spec: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    """Create a cluster of its own through POST /clusters; always delete it and wait for it."""
+    slug = f"{SCALE_SLUG_PREFIX}-{suffix}"
+    resp = api.post("/clusters", json={"slug": slug, "spec": {**spec, "env": FAKE_TURN_ENV}})
+    assert resp.status_code == 201, resp.text
+    created = resp.json()
+    cid = created["id"]
+    try:
+        yield created
+    finally:
+        api.delete(f"/clusters/{cid}")
+
+        def gone() -> bool:
+            return not labelled_objects(slug) and api.get(f"/clusters/{cid}").status_code == 404
+
+        wait_for(f"cluster {slug} objects to be deleted", gone, DISCARD_TIMEOUT)
+
+
+def pod_identity(slug: str) -> dict[str, tuple[str, str | None]]:
+    """Pod name -> (uid, config-hash annotation) of a cluster, read with kubectl."""
+    items = kube_json("get", "pods", "-l", f"{CLUSTER_LABEL}={slug}")["items"]
+    return {
+        p["metadata"]["name"]: (
+            p["metadata"]["uid"],
+            (p["metadata"].get("annotations") or {}).get(HASH_ANNOTATION),
+        )
+        for p in items
+    }
+
+
+def live_agents(api: httpx.Client, cid: str) -> list[dict[str, Any]]:
+    return [a for a in agents_of(api, cid) if not a["gone"]]
+
+
+def agent_by_pod(api: httpx.Client, cid: str, pod: str) -> dict[str, Any]:
+    return next(a for a in agents_of(api, cid) if a["pod_name"] == pod)
+
+
+def agent_me(pod: str) -> dict[str, Any]:
+    status, me = agent_call(pod, "GET", "/agent/v1/me")
+    assert status == 200, me
+    return me
+
+
+def wait_members(pod: str, expected: set[str]) -> None:
+    def probe() -> bool:
+        return {m["pod_name"] for m in agent_me(pod)["members"]} == expected
+
+    wait_for(f"{pod} sees members {sorted(expected)}", probe, 120)
+
+
+def wait_pod_gone(slug: str, pod: str, timeout: float = DISCARD_TIMEOUT) -> None:
+    wait_for(f"pod {pod} to be gone", lambda: pod not in pod_identity(slug), timeout)
+
+
+def scale_to(api: httpx.Client, cid: str, replicas: int) -> httpx.Response:
+    return api.post(f"/clusters/{cid}/scale", json={"replicas": replicas})
+
+
+def error_code(resp: httpx.Response) -> str:
+    return resp.json()["error"]["code"]
+
+
+def test_scale_up_and_down_keeps_surviving_pods(api: httpx.Client, baseline: dict) -> None:
+    with scale_cluster(api, "updown", {"replicas": 1, "max_replicas": 3}) as created:
+        cid, slug = created["id"], created["slug"]
+        pods = [f"agent-{slug}-{i}" for i in range(3)]
+        wait_sessions(api, cid, 1)
+        before = pod_identity(slug)
+        assert set(before) == {pods[0]}, before
+        assert before[pods[0]][1], before
+        leader = wait_for("a leader", lambda: leader_view(api, cid)[0], LEADER_TIMEOUT)
+        assert leader["pod_name"] == pods[0], leader
+
+        resp = scale_to(api, cid, 3)
+        assert resp.status_code == 202, resp.text
+        assert resp.json()["replicas"] == 3 and resp.json()["previous_replicas"] == 1, resp.text
+        wait_sessions(api, cid, 3)
+        grown = pod_identity(slug)
+        assert set(grown) == set(pods), grown
+        assert grown[pods[0]] == before[pods[0]], (before, grown)  # same uid, same config hash
+        wait_members(pods[0], set(pods))
+        assert agent_me(pods[0])["leader"] == pods[0]  # a joining agent never leads
+        joined_leader, _ = leader_view(api, cid)
+        assert joined_leader is not None and joined_leader["id"] == leader["id"], joined_leader
+
+        resp = scale_to(api, cid, 2)
+        assert resp.status_code == 202, resp.text
+        wait_pod_gone(slug, pods[2])
+        shrunk = pod_identity(slug)
+        assert set(shrunk) == set(pods[:2]), shrunk
+        assert shrunk[pods[0]] == before[pods[0]] and shrunk[pods[1]] == grown[pods[1]], shrunk
+        wait_for("agent-2 marked gone", lambda: agent_by_pod(api, cid, pods[2])["gone"], 120)
+        wait_members(pods[0], set(pods[:2]))
+        final_leader, _ = leader_view(api, cid)
+        assert final_leader is not None and final_leader["id"] == leader["id"], final_leader
+
+
+def test_scale_refusals(api: httpx.Client, baseline: dict) -> None:
+    with scale_cluster(api, "refuse", {"replicas": 3, "max_replicas": 3}) as created:
+        cid, slug = created["id"], created["slug"]
+        wait_sessions(api, cid, 3)
+        for bad in (0, 4):
+            resp = scale_to(api, cid, bad)
+            assert resp.status_code == 422, (bad, resp.text)
+            assert error_code(resp) == "out_of_range", resp.text
+
+        _, epoch = leader_view(api, cid)
+        assert epoch is not None
+        top = agent_by_pod(api, cid, f"agent-{slug}-2")
+        resp = api.post(f"/clusters/{cid}/leader", json={"agent_id": top["id"]})
+        assert resp.status_code == 202, resp.text
+        wait_leader(api, cid, epoch + 1, top["id"])
+        resp = scale_to(api, cid, 2)
+        assert resp.status_code == 409, resp.text
+        assert error_code(resp) == "leader_would_leave", resp.text
+        assert len(live_agents(api, cid)) == 3
+
+    with scale_cluster(api, "static", {"replicas": 2, "max_replicas": 2, "static": True}) as s:
+        resp = scale_to(api, s["id"], 1)
+        assert resp.status_code == 409, resp.text
+        assert error_code(resp) == "static_cluster", resp.text
+        view = api.get(f"/clusters/{s['id']}").json()
+        assert view["static"] is True and view["spec"]["replicas"] == 2, view
+
+
+def test_agent_scale_leader_only(api: httpx.Client, cluster: dict[str, Any]) -> None:
+    cid = cluster["id"]
+    leader, _ = leader_view(api, cid)
+    assert leader is not None
+    follower = next(a for a in live_agents(api, cid) if a["id"] != leader["id"])
+    replicas = api.get(f"/clusters/{cid}").json()["spec"]["replicas"]
+    body = {"replicas": replicas}
+
+    status, out = agent_call(leader["pod_name"], "POST", "/agent/v1/scale", body)
+    assert status == 202, out
+    assert out["replicas"] == replicas, out
+
+    status, out = agent_call(follower["pod_name"], "POST", "/agent/v1/scale", body)
+    assert status == 403, out
+    assert out["error"]["code"] == "not_leader", out
+
+
+def test_static_single_pod_is_alone(api: httpx.Client, baseline: dict) -> None:
+    with scale_cluster(api, "single", {"replicas": 1, "max_replicas": 1, "static": True}) as c:
+        assert c["hive"] is False and c["static"] is True and c["leader_agent_id"] is None, c
+        name = f"agent-{c['slug']}-config"
+
+        def rendered() -> dict[str, Any] | None:
+            proc = kubectl("get", "configmap", name, "-o", "json", check=False)
+            return json.loads(proc.stdout) if proc.returncode == 0 else None
+
+        configmap = wait_for("the single static pod's ConfigMap", rendered, 120)
+        config = yaml.safe_load(configmap["data"]["config.yaml"])
+        assert config["notes"] == {"enabled": False}, config
+        assert not (config.get("peers") or {}).get("enabled"), config
+        plugins = on_start_any_mcp(configmap).get("plugins", [])
+        for plugin in plugins:
+            if plugin.get("name") == "orchestrator":
+                allow = set(plugin.get("allow", []))
+                assert not allow & {"scale", "me", "leadership_handover", "lock_claim"}, plugin
+        assert "orchestrator" not in {p.get("name") for p in plugins}, plugins
+
+
+def test_scale_down_waits_for_busy_agent(api: httpx.Client, baseline: dict) -> None:
+    """The fake claude's "slow" turn lasts 4 s, so the window is short: the pod is checked
+    right after the scale is posted, while the turn is still running."""
+    with scale_cluster(api, "drain", {"replicas": 2, "max_replicas": 2}) as created:
+        cid, slug = created["id"], created["slug"]
+        top_pod = f"agent-{slug}-1"
+        wait_sessions(api, cid, 2)
+        wait_leader(api, cid, 1)
+        top = agent_by_pod(api, cid, top_pod)
+        uid = pod_identity(slug)[top_pod][0]
+
+        body = {"text": SLOW_PROMPT.format(n=1), "target_agent_id": top["id"]}
+        resp = api.post(f"/clusters/{cid}/messages", json=body)
+        assert resp.status_code == 202, resp.text
+        mid = resp.json()["message_id"]
+
+        def busy() -> bool:
+            sent = message(api, mid)["status"] == "sent"
+            return sent and agent_by_pod(api, cid, top_pod)["state"] == "busy"
+
+        wait_for("the top agent to be busy", busy, TURN_TIMEOUT, interval=0.2)
+        resp = scale_to(api, cid, 1)
+        assert resp.status_code == 202, resp.text
+        assert pod_identity(slug).get(top_pod, (None,))[0] == uid  # the pod stays mid-turn
+
+        def done() -> bool:
+            turn = message(api, mid)["turn"]
+            return bool(turn and turn["completed_at"])
+
+        wait_for("the turn to complete", done, TURN_TIMEOUT, interval=1)
+        wait_pod_gone(slug, top_pod)
+        wait_for("the top agent marked gone", lambda: agent_by_pod(api, cid, top_pod)["gone"], 120)
+
+
 def test_discard_removes_objects_and_history(
     api: httpx.Client, discarded: dict[str, Any], round_robin: dict[str, Any]
 ) -> None:
