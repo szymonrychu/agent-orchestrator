@@ -19,9 +19,13 @@ export interface AgentsStripProps {
   autoCompactPct?: number
   /** Set for hive clusters only: enables the leader badge and the Make leader action. Alone clusters omit it. */
   hive?: { clusterId: string; leaderEpoch: number | null }
+  /** cluster.spec.replicas: agents at or above it are leaving. */
+  replicas?: number
+  /** Ordinals of leaving agents still finishing a turn (cluster.status.drain.waiting). */
+  drainWaiting?: readonly number[]
 }
 
-export function AgentsStrip({ agents, selected, onToggle, autoCompactPct, hive }: AgentsStripProps) {
+export function AgentsStrip({ agents, selected, onToggle, autoCompactPct, hive, replicas, drainWaiting }: AgentsStripProps) {
   const now = useNow()
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState<string | null>(null)
@@ -46,10 +50,12 @@ export function AgentsStrip({ agents, selected, onToggle, autoCompactPct, hive }
       {agents.map((a) => {
         const on = selected.includes(a.id)
         const free = a.state === 'idle' && a.free_since ? formatAge(now - Date.parse(a.free_since)) : null
+        const leaving = replicas !== undefined && a.ordinal >= replicas && !a.gone
+        const leavingText = !leaving ? null : drainWaiting?.includes(a.ordinal) ? 'leaving after its turn' : 'leaving'
         return (
           <Box key={a.id} data-testid={`agent-row-${a.pod_name}`} sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
           <ButtonBase
-            aria-label={`agent ${a.ordinal}`}
+            aria-label={leavingText ? `agent ${a.ordinal}, ${leavingText}` : `agent ${a.ordinal}`}
             aria-pressed={on}
             onClick={() => onToggle(a.id)}
             sx={{
@@ -73,6 +79,11 @@ export function AgentsStrip({ agents, selected, onToggle, autoCompactPct, hive }
             {free !== null && (
               <Box component="span" sx={{ fontSize: TOKENS.fontSizes.xs, color: 'text.secondary', flexShrink: 0 }}>
                 {`free ${free}`}
+              </Box>
+            )}
+            {leavingText !== null && (
+              <Box component="span" sx={{ fontSize: TOKENS.fontSizes.xs, color: 'warning.main', flexShrink: 0 }}>
+                {leavingText}
               </Box>
             )}
             {hive && a.leader && (
