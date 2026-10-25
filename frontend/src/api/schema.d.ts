@@ -4,6 +4,24 @@
  */
 
 export interface paths {
+    "/agent/v1/init-scripts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Init scripts and last init run of the caller's cluster */
+        get: operations["init_scripts_get_agent_v1_init_scripts_get"];
+        /** Replace the init scripts of the caller's cluster and its source preset */
+        put: operations["init_scripts_put_agent_v1_init_scripts_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/agent/v1/leadership/handover": {
         parameters: {
             query?: never;
@@ -1400,6 +1418,74 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    init_scripts_get_agent_v1_init_scripts_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-orch-cluster"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InitScriptsView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    init_scripts_put_agent_v1_init_scripts_put: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-orch-cluster"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InitScriptsIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InitScriptsView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     handover_agent_v1_leadership_handover_post: {
         parameters: {
             query?: never;

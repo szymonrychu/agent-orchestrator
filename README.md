@@ -752,6 +752,14 @@ The caller's identity, the leader and the hive members.
 
 The current leader hands leadership away. Body `{to?, reason, epoch}`: `to` is the pod name of a member (omitted: any agent), `reason` is 1 to 500 characters, `epoch` is the epoch the caller read from `GET /agent/v1/me`. Queues a `handover` request and sends `NOTIFY leadership_requested {cluster_id}`; the dispatcher re-checks everything at apply time. There is no takeover route. Response 202 `{request_id}`. Errors, checked in this order: 409 `alone` (a single-agent cluster), 409 `not_leader` (the caller is not the current leader, or there is none), 409 `stale_epoch` (`epoch` differs from the current epoch), 404 `not_found` (unknown `to`), 422 `invalid_request`.
 
+### `GET /agent/v1/init-scripts`
+
+The init scripts of the caller's cluster and the last init run, so the agent knows how its cluster was initialised. The cluster is always the token's; there is no way to name another. Response 200, the same view as the public `GET /api/v1/clusters/{id}/init-scripts` (`cluster_id`, `scripts`, `preset_id`, `preset_name`, `status`, `edited_since_run`, `script_path`, `log_path`, `preset_updated` always false). The scripts and the run log are also files under `.agent-init/` in the workdir. Any agent of the cluster may call it. Errors: the 401 and 403 above.
+
+### `PUT /agent/v1/init-scripts`
+
+Replaces the caller's cluster init scripts. Body `{"scripts": ["<shell script>", ...]}` with the same limits as the public PUT. Writes the cluster's stored `spec.init_scripts` and its source preset's (when it still exists) in one transaction, with no generation bump and no pod roll; the edit applies to the next cluster created from the preset and never re-runs here. Response 200 with the view above and `preset_updated` true when a preset was written. Errors: 422 `invalid_request` (nothing is written), 409 `conflict` (the cluster is being deleted), plus the 401 and 403 above. These two routes back the plugin tools `orchestrator_init_scripts_get` and `orchestrator_init_scripts_edit`.
+
 ### File locks
 
 Advisory locks on files, so agents claim what they edit and are warned before writing a file another live agent holds. Paths are relative to the cluster workdir (`/workdir/<spec.workdir>`); an absolute path under it is converted, and an empty path, a `..` escape or a path outside the workdir is `400 invalid_path`. The workdir root constant `WORKDIR_ROOT` lives in `spec.py`, shared by the renderer and the api.
