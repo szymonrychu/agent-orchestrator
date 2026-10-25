@@ -1,6 +1,6 @@
 # agent-orchestrator
 
-agent-orchestrator is a web UI and headless `/api/v1` that define, run, message and discard clusters of claude-code-wrapper pods in the namespace `agents`. One Python repo and image runs four processes (`orch api`, `orch dispatcher`, `orch ingester`, `orch reconciler`) that coordinate only through a Postgres database. Messages to a cluster go round-robin to the agent free the longest; a React/MUI UI shows live state and context gauges, and the same API serves tatara and magic-trainer. The repo ships its own Helm chart.
+agent-orchestrator is a headless `/api/v1` that defines, run, message and discard clusters of claude-code-wrapper pods in the namespace `agents`. One Python repo and image runs four processes (`orch api`, `orch dispatcher`, `orch ingester`, `orch reconciler`) that coordinate only through a Postgres database. Messages to a cluster go round-robin to the agent free the longest; its web UI is the [agents-web](https://github.com/szymonrychu/agents-web) component, and the same API serves tatara and magic-trainer. The repo ships its own Helm chart.
 
 ## Development
 
@@ -453,7 +453,7 @@ Plain SQL migrations (`src/agent_orchestrator/db/migrations`), psycopg 3, no ORM
 
 ## API
 
-Base path `/api/v1`. JSON in and out. There is no authentication; access is restricted by the source allowlist below. Errors always have the shape `{"error": {"code": "<code>", "message": "<text>"}}`. The machine-readable contract is `openapi.json` at the repo root (`uv run python -m agent_orchestrator.api.openapi > openapi.json`), also served at `/api/v1/openapi.json`; a test fails when it drifts.
+Base path `/api/v1`. JSON in and out. There is no authentication; access is restricted by the source allowlist below. Errors always have the shape `{"error": {"code": "<code>", "message": "<text>"}}`. The machine-readable contract is `openapi.json` at the repo root (`uv run python -m agent_orchestrator.api.openapi > openapi.json`, then `npm run sync:api -- orchestrator` in agents-web), also served at `/api/v1/openapi.json`; a test fails when it drifts.
 
 Versioning: `/api/v1` is additive only. New routes, new optional request fields and new response fields may appear; existing routes, fields and error codes are never removed or changed in meaning. A breaking change is a new `/api/v2`.
 

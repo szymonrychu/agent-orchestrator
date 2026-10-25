@@ -113,38 +113,6 @@ def test_architecture_documents_single_writer() -> None:
     assert section("Data model").strip()
 
 
-def test_frontend_schema_matches_openapi(tmp_path: Path) -> None:
-    """frontend/src/api/schema.d.ts must be regenerated whenever openapi.json changes."""
-    import json
-    import shutil
-    import subprocess
-
-    spec = json.loads((ROOT / "openapi.json").read_text(encoding="utf-8"))
-    types = (ROOT / "frontend" / "src" / "api" / "schema.d.ts").read_text(encoding="utf-8")
-
-    # Structural check (no node needed): every path, schema and property is in the types.
-    missing = [p for p in spec["paths"] if f'"{p}"' not in types]
-    for name, schema in spec.get("components", {}).get("schemas", {}).items():
-        if not re.search(rf"^\s+{re.escape(name)}: ", types, re.MULTILINE):
-            missing.append(f"schema {name}")
-            continue
-        for prop in schema.get("properties", {}):
-            if not re.search(rf"^\s+{re.escape(prop)}\??: ", types, re.MULTILINE):
-                missing.append(f"{name}.{prop}")
-    assert not missing, f"schema.d.ts is stale (run `npm run gen:api`): {missing}"
-
-    # Exact check: regenerate with the pinned generator and compare byte for byte.
-    binary = ROOT / "frontend" / "node_modules" / ".bin" / "openapi-typescript"
-    assert binary.exists() and shutil.which("node"), (
-        "openapi-typescript is not installed: run `npm ci` in frontend/"
-    )
-    out = tmp_path / "schema.check.d.ts"
-    subprocess.run([str(binary), str(ROOT / "openapi.json"), "-o", str(out)], check=True)
-    assert out.read_text(encoding="utf-8") == types, (
-        "schema.d.ts differs from generated output (run `npm run gen:api`)"
-    )
-
-
 def test_readme_documents_leaving_agent_detection() -> None:
     scaling = section("API").split("### Scaling", 1)[1].split("\n### ")[0]
     for needle in ("spec.replicas", "ordinal", "status.drain", "leaving", "waiting", "since"):
