@@ -235,10 +235,10 @@ async def test_reuse_running_agent_round_trip(http):
     assert c.json()["spec"]["reuse_running_agent"] is True
     p = await http.post("/api/v1/clusters", json={"preset_id": plain["id"], "slug": "plain-c"})
     assert p.status_code == 201, p.text
-    assert "reuse_running_agent" not in p.json()["spec"]
-    assert {k: v for k, v in c.json()["spec"].items() if k != "reuse_running_agent"} == p.json()[
-        "spec"
-    ]
+    assert p.json()["spec"]["reuse_running_agent"] is None
+    assert {k: v for k, v in c.json()["spec"].items() if k != "reuse_running_agent"} == {
+        k: v for k, v in p.json()["spec"].items() if k != "reuse_running_agent"
+    }
 
     r = await http.put(f"{P}/{made['id']}", json={"name": "reuse", "spec": {"replicas": 2}})
     assert r.status_code == 200, r.text
