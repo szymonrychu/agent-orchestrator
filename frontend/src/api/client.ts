@@ -20,6 +20,7 @@ export type PostCheck = S['PostCheck'];
 export type PresetView = S['PresetView'];
 export type PresetIn = S['PresetIn'];
 export type CopyPreset = S['CopyPreset'];
+export type InitScriptsView = S['InitScriptsView'];
 
 export type AgentCommand = 'compact' | 'interrupt' | 'restart';
 
@@ -77,6 +78,9 @@ export const getCluster = (clusterId: string) => request<ClusterView>('GET', `/c
 export const createCluster = (body: CreateCluster) => request<ClusterView>('POST', '/clusters', body);
 /** Discards the cluster; takes no purge parameter. */
 export const deleteCluster = (clusterId: string) => request<ClusterView>('DELETE', `/clusters/${id(clusterId)}`);
+export const getInitScripts = (clusterId: string) => request<InitScriptsView>('GET', `/clusters/${id(clusterId)}/init-scripts`);
+export const putInitScripts = (clusterId: string, scripts: string[]) =>
+  request<InitScriptsView>('PUT', `/clusters/${id(clusterId)}/init-scripts`, { scripts });
 export const listPresets = () => request<PresetView[]>('GET', '/presets');
 export const getPreset = (presetId: string) => request<PresetView>('GET', `/presets/${id(presetId)}`);
 export const createPreset = (body: PresetIn) => request<PresetView>('POST', '/presets', body);
