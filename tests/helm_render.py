@@ -10,7 +10,7 @@ from typing import Any
 
 import yaml
 
-CHART = Path(__file__).resolve().parent.parent / "chart" / "agent-orchestrator"
+CHART = Path(__file__).resolve().parent.parent / "chart" / "agents-orchestrator"
 LINT_VALUES = CHART / "ci" / "lint-values.yaml"
 
 
@@ -50,7 +50,7 @@ def render(
     *,
     show_only: list[str] | None = None,
     namespace: str = "agents",
-    release: str = "agent-orchestrator",
+    release: str = "agents-orchestrator",
     chart: Path = CHART,
 ) -> list[dict]:
     """helm template with a temp values file; returns the parsed (non-empty) documents."""
@@ -67,7 +67,7 @@ def render_text(
     *,
     show_only: list[str] | None = None,
     namespace: str = "agents",
-    release: str = "agent-orchestrator",
+    release: str = "agents-orchestrator",
     chart: Path = CHART,
 ) -> str:
     """helm template raw stdout, for assertions that parsing would hide (duplicate keys)."""
@@ -84,7 +84,7 @@ def render_error(
     *,
     show_only: list[str] | None = None,
     namespace: str = "agents",
-    release: str = "agent-orchestrator",
+    release: str = "agents-orchestrator",
     chart: Path = CHART,
 ) -> str:
     """stderr of a helm template that must fail."""

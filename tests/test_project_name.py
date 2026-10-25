@@ -7,6 +7,8 @@ import subprocess
 import tomllib
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -38,5 +40,38 @@ def test_package_named_agents_orchestrator() -> None:
 def test_old_name_gone_from_src_and_build_files() -> None:
     paths = ("src/", "pyproject.toml", "Dockerfile", "openapi.json")
     out = _git("grep", "-n", "-E", "agent[-_]orchestrator", "--", *paths)
+    # git grep exits 1 when nothing matches, 0 with matches, >1 on error
+    assert out.returncode == 1, out.stdout or out.stderr
+
+
+def test_old_chart_retired() -> None:
+    out = _git("ls-files", "chart/agent-orchestrator")
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == ""
+    assert _git("ls-files", "chart/agents-orchestrator/Chart.yaml").stdout.strip()
+
+
+def test_chart_and_ci_named() -> None:
+    chart = yaml.safe_load((ROOT / "chart/agents-orchestrator/Chart.yaml").read_text())
+    assert chart["name"] == "agents-orchestrator"
+
+    ci = yaml.safe_load((ROOT / ".github/workflows/ci.yaml").read_text())
+    image = ci["jobs"]["images"]["env"]["IMAGE"]
+    assert image == "harbor.szymonrichert.pl/containers/agents-orchestrator"
+    runs = (ROOT / ".github/workflows/ci.yaml").read_text()
+    assert "helm package chart/agents-orchestrator " in runs
+    assert 'helm push "agents-orchestrator-$VERSION.tgz"' in runs
+    assert '"$CHART_REPO/agents-orchestrator"' in runs
+
+    paths = ("chart/", ".github/", "mise.toml", "scripts/", "e2e/", "tests/")
+    out = _git(
+        "grep",
+        "-n",
+        "-E",
+        "agent[-_]orchestrator",
+        "--",
+        *paths,
+        ":(exclude)tests/test_project_name.py",
+    )
     # git grep exits 1 when nothing matches, 0 with matches, >1 on error
     assert out.returncode == 1, out.stdout or out.stderr

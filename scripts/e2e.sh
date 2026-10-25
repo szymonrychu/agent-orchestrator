@@ -20,11 +20,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-CLUSTER=agent-orchestrator-e2e
+CLUSTER=agents-orchestrator-e2e
 NS=agents
-RELEASE=agent-orchestrator
-ORCH_IMAGE=agent-orchestrator:e2e
-AGENT_IMAGE=agent-orchestrator-agent-test:e2e
+RELEASE=agents-orchestrator
+ORCH_IMAGE=agents-orchestrator:e2e
+AGENT_IMAGE=agents-orchestrator-agent-test:e2e
 PORT="${E2E_PORT:-18080}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/orch-e2e.XXXXXX")"
 export KUBECONFIG="$WORK/kubeconfig"
@@ -42,8 +42,8 @@ diagnostics() {
     echo "--- $RELEASE-$c"
     kubectl -n "$NS" logs "deployment/$RELEASE-$c" --all-containers --tail=120 || true
   done
-  kubectl -n "$NS" describe pods -l app.kubernetes.io/managed-by=agent-orchestrator || true
-  kubectl -n "$NS" logs -l app.kubernetes.io/managed-by=agent-orchestrator --tail=120 || true
+  kubectl -n "$NS" describe pods -l app.kubernetes.io/managed-by=agents-orchestrator || true
+  kubectl -n "$NS" logs -l app.kubernetes.io/managed-by=agents-orchestrator --tail=120 || true
   [ -f "$WORK/port-forward.log" ] && cat "$WORK/port-forward.log" || true
 }
 
@@ -91,7 +91,7 @@ agent_base_image() {
     return
   fi
   echo "cannot pull $base for $PLATFORM; building the wrapper at $sha from source" >&2
-  local local_base="agent-orchestrator-e2e-wrapper-base:${sha:0:7}"
+  local local_base="agents-orchestrator-e2e-wrapper-base:${sha:0:7}"
   docker build --quiet -t "$local_base" \
     "https://github.com/szymonrychu/claude-code-wrapper.git#$sha" >&2
   echo "$local_base"
@@ -267,7 +267,7 @@ kubectl -n "$NS" apply -f e2e/manifests/postgres.yaml
 kubectl -n "$NS" rollout status deployment/postgres --timeout=300s
 
 log "helm install $RELEASE"
-helm install "$RELEASE" chart/agent-orchestrator -n "$NS" -f e2e/values-kind.yaml \
+helm install "$RELEASE" chart/agents-orchestrator -n "$NS" -f e2e/values-kind.yaml \
   --set-string "env.ORCH_PVC_STORAGE_CLASS=$STORAGE_CLASS" \
   --set-string "postgres.url=postgresql://orch:$PG_PASSWORD@postgres:5432/orch" \
   --set-string "masterKey.value=$MASTER_KEY" \

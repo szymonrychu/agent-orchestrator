@@ -15,7 +15,7 @@ def _ci() -> dict:
 
 
 def _chart_version() -> str:
-    chart = yaml.safe_load((ROOT / "chart/agent-orchestrator/Chart.yaml").read_text())
+    chart = yaml.safe_load((ROOT / "chart/agents-orchestrator/Chart.yaml").read_text())
     return chart["version"]
 
 
@@ -53,9 +53,9 @@ def test_publish_only_main_and_tags_after_images():
         runs = _runs(job)
         assert "scripts/chart-version.sh" in runs
         assert job["env"]["CHART_REPO"] == "oci://harbor.szymonrichert.pl/charts"
-        assert 'helm push "agent-orchestrator-$VERSION.tgz" "$CHART_REPO"' in runs
+        assert 'helm push "agents-orchestrator-$VERSION.tgz" "$CHART_REPO"' in runs
     assert "regctl image digest" in _runs(tag)
-    assert "harbor.szymonrichert.pl/containers/agent-orchestrator:$SHA7" in _runs(tag)
+    assert "harbor.szymonrichert.pl/containers/agents-orchestrator:$SHA7" in _runs(tag)
     assert "regctl image digest" not in _runs(main)
 
 
@@ -80,16 +80,16 @@ def test_publish_refuses_existing_version():
         check = next(i for i, r in enumerate(runs) if "helm show chart" in r)
         push = next(i for i, r in enumerate(runs) if "helm push" in r)
         assert check < push
-        assert '"$CHART_REPO/agent-orchestrator"' in runs[check]
+        assert '"$CHART_REPO/agents-orchestrator"' in runs[check]
         assert "--version" in runs[check]
-        assert "already published; bump chart/agent-orchestrator/Chart.yaml version" in runs[check]
+        assert "already published; bump chart/agents-orchestrator/Chart.yaml version" in runs[check]
         assert "exit 1" in runs[check]
 
 
 def test_package_sets_app_version_sha7():
     for name in ("chart-publish", "chart-publish-tag"):
         runs = _runs(_ci()["jobs"][name])
-        cmd = 'helm package chart/agent-orchestrator --version "$VERSION" --app-version "$SHA7"'
+        cmd = 'helm package chart/agents-orchestrator --version "$VERSION" --app-version "$SHA7"'
         assert cmd in runs
         assert "HARBOR_USERNAME" in str(_ci()["jobs"][name])
         assert "HARBOR_PASSWORD" in str(_ci()["jobs"][name])

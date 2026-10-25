@@ -487,13 +487,13 @@ async def test_restart_command_deletes_pod(env):
     # an agent row pointing at a pod without the cluster labels never gets it deleted
     env.kube.seed_orchestrator_objects()
     stray = await insert_agent(
-        env.pool, c.id, ordinal=9, pod_name="agent-orchestrator-api-7d9f8c-x2k4q"
+        env.pool, c.id, ordinal=9, pod_name="agents-orchestrator-api-7d9f8c-x2k4q"
     )
     cmd2 = await insert_command(env.pool, stray["id"], kind="restart")
     env.kube.reset_records()
     await env.rec.reconcile_once()
     assert env.kube.deleted("Pod") == []
-    assert env.kube.has("Pod", "agent-orchestrator-api-7d9f8c-x2k4q")
+    assert env.kube.has("Pod", "agents-orchestrator-api-7d9f8c-x2k4q")
     row = (await env.rows("SELECT status, result FROM commands WHERE id = %s", (cmd2["id"],)))[0]
     assert row["status"] == "failed" and row["result"]["error"] == "pod_not_found"
 

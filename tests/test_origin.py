@@ -194,7 +194,7 @@ async def test_http_dependency():
 
 
 def test_readmes_document_dev_origin():
-    for path in (ROOT / "README.md", ROOT / "chart" / "agent-orchestrator" / "README.md"):
+    for path in (ROOT / "README.md", ROOT / "chart" / "agents-orchestrator" / "README.md"):
         text = path.read_text()
         assert "ORCH_ALLOWED_ORIGINS" in text, path
         assert "http://localhost:5173" in text, path

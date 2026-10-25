@@ -28,7 +28,7 @@ run = "uv run ruff format . && uv run ruff check --fix ."
 description = "Run tests that need a real wrapper image (builds the test agent image when ORCH_TEST_WRAPPER_IMAGE is unset)"
 run = """
 if [ -z "${ORCH_TEST_WRAPPER_IMAGE:-}" ]; then
-  export ORCH_TEST_WRAPPER_IMAGE=agent-orchestrator-agent-test:e2e
+  export ORCH_TEST_WRAPPER_IMAGE=agents-orchestrator-agent-test:e2e
   mkdir -p "${TMPDIR:-/tmp}/orch-agent-ctx/e2e"
   cp e2e/agent-test.scenario.json "${TMPDIR:-/tmp}/orch-agent-ctx/e2e/"
   docker build -f e2e/agent-test.Dockerfile -t "$ORCH_TEST_WRAPPER_IMAGE" "${TMPDIR:-/tmp}/orch-agent-ctx"
@@ -46,4 +46,4 @@ run = "uv run pytest tests/test_chart_*.py -q"
 
 [tasks."lint:chart"]
 description = "helm lint the chart with the CI values"
-run = "helm lint chart/agent-orchestrator -f chart/agent-orchestrator/ci/lint-values.yaml"
+run = "helm lint chart/agents-orchestrator -f chart/agents-orchestrator/ci/lint-values.yaml"

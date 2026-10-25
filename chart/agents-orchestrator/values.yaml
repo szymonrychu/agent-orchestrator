@@ -1,10 +1,10 @@
-# Default values for agent-orchestrator.
+# Default values for agents-orchestrator.
 # This is a YAML-formatted file.
 # Declare variables to be passed into your templates.
 
 # This sets the container image more information can be found here: https://kubernetes.io/docs/concepts/containers/images/
 image:
-  repository: harbor.szymonrichert.pl/containers/agent-orchestrator
+  repository: harbor.szymonrichert.pl/containers/agents-orchestrator
   # This sets the pull policy for images.
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
@@ -190,8 +190,8 @@ cnpg:
   instances: 1
   # Empty uses the operator default image.
   imageName: ""
-  database: agent_orchestrator
-  owner: agent_orchestrator
+  database: agents_orchestrator
+  owner: agents_orchestrator
   storage:
     size: 10Gi
     storageClass: ""

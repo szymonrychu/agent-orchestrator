@@ -11,7 +11,7 @@ import pytest
 import yaml
 from helm_render import CHART, LINT_VALUES, render, render_error
 
-FULL = "agent-orchestrator"
+FULL = "agents-orchestrator"
 BASE: dict[str, Any] = {
     "agentImage": "registry.example/wrapper:1",
     "masterKey": {"value": "mk"},
@@ -23,12 +23,12 @@ URL = "postgresql://u:p@db:5432/app"
 @pytest.fixture
 def env_chart(tmp_path: Path) -> Path:
     """A chart copy with a probe template that renders the shared container env."""
-    dst = tmp_path / "agent-orchestrator"
+    dst = tmp_path / "agents-orchestrator"
     shutil.copytree(CHART, dst)
     (dst / "templates" / "env-probe.yaml").write_text(
         "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: env-probe\ndata:\n"
         "  env: |\n"
-        '    {{- include "agent-orchestrator.env" . | nindent 4 }}\n'
+        '    {{- include "agents-orchestrator.env" . | nindent 4 }}\n'
     )
     return dst
 
@@ -46,7 +46,7 @@ def by_kind(docs: list[dict], kind: str) -> dict[str, dict]:
 def test_requires_postgres_connection():
     err = render_error(values())
     assert (
-        "agent-orchestrator: a Postgres connection is required: set postgres.url, "
+        "agents-orchestrator: a Postgres connection is required: set postgres.url, "
         "postgres.host/user/database/password, postgres.existingSecret, or cnpg.enabled=true" in err
     )
 
@@ -144,8 +144,8 @@ def test_cnpg_optional_with_backup_passthrough(env_chart):
     assert spec["walStorage"] == {"size": "4Gi", "storageClass": "wal"}
     assert spec["resources"] == {"limits": {"memory": "1Gi"}}
     assert spec["bootstrap"]["initdb"] == {
-        "database": "agent_orchestrator",
-        "owner": "agent_orchestrator",
+        "database": "agents_orchestrator",
+        "owner": "agents_orchestrator",
     }
     assert spec["backup"] == backup
     assert f"{FULL}-database" not in by_kind(docs, "Secret")

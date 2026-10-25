@@ -1,6 +1,6 @@
-# agent-orchestrator chart
+# agents-orchestrator chart
 
-Installs the agent-orchestrator api, dispatcher, ingester and reconciler into the one namespace
+Installs the agents-orchestrator api, dispatcher, ingester and reconciler into the one namespace
 it manages. The full guide (install, Postgres, secrets, RBAC, ingress, security) is the root
 `README.md`; this file covers the values that need deployment-specific input.
 

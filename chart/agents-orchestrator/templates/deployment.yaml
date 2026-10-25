@@ -5,15 +5,15 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "agent-orchestrator.fullname" $ }}-{{ $component }}
+  name: {{ include "agents-orchestrator.fullname" $ }}-{{ $component }}
   labels:
-    {{- include "agent-orchestrator.labels" $ | nindent 4 }}
+    {{- include "agents-orchestrator.labels" $ | nindent 4 }}
     app.kubernetes.io/component: {{ $component }}
 spec:
   replicas: {{ $cfg.replicas | default 1 }}
   selector:
     matchLabels:
-      {{- include "agent-orchestrator.componentLabels" $labels | nindent 6 }}
+      {{- include "agents-orchestrator.componentLabels" $labels | nindent 6 }}
   template:
     metadata:
       annotations:
@@ -22,7 +22,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       labels:
-        {{- include "agent-orchestrator.labels" $ | nindent 8 }}
+        {{- include "agents-orchestrator.labels" $ | nindent 8 }}
         app.kubernetes.io/component: {{ $component }}
         {{- with $.Values.podLabels }}
         {{- toYaml . | nindent 8 }}
@@ -33,9 +33,9 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- if eq $component "reconciler" }}
-      serviceAccountName: {{ include "agent-orchestrator.fullname" $ }}-reconciler
+      serviceAccountName: {{ include "agents-orchestrator.fullname" $ }}-reconciler
       {{- else }}
-      serviceAccountName: {{ include "agent-orchestrator.serviceAccountName" $ }}
+      serviceAccountName: {{ include "agents-orchestrator.serviceAccountName" $ }}
       automountServiceAccountToken: false
       {{- end }}
       terminationGracePeriodSeconds: {{ $.Values.terminationGracePeriodSeconds }}
@@ -53,7 +53,7 @@ spec:
           imagePullPolicy: {{ $.Values.image.pullPolicy }}
           command: ["orch"]
           args: ["migrate"]
-          {{- include "agent-orchestrator.env" $ | nindent 10 }}
+          {{- include "agents-orchestrator.env" $ | nindent 10 }}
       containers:
         - name: {{ $component }}
           {{- with $.Values.securityContext }}
@@ -68,7 +68,7 @@ spec:
             {{- range $cfg.extraArgs }}
             - {{ . | quote }}
             {{- end }}
-          {{- include "agent-orchestrator.env" $ | nindent 10 }}
+          {{- include "agents-orchestrator.env" $ | nindent 10 }}
           {{- if eq $component "api" }}
             - name: ORCH_HTTP_PORT
               value: "8000"

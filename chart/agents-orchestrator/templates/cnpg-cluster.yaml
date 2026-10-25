@@ -2,9 +2,9 @@
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
-  name: {{ include "agent-orchestrator.fullname" . }}-db
+  name: {{ include "agents-orchestrator.fullname" . }}-db
   labels:
-    {{- include "agent-orchestrator.labels" . | nindent 4 }}
+    {{- include "agents-orchestrator.labels" . | nindent 4 }}
 spec:
   instances: {{ .Values.cnpg.instances }}
   {{- with .Values.cnpg.imageName }}

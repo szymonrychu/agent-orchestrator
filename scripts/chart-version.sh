@@ -8,9 +8,9 @@ ref_name="${2:-}"
 sha="${3:-}"
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-version="$(sed -n 's/^version:[[:space:]]*"\{0,1\}\([^"[:space:]]*\)"\{0,1\}[[:space:]]*$/\1/p' "$root/chart/agent-orchestrator/Chart.yaml" | head -n1)"
+version="$(sed -n 's/^version:[[:space:]]*"\{0,1\}\([^"[:space:]]*\)"\{0,1\}[[:space:]]*$/\1/p' "$root/chart/agents-orchestrator/Chart.yaml" | head -n1)"
 if [ -z "$version" ]; then
-  echo "no version in chart/agent-orchestrator/Chart.yaml" >&2
+  echo "no version in chart/agents-orchestrator/Chart.yaml" >&2
   exit 1
 fi
 
@@ -19,7 +19,7 @@ if [ "$ref_type" = "branch" ] && [ "$ref_name" = "main" ]; then
 elif [ "$ref_type" = "tag" ] && [[ "$ref_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   tag_version="${ref_name#v}"
   if [ "$tag_version" != "$version" ]; then
-    echo "tag $ref_name (version $tag_version) does not match chart/agent-orchestrator/Chart.yaml version $version" >&2
+    echo "tag $ref_name (version $tag_version) does not match chart/agents-orchestrator/Chart.yaml version $version" >&2
     exit 1
   fi
   echo "$version"

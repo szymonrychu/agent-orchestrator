@@ -2,9 +2,9 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "agent-orchestrator.fullname" . }}-agents
+  name: {{ include "agents-orchestrator.fullname" . }}-agents
   labels:
-    {{- include "agent-orchestrator.labels" . | nindent 4 }}
+    {{- include "agents-orchestrator.labels" . | nindent 4 }}
 spec:
   type: ClusterIP
   ports:
@@ -13,4 +13,4 @@ spec:
       protocol: TCP
       name: agents
   selector:
-    {{- include "agent-orchestrator.componentLabels" (dict "context" . "component" "api") | nindent 4 }}
+    {{- include "agents-orchestrator.componentLabels" (dict "context" . "component" "api") | nindent 4 }}

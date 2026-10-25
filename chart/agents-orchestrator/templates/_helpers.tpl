@@ -1,7 +1,7 @@
 {{/*
 Expand the name of the chart.
 */}}
-{{- define "agent-orchestrator.name" -}}
+{{- define "agents-orchestrator.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
@@ -10,7 +10,7 @@ Create a default fully qualified app name.
 We truncate at 63 chars because some Kubernetes name fields are limited to this (by the DNS naming spec).
 If release name contains chart name it will be used as a full name.
 */}}
-{{- define "agent-orchestrator.fullname" -}}
+{{- define "agents-orchestrator.fullname" -}}
 {{- if .Values.fullnameOverride }}
 {{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" }}
 {{- else }}
@@ -26,16 +26,16 @@ If release name contains chart name it will be used as a full name.
 {{/*
 Create chart name and version as used by the chart label.
 */}}
-{{- define "agent-orchestrator.chart" -}}
+{{- define "agents-orchestrator.chart" -}}
 {{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
 Common labels
 */}}
-{{- define "agent-orchestrator.labels" -}}
-helm.sh/chart: {{ include "agent-orchestrator.chart" . }}
-{{ include "agent-orchestrator.selectorLabels" . }}
+{{- define "agents-orchestrator.labels" -}}
+helm.sh/chart: {{ include "agents-orchestrator.chart" . }}
+{{ include "agents-orchestrator.selectorLabels" . }}
 {{- if .Chart.AppVersion }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
@@ -45,17 +45,17 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{/*
 Selector labels
 */}}
-{{- define "agent-orchestrator.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "agent-orchestrator.name" . }}
+{{- define "agents-orchestrator.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "agents-orchestrator.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
 Create the name of the service account to use
 */}}
-{{- define "agent-orchestrator.serviceAccountName" -}}
+{{- define "agents-orchestrator.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create }}
-{{- default (include "agent-orchestrator.fullname" .) .Values.serviceAccount.name }}
+{{- default (include "agents-orchestrator.fullname" .) .Values.serviceAccount.name }}
 {{- else }}
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
@@ -63,9 +63,9 @@ Create the name of the service account to use
 
 {{/*
 Component labels: selector labels plus the component name. Call with a dict:
-{{ include "agent-orchestrator.componentLabels" (dict "context" . "component" "api") }}
+{{ include "agents-orchestrator.componentLabels" (dict "context" . "component" "api") }}
 */}}
-{{- define "agent-orchestrator.componentLabels" -}}
-{{ include "agent-orchestrator.selectorLabels" .context }}
+{{- define "agents-orchestrator.componentLabels" -}}
+{{ include "agents-orchestrator.selectorLabels" .context }}
 app.kubernetes.io/component: {{ .component }}
 {{- end }}

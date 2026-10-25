@@ -37,11 +37,11 @@ from agents_orchestrator.settings import Settings
 pytestmark = pytest.mark.e2e
 
 NAMESPACE = os.environ.get("ORCH_E2E_NAMESPACE", "agents")
-RELEASE = os.environ.get("ORCH_E2E_RELEASE", "agent-orchestrator")
+RELEASE = os.environ.get("ORCH_E2E_RELEASE", "agents-orchestrator")
 # not a secret: its sha256 is serviceApi.tokenHashes.e2e in e2e/values-kind.yaml
 E2E_SERVICE_TOKEN = "e2e-service-token-not-a-secret"
 API_URL = os.environ.get("ORCH_E2E_API_URL", "http://127.0.0.1:18080")
-KUBE_CONTEXT = os.environ.get("ORCH_E2E_KUBE_CONTEXT", "kind-agent-orchestrator-e2e")
+KUBE_CONTEXT = os.environ.get("ORCH_E2E_KUBE_CONTEXT", "kind-agents-orchestrator-e2e")
 SLUG = "e2e-rr"
 PRESET_NAME = "E2E two replicas"
 GENERATED_SLUG = re.compile(r"^default-[a-z]{4}$")

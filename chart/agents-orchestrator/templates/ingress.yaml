@@ -1,11 +1,11 @@
 {{- if .Values.ingress.enabled -}}
-{{- $fullName := include "agent-orchestrator.fullname" . -}}
+{{- $fullName := include "agents-orchestrator.fullname" . -}}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: {{ $fullName }}
   labels:
-    {{- include "agent-orchestrator.labels" . | nindent 4 }}
+    {{- include "agents-orchestrator.labels" . | nindent 4 }}
   {{- if or .Values.ingress.annotations .Values.ingress.denySourceRanges .Values.ingress.allowSourceRanges }}
   annotations:
     {{- with .Values.ingress.annotations }}
