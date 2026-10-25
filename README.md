@@ -740,6 +740,7 @@ How API callers size a cluster:
 - Hive, alone and scalable are derived: `max_replicas > 1` is a hive, `max_replicas == 1` runs alone, and a cluster is scalable when it is not static and `max_replicas > 1`.
 - `POST /api/v1/clusters/{cluster_id}/scale` (and the leader's scale tool on the agent API) changes `spec.replicas` in place: no generation bump and no restart of surviving pods.
 - Scale-down removes the highest ordinals, after the drain of their queued and running work.
+- Detecting a leaving agent: read `spec.replicas` of the cluster view, `ordinal` of each agent view and `status.drain` of the cluster view. An agent with `ordinal >= spec.replicas` while `status.drain` is present is leaving. It finishes its turn (its state `busy` or a message still `dispatching` or `verifying`) before its pod is removed; idle leaving agents go at once. `status.drain` is `{"target", "since", "waiting"}`: `target` is the new `spec.replicas`, `since` the first tick that saw the drain, `waiting` the ordinals still busy. After `ORCH_SCALE_DRAIN_SECONDS` (default 900) from `since` the target applies regardless of busy agents. `status.drain` is absent once the drain is done.
 - The leader is never removed: a scale-down below the leader's ordinal is 409 `leader_would_leave`. Make another agent leader first (`POST /api/v1/clusters/{cluster_id}/leader`), then scale.
 - New pods never re-run init scripts; those run once per cluster.
 

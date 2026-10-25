@@ -143,3 +143,9 @@ def test_frontend_schema_matches_openapi(tmp_path: Path) -> None:
     assert out.read_text(encoding="utf-8") == types, (
         "schema.d.ts differs from generated output (run `npm run gen:api`)"
     )
+
+
+def test_readme_documents_leaving_agent_detection() -> None:
+    scaling = section("API").split("### Scaling", 1)[1].split("\n### ")[0]
+    for needle in ("spec.replicas", "ordinal", "status.drain", "leaving", "waiting", "since"):
+        assert needle in scaling, needle
