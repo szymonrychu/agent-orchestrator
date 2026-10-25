@@ -1294,7 +1294,9 @@ def test_init_scripts_edit_writes_cluster_and_preset_without_roll(
 
 def test_init_scripts_failure_starts_sessions_degraded(api: httpx.Client, baseline: dict) -> None:
     spec = {"replicas": 1, "env": FAKE_TURN_ENV, "init_scripts": ["exit 3"]}
-    with init_cluster(api, {"spec": spec}) as created:
+    with init_cluster(
+        api, {"spec": spec, "slug": f"e2e-initfail-{uuid.uuid4().hex[:6]}"}
+    ) as created:
         cid = created["id"]
         view = wait_init_state(api, cid, ("failed",))
         init = view["status"]["init"]
@@ -1309,6 +1311,11 @@ def test_init_scripts_failure_starts_sessions_degraded(api: httpx.Client, baseli
         assert len(wait_sessions(api, cid, 1)) == 1
 
 
-def test_cluster_without_init_scripts_skipped(api: httpx.Client, cluster: dict[str, Any]) -> None:
-    view = api.get(f"/clusters/{cluster['id']}").json()
-    assert view["status"]["init"]["state"] == "skipped", view["status"]
+def test_cluster_without_init_scripts_skipped(api: httpx.Client, baseline: dict) -> None:
+    # own cluster: the shared `cluster` fixture is discarded by the discard test before this runs
+    with (
+        init_preset(api, [], replicas=1) as preset,
+        init_cluster(api, {"preset_id": preset["id"]}) as created,
+    ):
+        view = wait_init_state(api, created["id"], ("skipped",))
+        assert view["status"]["init"]["state"] == "skipped", view["status"]
