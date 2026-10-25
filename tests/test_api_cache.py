@@ -101,7 +101,8 @@ async def test_preset_prefix_reserved(pool, dsn):
             assert_error(r, 422, "invalid_request")
             assert msg in r.json()["error"]["message"]
             r = await http.put(
-                f"{P}/{victim['id']}", json={"name": "victim", "spec": {"cache": {"key": "preset-x"}}}
+                f"{P}/{victim['id']}",
+                json={"name": "victim", "spec": {"cache": {"key": "preset-x"}}},
             )
             assert_error(r, 422, "invalid_request")
             assert msg in r.json()["error"]["message"]

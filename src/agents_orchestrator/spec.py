@@ -371,7 +371,7 @@ def default_cache_key(preset_id: uuid.UUID) -> str:
 CACHE_KEY_RESERVED_PREFIX = "preset-"
 
 
-def check_caller_cache_key(spec: "SessionSpec", derived_key: str | None = None) -> None:
+def check_caller_cache_key(spec: SessionSpec, derived_key: str | None = None) -> None:
     """Reject a caller-supplied cache key in the prefix reserved for preset-derived keys.
 
     `derived_key` is the one reserved key the spec may carry (its own preset's). Applied at the
