@@ -116,3 +116,22 @@ async def test_preset_prefix_reserved(pool, dsn):
         assert r.json()["spec"]["cache"]["key"] == stolen
         ok = await http.post(C, json={"slug": "okslug", "spec": {"cache": {"key": "presets-x"}}})
         assert ok.status_code == 201, ok.text
+
+
+async def test_copy_drops_source_derived_key(pool, dsn):
+    async with app_client(pool, dsn) as http:
+        src = await make_preset(http, "src", {"cache": {}})
+        own = default_cache_key(uuid.UUID(src["id"]))
+        put = await http.put(
+            f"{P}/{src['id']}", json={"name": "src", "spec": {"cache": {"key": own}}}
+        )
+        assert put.status_code == 200, put.text
+        cp = await http.post(f"{P}/{src['id']}/copy", json={"name": "src2"})
+        assert cp.status_code == 201, cp.text
+        assert not cp.json()["spec"]["cache"].get("key")
+        r = await http.post(C, json={"preset_id": cp.json()["id"]})
+        assert r.status_code == 201, r.text
+        assert r.json()["spec"]["cache"]["key"] == default_cache_key(uuid.UUID(cp.json()["id"]))
+        slug = await make_preset(http, "slugged", {"cache": {"key": "mine", "exclude": ["t"]}})
+        cp2 = await http.post(f"{P}/{slug['id']}/copy", json={"name": "slugged2"})
+        assert cp2.json()["spec"]["cache"] == {"key": "mine", "exclude": ["t"]}

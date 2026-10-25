@@ -135,6 +135,14 @@ async def delete_preset(preset_id: uuid.UUID, pool: Pool) -> Response:
     return Response(status_code=204)
 
 
+def _without_derived_key(spec: dict[str, Any], preset_id: uuid.UUID) -> dict[str, Any]:
+    """The copy derives its own key, so a key equal to the source's derived key is dropped."""
+    cache = spec.get("cache")
+    if isinstance(cache, dict) and cache.get("key") == default_cache_key(preset_id):
+        return {**spec, "cache": {k: v for k, v in cache.items() if k != "key"}}
+    return spec
+
+
 @router.post("/presets/{preset_id}/copy", status_code=201, response_model=schemas.PresetView)
 async def copy_preset(
     preset_id: uuid.UUID, pool: Pool, body: schemas.CopyPreset | None = None
@@ -146,11 +154,12 @@ async def copy_preset(
         source = await repo.get(conn, preset_id)
         if source is None:
             raise not_found("preset")
+        spec = _without_derived_key(source.spec, preset_id)
         for _ in range(_COPY_TRIES):
             taken = {p.name.lower() for p in await repo.list_presets(conn)}
             name = explicit if explicit is not None else _copy_name(source.name, taken)
             try:
-                return _view(await repo.create(conn, name, source.spec))
+                return _view(await repo.create(conn, name, spec))
             except repo.PresetExists:
                 if explicit is not None:
                     raise _exists(name) from None
