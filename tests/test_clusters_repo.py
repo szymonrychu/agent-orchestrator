@@ -132,7 +132,9 @@ def test_validate_spec_caps():
     validate_spec(ClusterSpec(pvc_size="5120Mi"), s)
     with pytest.raises(SpecInvalid) as e:
         validate_spec(ClusterSpec(replicas=5, pvc_size="11Gi"), s)
-    assert len(e.value.errors) == 2
+    # max_replicas defaults to replicas, so the replicas cap is reported for both fields
+    assert len(e.value.errors) == 3
+    assert sum("replicas" in m for m in e.value.errors) == 2
     with pytest.raises(SpecInvalid):
         validate_spec(ClusterSpec(pvc_size="1Ti"), s)
     with pytest.raises(ValidationError):

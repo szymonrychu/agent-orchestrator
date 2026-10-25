@@ -78,6 +78,7 @@ def test_sse_event_types_documented() -> None:
         "agent_status",
         "message_status",
         "cluster_removed",
+        "leader_changed",
     } <= emitted
     events = section("API").split("### Events", 1)
     assert len(events) == 2, "README ## API has no '### Events' subsection"

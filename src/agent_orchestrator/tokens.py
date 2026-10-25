@@ -12,9 +12,10 @@ from agent_orchestrator.settings import Settings
 class ClusterTokens:
     auth: str = field(repr=False)
     peer: str = field(repr=False)
+    agent: str = field(repr=False)
 
     def __repr__(self) -> str:
-        return "ClusterTokens(auth='***', peer='***')"
+        return "ClusterTokens(auth='***', peer='***', agent='***')"
 
     __str__ = __repr__
 
@@ -27,6 +28,7 @@ def derive_tokens(master_key: bytes, cluster_id: UUID) -> ClusterTokens:
     return ClusterTokens(
         auth=_mac(master_key, "auth", cluster_id),
         peer=_mac(master_key, "peer", cluster_id),
+        agent=_mac(master_key, "agent", cluster_id),
     )
 
 

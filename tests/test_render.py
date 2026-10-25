@@ -22,7 +22,9 @@ from agent_orchestrator.spec import ClusterSpec
 from agent_orchestrator.tokens import ClusterTokens
 
 GOLDEN = Path(__file__).parent / "golden"
-TOKENS = ClusterTokens(auth="a" * 32, peer="p" * 32)
+TOKENS = ClusterTokens(auth="a" * 32, peer="p" * 32, agent="g" * 32)
+AGENT_ENV = ["ORCH_AGENT_TOKEN", "ORCH_AGENT_URL", "ORCH_CLUSTER_ID", "POD_NAME"]
+AGENT_URL = "http://orchestrator-agents.agents.svc:8081"
 IMAGE = "harbor.example/containers/claude-code-wrapper:ca2ddf3"
 
 
@@ -207,7 +209,7 @@ def test_config_hash_rolls_pods():
     assert hash_of(make_cluster()) == base
     assert hash_of(make_cluster(any_mcp_config={"a": 1})) != base
     assert hash_of(make_cluster(model="opus")) != base
-    assert hash_of(make_cluster(), any_mcp_ref="v0.2.0") != base
+    assert hash_of(make_cluster(), any_mcp_ref="v9.9.9") != base
 
 
 def test_all_objects_in_namespace():
@@ -228,7 +230,7 @@ def test_passthrough_env_lists_spec_env_names(tmp_path, monkeypatch):
         make_cluster(env={"ZED": "1", "ALPHA": "2"}), make_settings(), TOKENS
     )
     cfg = config_of(objs)
-    assert cfg["claude"]["passthrough_env"] == ["ALPHA", "ZED"]
+    assert cfg["claude"]["passthrough_env"] == sorted(["ALPHA", "ZED", *AGENT_ENV])
     env = {e["name"]: e.get("value") for e in container_of(objs)["env"]}
     assert env["ZED"] == "1" and env["ALPHA"] == "2"
     for k, v in {
@@ -237,11 +239,14 @@ def test_passthrough_env_lists_spec_env_names(tmp_path, monkeypatch):
         "CCW_PEER_URL": "http://x:1",
         "CLAUDE_CODE_OAUTH_TOKEN": "o",
         "POD_NAME": "p",
+        "ORCH_AGENT_TOKEN": "g" * 20,
+        "ORCH_AGENT_URL": "http://o:1",
+        "ORCH_CLUSTER_ID": "c",
     }.items():
         monkeypatch.setenv(k, v)
     path = tmp_path / "c.yaml"
     path.write_text(by_kind(objs)["ConfigMap"]["data"]["config.yaml"])
-    assert load_config(path).claude.passthrough_env == ["ALPHA", "ZED"]
+    assert load_config(path).claude.passthrough_env == sorted(["ALPHA", "ZED", *AGENT_ENV])
 
 
 def test_workdir_path_matches_mount_and_session_workdir():
@@ -415,3 +420,125 @@ def test_render_keeps_spec_resources_unchanged():
     spec = {"resources": {"requests": {"cpu": "2"}, "limits": {"memory": "2Gi"}}}
     c = container_of(render.render_cluster(make_cluster(**spec), make_settings(), TOKENS))
     assert c["resources"] == {"requests": {"cpu": "2"}, "limits": {"memory": "2Gi"}}
+
+
+def test_agent_credential_env():
+    cluster = make_cluster()
+    objs = render.render_cluster(cluster, make_settings(agent_api_url=AGENT_URL), TOKENS)
+    assert by_kind(objs)["Secret"]["stringData"]["ORCH_AGENT_TOKEN"] == TOKENS.agent
+    env = {e["name"]: e for e in container_of(objs)["env"]}
+    assert env["ORCH_AGENT_TOKEN"]["valueFrom"]["secretKeyRef"] == {
+        "name": "agent-alpha-ccw",
+        "key": "ORCH_AGENT_TOKEN",
+    }
+    assert env["ORCH_CLUSTER_ID"]["value"] == str(cluster.id)
+    assert env["ORCH_AGENT_URL"]["value"] == AGENT_URL
+
+
+def test_passthrough_includes_agent_env():
+    objs = render.render_cluster(
+        make_cluster(env={"ZED": "1"}), make_settings(agent_api_url=AGENT_URL), TOKENS
+    )
+    assert config_of(objs)["claude"]["passthrough_env"] == sorted(["ZED", *AGENT_ENV])
+    solo = render.render_cluster(
+        make_cluster(replicas=1), make_settings(agent_api_url=AGENT_URL), TOKENS
+    )
+    assert "ORCH_AGENT_TOKEN" in config_of(solo)["claude"]["passthrough_env"]
+
+
+def test_no_agent_url_omits_env():
+    objs = render.render_cluster(make_cluster(), make_settings(), TOKENS)
+    names = [e["name"] for e in container_of(objs)["env"]]
+    assert "ORCH_AGENT_URL" not in names
+    assert "ORCH_AGENT_TOKEN" in names and "ORCH_CLUSTER_ID" in names
+    assert "ORCH_AGENT_URL" in config_of(objs)["claude"]["passthrough_env"]
+
+
+def test_agent_token_trust_domain_documented():
+    """The token is plain pod env, readable by every process in the pod (Bash included)."""
+    objs = render.render_cluster(make_cluster(), make_settings(agent_api_url=AGENT_URL), TOKENS)
+    env = {e["name"]: e for e in container_of(objs)["env"]}
+    assert "ORCH_AGENT_TOKEN" in env
+    assert "ORCH_AGENT_TOKEN" in config_of(objs)["claude"]["passthrough_env"]
+    readme = (Path(__file__).parent.parent / "README.md").read_text().lower()
+    assert "best-effort" in readme and "orch_agent_token" in readme
+
+
+def _render(cluster, **settings):
+    return render.render_cluster(
+        cluster, make_settings(agent_api_url=AGENT_URL, **settings), TOKENS
+    )
+
+
+def test_peer_seeds_from_cap():
+    cfg = config_of(_render(make_cluster(replicas=1, max_replicas=3)))
+    assert cfg["peers"]["static"] == [
+        f"http://agent-alpha-{i}.agent-alpha.agents.svc.cluster.local:8080" for i in range(3)
+    ]
+    assert cfg["peers"]["name"] == "${POD_NAME}"
+    assert cfg["peers"]["advertise_url"] == "${CCW_PEER_URL}"
+
+
+def test_alone_cluster_no_hive_config():
+    cfg = config_of(_render(make_cluster(replicas=1, static=True)))
+    assert not cfg.get("peers", {}).get("enabled")
+    assert cfg["notes"]["enabled"] is False
+    assert "onAgentToolCall" not in cfg["hooks"]
+    cfg = config_of(_render(make_cluster(replicas=3, max_replicas=3, peers=False)))
+    assert not cfg.get("peers", {}).get("enabled")
+    assert cfg["notes"]["enabled"] is True
+
+
+def test_hive_cluster_config():
+    cfg = config_of(_render(make_cluster(replicas=2)))
+    assert cfg["peers"]["enabled"] is True
+    assert cfg["notes"]["enabled"] is True
+    assert cfg["hooks"]["onAgentToolCall"] == [
+        {
+            "type": "webhook",
+            "url": "${ORCH_AGENT_URL}/agent/v1/locks/check",
+            "headers": {
+                "Authorization": "Bearer ${ORCH_AGENT_TOKEN}",
+                "X-Orch-Cluster": "${ORCH_CLUSTER_ID}",
+            },
+            "matcher": "^(Write|Edit|MultiEdit|NotebookEdit)$",
+            "blocking": True,
+            "on_error": "allow",
+            "timeout_seconds": 2,
+            "retries": 0,
+        }
+    ]
+    no_url = render.render_cluster(make_cluster(replicas=2), make_settings(), TOKENS)
+    assert "onAgentToolCall" not in config_of(no_url)["hooks"]
+
+
+def test_main_agent_only_tools_rendered():
+    for cluster in (make_cluster(replicas=1, static=True), make_cluster(replicas=3)):
+        cfg = config_of(_render(cluster))
+        assert cfg["claude"]["main_agent_only_tools"] == ["mcp__any-mcp__orchestrator_*"]
+
+
+@pytest.mark.parametrize(
+    "low,high",
+    [({"replicas": 1}, {"replicas": 3}), ({"replicas": 2}, {"replicas": 4})],
+)
+def test_runtime_fields_change_only_statefulset_replicas(low, high):
+    a = _render(make_cluster(max_replicas=4, **low))
+    b = _render(make_cluster(max_replicas=4, **high))
+    assert sts_of(a)["spec"]["replicas"] == low["replicas"]
+    assert sts_of(b)["spec"]["replicas"] == high["replicas"]
+    for objs in (a, b):
+        sts_of(objs)["spec"]["replicas"] = 0
+    assert a == b
+
+
+def _on_start_plugins(cluster) -> list[str]:
+    objs = render.render_cluster(cluster, make_settings(agent_api_url=AGENT_URL), TOKENS)
+    script = by_kind(objs)["ConfigMap"]["data"]["on-start.sh"]
+    body = script.split("<<'ANY_MCP_CONFIG_EOF'\n")[1].split("\nANY_MCP_CONFIG_EOF")[0]
+    return [p["name"] for p in json.loads(body).get("plugins", [])]
+
+
+def test_on_start_orchestrator_entry_only_for_hive():
+    assert _on_start_plugins(make_cluster(replicas=2)) == ["orchestrator"]
+    assert _on_start_plugins(make_cluster(replicas=1)) == []

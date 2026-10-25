@@ -11,8 +11,9 @@ from pydantic import ValidationError
 
 from agent_orchestrator.api import schemas
 from agent_orchestrator.api.errors import ApiError, not_found
+from agent_orchestrator.db import agents as agents_repo
 from agent_orchestrator.db import clusters as repo
-from agent_orchestrator.db import presets, views
+from agent_orchestrator.db import leadership, presets, views
 from agent_orchestrator.settings import Settings
 from agent_orchestrator.spec import (
     ClusterSpec,
@@ -41,6 +42,7 @@ _CREATE_LOCK = 0x4F524348  # serialises cluster creation so max_clusters cannot 
 
 
 def _view(cluster: repo.Cluster, agg: dict | None, settings: Settings) -> schemas.ClusterView:
+    agg = agg or {}
     return schemas.ClusterView(
         id=cluster.id,
         slug=cluster.slug,
@@ -53,6 +55,11 @@ def _view(cluster: repo.Cluster, agg: dict | None, settings: Settings) -> schema
         preset_id=cluster.preset_id,
         preset_name=cluster.preset_name,
         summary=views.summarize(cluster, agg, settings.default_auto_compact_pct),
+        hive=cluster.spec.hive,
+        max_replicas=cluster.spec.max_replicas or cluster.spec.replicas,
+        static=cluster.spec.static,
+        leader_agent_id=agg.get("leader_agent_id"),
+        leader_epoch=agg.get("leader_epoch"),
     )
 
 
@@ -73,6 +80,8 @@ def agent_view(r: dict) -> schemas.AgentView:
         )
         if known
         else None,
+        context_pct=r["context_pct"],
+        leader=bool(r.get("leader")),
         peers=len(r["peers"] or []),
         gone=r["gone_at"] is not None,
     )
@@ -242,3 +251,25 @@ async def list_agents(cluster_id: uuid.UUID, pool: Pool) -> list[schemas.AgentVi
             raise not_found("cluster")
         rows = await views.agent_rows(conn, cluster_id)
     return [agent_view(r) for r in rows]
+
+
+@router.post(
+    "/clusters/{cluster_id}/leader", status_code=202, response_model=schemas.LeadershipRequested
+)
+async def make_leader(
+    cluster_id: uuid.UUID, body: schemas.MakeLeaderIn, pool: Pool
+) -> schemas.LeadershipRequested:
+    """Queue a user leadership override; the dispatcher decides at apply time."""
+    async with pool.connection() as conn:
+        cluster = await repo.get(conn, cluster_id)
+        if cluster is None:
+            raise not_found("cluster")
+        target = await agents_repo.get_agent(conn, body.agent_id)
+        if target is None or target.cluster_id != cluster_id:
+            raise not_found("agent")
+        if cluster.spec.alone:
+            raise ApiError(409, "alone", "a single-agent cluster has no leader to change")
+        request_id = await leadership.insert_request(
+            conn, cluster_id, "user", None, target.id, "user", None
+        )
+    return schemas.LeadershipRequested(request_id=request_id)

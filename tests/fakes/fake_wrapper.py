@@ -38,6 +38,7 @@ REPLAY = 100
 MAX_PAGE = 1000
 BINARY_SNIFF_BYTES = 8192
 RESUMABLE = ("stopped", "failed", "dead")
+_NOTE_KEY = re.compile(r"^[a-z0-9_]{1,40}$")
 _CLOSE = object()
 
 log = logging.getLogger(__name__)
@@ -229,6 +230,12 @@ class FakeWrapper:
         # terminal API: per-process registry, as in the wrapper
         self.terminals: dict[str, _Terminal] = {}
         self.terminals_max = TERMINALS_MAX
+        # notes inbox: every accepted push per session, in arrival order; the held store keeps
+        # one keyed note per key (newest wins) and appends the rest, as the wrapper does
+        self.notes: dict[str, list[dict[str, Any]]] = {}
+        self.notes_enabled = True
+        self.notes_max_chars = 2000
+        self._notes_delay = 0.0
         self.requests: list[tuple[str, str]] = []  # (method, path) of every authenticated call
         self.app = self._build_app()
 
@@ -388,6 +395,24 @@ class FakeWrapper:
     def delay_turn_response(self, seconds: float) -> None:
         """Record the turn, then answer after `seconds` (a client timeout sees a started turn)."""
         self._delay = seconds
+
+    def disable_notes(self, disabled: bool = True) -> None:
+        """Answer 409 notes_disabled, as a wrapper with notes.enabled false."""
+        self.notes_enabled = not disabled
+
+    def delay_notes(self, seconds: float) -> None:
+        """Answer every note push after `seconds` (a hanging wrapper)."""
+        self._notes_delay = seconds
+
+    def held_notes(self, session_id: str) -> list[dict[str, Any]]:
+        """The notes the session would hold: keyed (newest per key) first, then appended."""
+        pushed = self.notes.get(session_id, [])
+        keyed: dict[str, dict[str, Any]] = {}
+        for note in pushed:
+            if note["key"] is not None:
+                keyed.pop(note["key"], None)
+                keyed[note["key"]] = note
+        return [*keyed.values(), *(n for n in pushed if n["key"] is None)]
 
     def fail_turn_after_receive(self, code: int | None) -> None:
         """Record the turn, then answer the submission with this status (None restores)."""
@@ -623,6 +648,35 @@ class FakeWrapper:
                 raise _Err(422, "invalid_request", f"unknown command {name}")
             self.emit("command_queued", {"name": name}, session_id)
             return {"command_id": self._new_id("cmd-"), "state": "queued"}
+
+        @app.post("/v1/sessions/{session_id}/notes", status_code=202)
+        async def push_note(session_id: str, request: Request) -> dict[str, Any]:
+            self._auth(request)
+            if self._notes_delay:
+                await asyncio.sleep(self._notes_delay)
+            body = await self._json_body(request)
+            if not self.notes_enabled:
+                raise _Err(409, "notes_disabled", "notes are disabled (notes.enabled is false)")
+            ses = self._get(session_id)
+            if ses.state in RESUMABLE:
+                raise _Err(409, "invalid_state", f"state is {ses.state}")
+            text, key, source = body.get("text"), body.get("key"), body.get("source")
+            if set(body) - {"text", "key", "source"}:
+                raise _Err(422, "invalid_request", "unknown field")
+            if not isinstance(text, str) or not text:
+                raise _Err(422, "invalid_request", "text: must be a non-empty string")
+            if key is not None and not (isinstance(key, str) and _NOTE_KEY.fullmatch(key)):
+                raise _Err(422, "invalid_request", "key: must match ^[a-z0-9_]{1,40}$")
+            if source is not None and not (isinstance(source, str) and len(source) <= 80):
+                raise _Err(422, "invalid_request", "source: must be a string of at most 80")
+            if len(text) > self.notes_max_chars:
+                raise _Err(422, "invalid_request", f"text: at most {self.notes_max_chars} chars")
+            self.notes.setdefault(session_id, []).append(
+                {"text": text, "key": key, "source": source}
+            )
+            payload = {"key": key, "source": source, "text": text, "chars": len(text)}
+            self.emit("note_received", payload, session_id)
+            return {"key": key, "pending": len(self.held_notes(session_id))}
 
         @app.get("/v1/sessions/{session_id}/files")
         async def list_files(

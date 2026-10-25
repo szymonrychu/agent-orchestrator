@@ -244,6 +244,11 @@ async def _target_gone(
 
 async def _claim_in_cluster(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID) -> Claim | None:
     """Scan one cluster's queued messages in id order; the caller holds the cluster lock."""
+    leader = await _one(
+        conn, "SELECT agent_id FROM cluster_leaders WHERE cluster_id = %s", (cluster_id,)
+    )
+    leader_id = leader["agent_id"] if leader is not None else None
+    held = False  # an untargeted head waits on the leader: later untargeted messages wait too
     after = 0
     while True:
         rows = await _all(
@@ -261,7 +266,17 @@ async def _claim_in_cluster(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID
             target = row["target_agent_id"]
             if target is None:
                 if row["waiting"]:
-                    return None  # an untargeted head in backoff holds its cluster (FIFO, D4)
+                    if leader_id is None:
+                        return None  # an untargeted head in backoff holds its cluster (FIFO, D4)
+                    held = True  # leader routing: hold untargeted, targeted messages still flow
+                    continue
+                if leader_id is not None:
+                    # Leader-only routing: an untargeted message is the leader's. A gone leader
+                    # does not fail it; it waits for the leadership pass to elect a successor.
+                    if held or await _target_gone(conn, cluster_id, leader_id):
+                        held = True
+                        continue
+                    target = leader_id
             else:
                 if row["waiting"]:
                     continue
@@ -277,8 +292,11 @@ async def _claim_in_cluster(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID
                 continue
             pick = await _pick_agent(conn, cluster_id, target)
             if pick is None:
-                if target is None:
-                    return None  # no free agent in this cluster: leave it queued
+                if row["target_agent_id"] is None:
+                    if leader_id is None:
+                        return None  # no free agent in this cluster: leave it queued
+                    held = True  # the leader is busy: the untargeted FIFO holds, targeted flow
+                    continue
                 continue  # a busy or booting target does not block later messages (D23 d)
             return await _dispatch(conn, row["id"], pick)
 

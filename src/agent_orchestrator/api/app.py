@@ -11,8 +11,8 @@ from fastapi.responses import JSONResponse
 from psycopg_pool import AsyncConnectionPool
 
 from agent_orchestrator import __version__
-from agent_orchestrator.api import clusters, errors, messages, presets, streams, workspace
-from agent_orchestrator.api.allowlist import SourceAllowlist
+from agent_orchestrator.api import agent, clusters, errors, messages, presets, streams, workspace
+from agent_orchestrator.api.allowlist import PortGate, SourceAllowlist
 from agent_orchestrator.api.errors import error_response
 from agent_orchestrator.api.listener import Listener
 from agent_orchestrator.api.origin import OriginAllowlist
@@ -57,6 +57,7 @@ def create_app(
     app.state.stream_poll_seconds = stream_poll_seconds
     errors.install(app)
     app.include_router(clusters.router)
+    app.include_router(agent.router)
     app.include_router(presets.router)
     app.include_router(messages.router)
     app.include_router(streams.router)
@@ -79,5 +80,8 @@ def create_app(
         app.mount("/", SpaStaticFiles(directory=settings.static_dir, html=True), name="spa")
 
     app.add_middleware(OriginAllowlist, origins=settings.allowed_origins)
-    app.add_middleware(SourceAllowlist, networks=settings.allowed_networks())
+    app.add_middleware(
+        SourceAllowlist, networks=settings.allowed_networks(), skip_port=settings.agent_port
+    )
+    app.add_middleware(PortGate, agent_port=settings.agent_port)
     return app

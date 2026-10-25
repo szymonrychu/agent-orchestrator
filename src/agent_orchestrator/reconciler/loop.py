@@ -23,6 +23,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime
 from typing import Any
+from uuid import UUID
 
 import httpx
 from psycopg_pool import AsyncConnectionPool
@@ -69,6 +70,7 @@ class Reconciler:
         self.kube = kube
         self.settings = settings
         self.wrapper_factory = wrapper_factory
+        self._warned_no_agent_url: set[UUID] = set()
         self.hook_transport: httpx.AsyncBaseTransport | None = None
         self.checks = CheckRunner(pool, kube, settings)
         self.bootstrapper = (
@@ -202,6 +204,9 @@ class Reconciler:
 
     async def _converge(self, cluster: Cluster) -> None:
         ns, slug = self.settings.namespace, cluster.slug
+        if not self.settings.agent_api_url and cluster.id not in self._warned_no_agent_url:
+            self._warned_no_agent_url.add(cluster.id)
+            log.warning("ORCH_AGENT_API_URL unset: cluster %s agents get no ORCH_AGENT_URL", slug)
         objs = render_cluster(cluster, self.settings, tokens_for(self.settings, cluster.id))
 
         foreign = await self._foreign(slug, objs)
@@ -295,6 +300,7 @@ class Reconciler:
                     pod_url(slug, name, self.settings),
                     (pod.get("status") or {}).get("phase"),
                     is_ready,
+                    (pod.get("status") or {}).get("podIP"),
                 )
             for agent in await agents_repo.list_agents(conn, cluster.id):
                 if agent.ordinal in seen or agent.gone_at is not None:

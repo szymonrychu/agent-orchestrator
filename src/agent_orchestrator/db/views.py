@@ -18,19 +18,23 @@ SELECT c.id AS cluster_id,
        (SELECT count(*) FROM messages m
          WHERE m.cluster_id = c.id AND m.status = 'queued') AS queued,
        (SELECT count(*) FROM messages m
-         WHERE m.cluster_id = c.id AND m.status = 'failed') AS failed
+         WHERE m.cluster_id = c.id AND m.status = 'failed') AS failed,
+       l.agent_id AS leader_agent_id, l.epoch AS leader_epoch
 FROM clusters c
+LEFT JOIN cluster_leaders l ON l.cluster_id = c.id
 LEFT JOIN agents a ON a.cluster_id = c.id
 LEFT JOIN agent_status s ON s.agent_id = a.id
 {where}
-GROUP BY c.id
+GROUP BY c.id, l.agent_id, l.epoch
 """
 
 _AGENTS = """
 SELECT a.id, a.ordinal, a.pod_name, a.ready, a.gone_at,
        s.state, s.free_since, s.current_turn_id, s.context_used_tokens,
-       s.context_window_tokens, s.context_pct, s.peers
+       s.context_window_tokens, s.context_pct, s.peers,
+       (l.agent_id IS NOT NULL) AS leader
 FROM agents a
+LEFT JOIN cluster_leaders l ON l.agent_id = a.id
 LEFT JOIN agent_status s ON s.agent_id = a.id
 WHERE a.cluster_id = %s
 ORDER BY a.ordinal

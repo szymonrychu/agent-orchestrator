@@ -115,6 +115,8 @@ class Settings(BaseSettings):
 
     http_host: str = "0.0.0.0"
     http_port: int = 8000
+    agent_port: int = 8001
+    agent_api_url: str | None = None
     static_dir: str = ""
     dispatch_poll_seconds: float = 2
     reconcile_poll_seconds: float = 10
@@ -147,7 +149,7 @@ class Settings(BaseSettings):
     discard_drain_seconds: float = 5
 
     any_mcp_repo: str = "https://github.com/szymonrychu/any-mcp"
-    any_mcp_ref: str = "v0.1.0"
+    any_mcp_ref: str = "v0.2.0"
     on_start_timeout_seconds: float = 600
 
     def __init__(self, **values: object) -> None:

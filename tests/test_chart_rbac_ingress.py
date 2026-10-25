@@ -115,7 +115,7 @@ def test_ingress_optional_from_values() -> None:
     (path,) = rule["http"]["paths"]
     assert path["path"] == "/" and path["pathType"] == "Prefix"
     assert path["backend"]["service"] == {"name": FULL, "port": {"number": 80}}
-    svc = next(d for d in _docs() if d["kind"] == "Service")
+    svc = next(d for d in _docs() if d["kind"] == "Service" and d["metadata"]["name"] == FULL)
     assert svc["metadata"]["name"] == FULL and svc["spec"]["ports"][0]["port"] == 80
 
 

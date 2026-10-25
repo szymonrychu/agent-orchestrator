@@ -57,6 +57,17 @@
               }
             ]
           },
+          "context_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Pct"
+          },
           "current_turn_id": {
             "anyOf": [
               {
@@ -89,6 +100,10 @@
             "title": "Id",
             "type": "string"
           },
+          "leader": {
+            "title": "Leader",
+            "type": "boolean"
+          },
           "ordinal": {
             "title": "Ordinal",
             "type": "integer"
@@ -119,6 +134,8 @@
           "free_since",
           "current_turn_id",
           "context",
+          "context_pct",
+          "leader",
           "peers",
           "gone"
         ],
@@ -299,6 +316,19 @@
             "title": "Max Attempts",
             "type": "integer"
           },
+          "max_replicas": {
+            "anyOf": [
+              {
+                "maximum": 16.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Replicas"
+          },
           "model": {
             "anyOf": [
               {
@@ -343,6 +373,11 @@
                 "type": "null"
               }
             ]
+          },
+          "static": {
+            "default": false,
+            "title": "Static",
+            "type": "boolean"
           },
           "workdir": {
             "default": "workdir",
@@ -430,10 +465,41 @@
             "title": "Generation",
             "type": "integer"
           },
+          "hive": {
+            "title": "Hive",
+            "type": "boolean"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "leader_agent_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leader Agent Id"
+          },
+          "leader_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leader Epoch"
+          },
+          "max_replicas": {
+            "title": "Max Replicas",
+            "type": "integer"
           },
           "observed_generation": {
             "title": "Observed Generation",
@@ -469,6 +535,10 @@
           "spec": {
             "$ref": "#/components/schemas/ClusterSpec"
           },
+          "static": {
+            "title": "Static",
+            "type": "boolean"
+          },
           "status": {
             "additionalProperties": true,
             "title": "Status",
@@ -489,7 +559,12 @@
           "created_at",
           "preset_id",
           "preset_name",
-          "summary"
+          "summary",
+          "hive",
+          "max_replicas",
+          "static",
+          "leader_agent_id",
+          "leader_epoch"
         ],
         "title": "ClusterView",
         "type": "object"
@@ -934,6 +1009,367 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "HandoverIn": {
+        "additionalProperties": false,
+        "properties": {
+          "epoch": {
+            "title": "Epoch",
+            "type": "integer"
+          },
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To"
+          }
+        },
+        "required": [
+          "reason",
+          "epoch"
+        ],
+        "title": "HandoverIn",
+        "type": "object"
+      },
+      "LeadershipRequested": {
+        "properties": {
+          "request_id": {
+            "title": "Request Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "request_id"
+        ],
+        "title": "LeadershipRequested",
+        "type": "object"
+      },
+      "LockCheckOut": {
+        "properties": {
+          "additional_context": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Additional Context"
+          },
+          "decision": {
+            "default": "allow",
+            "title": "Decision",
+            "type": "string"
+          }
+        },
+        "title": "LockCheckOut",
+        "type": "object"
+      },
+      "LockHeld": {
+        "properties": {
+          "agent": {
+            "title": "Agent",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "agent"
+        ],
+        "title": "LockHeld",
+        "type": "object"
+      },
+      "LockOut": {
+        "properties": {
+          "agent": {
+            "title": "Agent",
+            "type": "string"
+          },
+          "claimed_at": {
+            "format": "date-time",
+            "title": "Claimed At",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "agent",
+          "claimed_at"
+        ],
+        "title": "LockOut",
+        "type": "object"
+      },
+      "LockPaths": {
+        "additionalProperties": false,
+        "properties": {
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Paths",
+            "type": "array"
+          }
+        },
+        "required": [
+          "paths"
+        ],
+        "title": "LockPaths",
+        "type": "object"
+      },
+      "LockReassignIn": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "LockReassignIn",
+        "type": "object"
+      },
+      "LockReassigned": {
+        "properties": {
+          "agent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "agent"
+        ],
+        "title": "LockReassigned",
+        "type": "object"
+      },
+      "LocksClaimed": {
+        "properties": {
+          "claimed": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Claimed",
+            "type": "array"
+          },
+          "held": {
+            "items": {
+              "$ref": "#/components/schemas/LockHeld"
+            },
+            "title": "Held",
+            "type": "array"
+          }
+        },
+        "required": [
+          "claimed",
+          "held"
+        ],
+        "title": "LocksClaimed",
+        "type": "object"
+      },
+      "LocksOut": {
+        "properties": {
+          "locks": {
+            "items": {
+              "$ref": "#/components/schemas/LockOut"
+            },
+            "title": "Locks",
+            "type": "array"
+          }
+        },
+        "required": [
+          "locks"
+        ],
+        "title": "LocksOut",
+        "type": "object"
+      },
+      "LocksReleased": {
+        "properties": {
+          "released": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Released",
+            "type": "array"
+          }
+        },
+        "required": [
+          "released"
+        ],
+        "title": "LocksReleased",
+        "type": "object"
+      },
+      "MakeLeaderIn": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_id": {
+            "format": "uuid",
+            "title": "Agent Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_id"
+        ],
+        "title": "MakeLeaderIn",
+        "type": "object"
+      },
+      "Me": {
+        "properties": {
+          "agent_id": {
+            "format": "uuid",
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "cluster_id": {
+            "format": "uuid",
+            "title": "Cluster Id",
+            "type": "string"
+          },
+          "epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Epoch"
+          },
+          "leader": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leader"
+          },
+          "max_replicas": {
+            "title": "Max Replicas",
+            "type": "integer"
+          },
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/Member"
+            },
+            "title": "Members",
+            "type": "array"
+          },
+          "ordinal": {
+            "title": "Ordinal",
+            "type": "integer"
+          },
+          "pod_name": {
+            "title": "Pod Name",
+            "type": "string"
+          },
+          "static": {
+            "title": "Static",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "cluster_id",
+          "agent_id",
+          "pod_name",
+          "ordinal",
+          "leader",
+          "epoch",
+          "max_replicas",
+          "static",
+          "members"
+        ],
+        "title": "Me",
+        "type": "object"
+      },
+      "Member": {
+        "properties": {
+          "context_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Pct"
+          },
+          "leader": {
+            "title": "Leader",
+            "type": "boolean"
+          },
+          "pod_name": {
+            "title": "Pod Name",
+            "type": "string"
+          },
+          "ready": {
+            "title": "Ready",
+            "type": "boolean"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pod_name",
+          "ready",
+          "state",
+          "context_pct",
+          "leader"
+        ],
+        "title": "Member",
+        "type": "object"
+      },
       "MessageAccepted": {
         "properties": {
           "message_id": {
@@ -1317,8 +1753,10 @@
             "default": {
               "env": {},
               "max_attempts": 5,
+              "max_replicas": 1,
               "peers": true,
               "replicas": 1,
+              "static": false,
               "workdir": "workdir"
             }
           }
@@ -1598,6 +2036,503 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/agent/v1/leadership/handover": {
+      "post": {
+        "description": "Queue a handover. The checks here fail fast; the dispatcher re-checks at apply time.",
+        "operationId": "handover_agent_v1_leadership_handover_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-orch-cluster",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Orch-Cluster"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HandoverIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeadershipRequested"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hand leadership over (leader only)",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
+    "/agent/v1/locks": {
+      "get": {
+        "operationId": "locks_list_agent_v1_locks_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-orch-cluster",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Orch-Cluster"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocksOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "File locks held by live agents",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
+    "/agent/v1/locks/check": {
+      "post": {
+        "description": "Never denies and never fails on a body it cannot use.",
+        "operationId": "locks_check_agent_v1_locks_check_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-orch-cluster",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Orch-Cluster"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LockCheckOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "onAgentToolCall webhook: warn when another agent holds the file",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
+    "/agent/v1/locks/claim": {
+      "post": {
+        "operationId": "locks_claim_agent_v1_locks_claim_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-orch-cluster",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Orch-Cluster"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LockPaths"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocksClaimed"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Claim files with advisory locks",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
+    "/agent/v1/locks/reassign": {
+      "post": {
+        "operationId": "locks_reassign_agent_v1_locks_reassign_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-orch-cluster",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Orch-Cluster"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LockReassignIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LockReassigned"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reassign or discard a file lock (leader only)",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
+    "/agent/v1/locks/release": {
+      "post": {
+        "operationId": "locks_release_agent_v1_locks_release_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-orch-cluster",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Orch-Cluster"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LockPaths"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocksReleased"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Release own file locks",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
+    "/agent/v1/me": {
+      "get": {
+        "operationId": "me_agent_v1_me_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-orch-cluster",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Orch-Cluster"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Me"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Identity, leader and members of the caller",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
     "/api/v1/agents/{agent_id}/compact": {
       "post": {
         "operationId": "compact_agent_api_v1_agents__agent_id__compact_post",
@@ -2443,6 +3378,57 @@
           }
         },
         "summary": "File Content"
+      }
+    },
+    "/api/v1/clusters/{cluster_id}/leader": {
+      "post": {
+        "description": "Queue a user leadership override; the dispatcher decides at apply time.",
+        "operationId": "make_leader_api_v1_clusters__cluster_id__leader_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cluster_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Cluster Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MakeLeaderIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeadershipRequested"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Make Leader"
       }
     },
     "/api/v1/clusters/{cluster_id}/messages": {

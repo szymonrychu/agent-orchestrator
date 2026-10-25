@@ -13,15 +13,18 @@ from agent_orchestrator.db.clusters import Cluster
 from agent_orchestrator.k8s.labels import cluster_labels, object_names, prefix, selector
 from agent_orchestrator.k8s.on_start import render_on_start
 from agent_orchestrator.settings import Settings
-from agent_orchestrator.spec import ClusterSpec
+from agent_orchestrator.spec import WORKDIR_ROOT, ClusterSpec
 from agent_orchestrator.tokens import ClusterTokens
 
 HASH_ANNOTATION = "agents.szymonrichert.pl/config-hash"
-WORKDIR_ROOT = "/workdir"
 SESSIONS_ROOT = "/sessions"
 WORKSPACE_VOLUME = "workspace"
 PROBE_PERIOD = 5
 STARTUP_SLACK = 12
+
+# Always passed to the any-mcp stdio child; ORCH_AGENT_URL is listed even when unset (the wrapper
+# passes through only variables that exist).
+AGENT_PASSTHROUGH_ENV = ("ORCH_AGENT_TOKEN", "ORCH_AGENT_URL", "ORCH_CLUSTER_ID", "POD_NAME")
 
 ASK_IN_WRITING_PROMPT = (
     "The AskUserQuestion tool is disabled and nobody answers interactive questions. "
@@ -53,10 +56,27 @@ def _shutdown_timeout(grace: int) -> int:
     return max(grace - 10, grace // 2)
 
 
+def _lock_check_hook() -> dict[str, Any]:
+    """Advisory file-lock warning; the wrapper interpolates ${VAR} from the pod env."""
+    return {
+        "type": "webhook",
+        "url": "${ORCH_AGENT_URL}/agent/v1/locks/check",
+        "headers": {
+            "Authorization": "Bearer ${ORCH_AGENT_TOKEN}",
+            "X-Orch-Cluster": "${ORCH_CLUSTER_ID}",
+        },
+        "matcher": "^(Write|Edit|MultiEdit|NotebookEdit)$",
+        "blocking": True,
+        "on_error": "allow",
+        "timeout_seconds": 2,
+        "retries": 0,
+    }
+
+
 def _ccw_config(cluster: Cluster, settings: Settings) -> dict[str, Any]:
     spec, slug = cluster.spec, cluster.slug
     claude: dict[str, Any] = {
-        "passthrough_env": sorted(spec.env),
+        "passthrough_env": sorted([*spec.env, *AGENT_PASSTHROUGH_ENV]),
         "env": {
             "claude_code_oauth_token": "${CLAUDE_CODE_OAUTH_TOKEN}",
             "disable_autoupdater": True,
@@ -70,6 +90,7 @@ def _ccw_config(cluster: Cluster, settings: Settings) -> dict[str, Any]:
         claude["model"] = model
     if effort:
         claude["effort"] = effort
+    claude["main_agent_only_tools"] = ["mcp__any-mcp__orchestrator_*"]
     claude["permissions"] = {"deny": ["EnterPlanMode", "ExitPlanMode", "AskUserQuestion"]}
     claude["mcp_servers"] = {
         "any-mcp": {
@@ -104,14 +125,18 @@ def _ccw_config(cluster: Cluster, settings: Settings) -> dict[str, Any]:
             "shutdown_timeout_seconds": _shutdown_timeout(settings.agent_termination_grace_seconds)
         },
     }
-    if spec.peers:
+    cfg["notes"] = {"enabled": spec.hive}
+    if spec.hive and settings.agent_api_url:
+        cfg["hooks"]["onAgentToolCall"] = [_lock_check_hook()]
+    if spec.peers and spec.hive:
         cfg["peers"] = {
             "enabled": True,
             "name": "${POD_NAME}",
             "advertise_url": "${CCW_PEER_URL}",
             "token": "${CCW_PEER_TOKEN}",
             "static": [
-                pod_url(slug, f"{prefix(slug)}-{i}", settings) for i in range(spec.replicas)
+                pod_url(slug, f"{prefix(slug)}-{i}", settings)
+                for i in range(spec.max_replicas or spec.replicas)
             ],
         }
     return cfg
@@ -141,6 +166,13 @@ def _container(cluster: Cluster, settings: Settings, names: dict[str, str]) -> d
             "name": "CLAUDE_CODE_OAUTH_TOKEN",
             **_secret_ref(settings.claude_secret_name, "CLAUDE_CODE_OAUTH_TOKEN"),
         },
+        {"name": "ORCH_AGENT_TOKEN", **_secret_ref(names["secret"], "ORCH_AGENT_TOKEN")},
+        {"name": "ORCH_CLUSTER_ID", "value": str(cluster.id)},
+        *(
+            [{"name": "ORCH_AGENT_URL", "value": settings.agent_api_url}]
+            if settings.agent_api_url
+            else []
+        ),
         *({"name": k, "value": v} for k, v in sorted(spec.env.items())),
     ]
     startup_failures = math.ceil(settings.on_start_timeout_seconds / PROBE_PERIOD) + STARTUP_SLACK
@@ -184,7 +216,7 @@ def render_cluster(
 
     config_data = {
         "config.yaml": yaml.safe_dump(_ccw_config(cluster, settings), sort_keys=False),
-        "on-start.sh": render_on_start(spec, settings),
+        "on-start.sh": render_on_start(spec, settings, slug),
     }
     config_hash = hashlib.sha256(json.dumps(config_data, sort_keys=True).encode()).hexdigest()
 
@@ -203,7 +235,11 @@ def render_cluster(
         "kind": "Secret",
         "metadata": _meta(slug, names["secret"], settings),
         "type": "Opaque",
-        "stringData": {"CCW_AUTH_TOKEN": tokens.auth, "CCW_PEER_TOKEN": tokens.peer},
+        "stringData": {
+            "CCW_AUTH_TOKEN": tokens.auth,
+            "CCW_PEER_TOKEN": tokens.peer,
+            "ORCH_AGENT_TOKEN": tokens.agent,
+        },
     }
     configmap = {
         "apiVersion": "v1",

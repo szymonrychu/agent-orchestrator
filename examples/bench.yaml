@@ -1,9 +1,12 @@
 # orch bench examples/bench.yaml --api http://orchestrator.example --out bench.jsonl
+# Every arm with more than one replica is now a hive (rr3 and rr3-peers included);
+# single is the alone baseline. hive3 is the explicit hive arm.
 # Does round-robin with several peered agents finish faster, fail less and verify more often?
 arms:
   - {name: single, replicas: 1, peers: off}
   - {name: rr3, replicas: 3, peers: off}
   - {name: rr3-peers, replicas: 3, peers: on}
+  - {name: hive3, replicas: 3, peers: true}
 cluster:
   model: sonnet
   effort: medium

@@ -6,12 +6,22 @@ import statistics
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-_COLUMNS = ("arm", "runs", "mean_wall_s", "p50_wall_s", "failures", "mean_tokens", "verify_pass")
+_COLUMNS = (
+    "arm",
+    "runs",
+    "mean_wall_s",
+    "p50_wall_s",
+    "failures",
+    "mean_tokens",
+    "verify_pass",
+    "leader_epoch",
+)
 
 
 def summarize(records: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """One row per arm, in first-seen order.
 
+    leader_epoch is the last one recorded for the arm (the final cluster view).
     failures counts runs whose turn did not complete; wall figures cover completed runs only.
     """
     arms: dict[str, list[Mapping[str, Any]]] = {}
@@ -30,6 +40,9 @@ def summarize(records: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
                 "failures": sum(1 for r in recs if r["turn_status"] != "completed"),
                 "mean_tokens": statistics.fmean(tokens),
                 "verify_pass": sum(1 for r in recs if r["verify_passed"]) / len(recs),
+                "leader_epoch": next(
+                    (e for r in reversed(recs) if (e := r.get("leader_epoch")) is not None), None
+                ),
             }
         )
     return rows

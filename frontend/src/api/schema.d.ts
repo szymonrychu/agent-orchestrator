@@ -4,6 +4,131 @@
  */
 
 export interface paths {
+    "/agent/v1/leadership/handover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Hand leadership over (leader only)
+         * @description Queue a handover. The checks here fail fast; the dispatcher re-checks at apply time.
+         */
+        post: operations["handover_agent_v1_leadership_handover_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/v1/locks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** File locks held by live agents */
+        get: operations["locks_list_agent_v1_locks_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/v1/locks/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * onAgentToolCall webhook: warn when another agent holds the file
+         * @description Never denies and never fails on a body it cannot use.
+         */
+        post: operations["locks_check_agent_v1_locks_check_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/v1/locks/claim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Claim files with advisory locks */
+        post: operations["locks_claim_agent_v1_locks_claim_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/v1/locks/reassign": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reassign or discard a file lock (leader only) */
+        post: operations["locks_reassign_agent_v1_locks_reassign_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/v1/locks/release": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Release own file locks */
+        post: operations["locks_release_agent_v1_locks_release_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/v1/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Identity, leader and members of the caller */
+        get: operations["me_agent_v1_me_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agents/{agent_id}/compact": {
         parameters: {
             query?: never;
@@ -256,6 +381,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/clusters/{cluster_id}/leader": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Make Leader
+         * @description Queue a user leadership override; the dispatcher decides at apply time.
+         */
+        post: operations["make_leader_api_v1_clusters__cluster_id__leader_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/clusters/{cluster_id}/messages": {
         parameters: {
             query?: never;
@@ -450,6 +595,8 @@ export interface components {
         /** AgentView */
         AgentView: {
             context: components["schemas"]["AgentContext"] | null;
+            /** Context Pct */
+            context_pct: number | null;
             /** Current Turn Id */
             current_turn_id: string | null;
             /** Free Since */
@@ -461,6 +608,8 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** Leader */
+            leader: boolean;
             /** Ordinal */
             ordinal: number;
             /** Peers */
@@ -530,6 +679,8 @@ export interface components {
              * @default 5
              */
             max_attempts: number;
+            /** Max Replicas */
+            max_replicas?: number | null;
             /** Model */
             model?: string | null;
             /**
@@ -545,6 +696,11 @@ export interface components {
              */
             replicas: number;
             resources?: components["schemas"]["Resources"] | null;
+            /**
+             * Static
+             * @default false
+             */
+            static: boolean;
             /**
              * Workdir
              * @default workdir
@@ -585,11 +741,19 @@ export interface components {
             desired: "active" | "deleting";
             /** Generation */
             generation: number;
+            /** Hive */
+            hive: boolean;
             /**
              * Id
              * Format: uuid
              */
             id: string;
+            /** Leader Agent Id */
+            leader_agent_id: string | null;
+            /** Leader Epoch */
+            leader_epoch: number | null;
+            /** Max Replicas */
+            max_replicas: number;
             /** Observed Generation */
             observed_generation: number;
             /** Preset Id */
@@ -599,6 +763,8 @@ export interface components {
             /** Slug */
             slug: string;
             spec: components["schemas"]["ClusterSpec"];
+            /** Static */
+            static: boolean;
             /** Status */
             status: {
                 [key: string]: unknown;
@@ -765,6 +931,133 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /** HandoverIn */
+        HandoverIn: {
+            /** Epoch */
+            epoch: number;
+            /** Reason */
+            reason: string;
+            /** To */
+            to?: string | null;
+        };
+        /** LeadershipRequested */
+        LeadershipRequested: {
+            /** Request Id */
+            request_id: number;
+        };
+        /** LockCheckOut */
+        LockCheckOut: {
+            /** Additional Context */
+            additional_context?: string | null;
+            /**
+             * Decision
+             * @default allow
+             */
+            decision: string;
+        };
+        /** LockHeld */
+        LockHeld: {
+            /** Agent */
+            agent: string;
+            /** Path */
+            path: string;
+        };
+        /** LockOut */
+        LockOut: {
+            /** Agent */
+            agent: string;
+            /**
+             * Claimed At
+             * Format: date-time
+             */
+            claimed_at: string;
+            /** Path */
+            path: string;
+        };
+        /** LockPaths */
+        LockPaths: {
+            /** Paths */
+            paths: string[];
+        };
+        /** LockReassignIn */
+        LockReassignIn: {
+            /** Path */
+            path: string;
+            /** To */
+            to?: string | null;
+        };
+        /** LockReassigned */
+        LockReassigned: {
+            /** Agent */
+            agent: string | null;
+            /** Path */
+            path: string;
+        };
+        /** LocksClaimed */
+        LocksClaimed: {
+            /** Claimed */
+            claimed: string[];
+            /** Held */
+            held: components["schemas"]["LockHeld"][];
+        };
+        /** LocksOut */
+        LocksOut: {
+            /** Locks */
+            locks: components["schemas"]["LockOut"][];
+        };
+        /** LocksReleased */
+        LocksReleased: {
+            /** Released */
+            released: string[];
+        };
+        /** MakeLeaderIn */
+        MakeLeaderIn: {
+            /**
+             * Agent Id
+             * Format: uuid
+             */
+            agent_id: string;
+        };
+        /** Me */
+        Me: {
+            /**
+             * Agent Id
+             * Format: uuid
+             */
+            agent_id: string;
+            /**
+             * Cluster Id
+             * Format: uuid
+             */
+            cluster_id: string;
+            /** Epoch */
+            epoch: number | null;
+            /** Leader */
+            leader: string | null;
+            /** Max Replicas */
+            max_replicas: number;
+            /** Members */
+            members: components["schemas"]["Member"][];
+            /** Ordinal */
+            ordinal: number;
+            /** Pod Name */
+            pod_name: string;
+            /** Static */
+            static: boolean;
+        };
+        /** Member */
+        Member: {
+            /** Context Pct */
+            context_pct: number | null;
+            /** Leader */
+            leader: boolean;
+            /** Pod Name */
+            pod_name: string;
+            /** Ready */
+            ready: boolean;
+            /** State */
+            state: string;
+        };
         /** MessageAccepted */
         MessageAccepted: {
             /** Message Id */
@@ -902,8 +1195,10 @@ export interface components {
              * @default {
              *       "env": {},
              *       "max_attempts": 5,
+             *       "max_replicas": 1,
              *       "peers": true,
              *       "replicas": 1,
+             *       "static": false,
              *       "workdir": "workdir"
              *     }
              */
@@ -1031,6 +1326,246 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    handover_agent_v1_leadership_handover_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-orch-cluster"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HandoverIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LeadershipRequested"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    locks_list_agent_v1_locks_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-orch-cluster"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocksOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    locks_check_agent_v1_locks_check_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-orch-cluster"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LockCheckOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    locks_claim_agent_v1_locks_claim_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-orch-cluster"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LockPaths"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocksClaimed"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    locks_reassign_agent_v1_locks_reassign_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-orch-cluster"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LockReassignIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LockReassigned"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    locks_release_agent_v1_locks_release_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-orch-cluster"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LockPaths"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocksReleased"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    me_agent_v1_me_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-orch-cluster"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Me"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     compact_agent_api_v1_agents__agent_id__compact_post: {
         parameters: {
             query?: never;
@@ -1529,6 +2064,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FileContent"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    make_leader_api_v1_clusters__cluster_id__leader_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cluster_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MakeLeaderIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LeadershipRequested"];
                 };
             };
             /** @description Validation Error */

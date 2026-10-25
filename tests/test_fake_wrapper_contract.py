@@ -738,3 +738,58 @@ async def test_fake_terminal_limit_exit_and_session_state(fake_leg: Leg, fake: F
     await leg.http.delete(f"/v1/sessions/{sid}")
     resp = await leg.http.post(base)
     assert resp.status_code == 409 and resp.json()["error"]["code"] == "session_not_active"
+
+
+async def _note_leg(leg: Leg) -> str:
+    """A session on a wrapper with notes enabled; the real image may run with them disabled."""
+    sid = await leg.create()
+    probe = await leg.client().post_note(sid, "probe")
+    if probe == "disabled":
+        pytest.skip("the wrapper under test runs with notes.enabled false")
+    assert probe == "ok"
+    return sid
+
+
+async def test_notes_route_accepts_keyed_and_appended(leg: Leg) -> None:
+    sid = await _note_leg(leg)
+    keyed = await leg.http.post(
+        f"/v1/sessions/{sid}/notes", json={"text": "a", "key": "hive_state", "source": "orch"}
+    )
+    assert keyed.status_code == 202
+    assert keyed.json()["key"] == "hive_state" and isinstance(keyed.json()["pending"], int)
+    plain = await leg.http.post(f"/v1/sessions/{sid}/notes", json={"text": "b"})
+    assert plain.status_code == 202 and plain.json()["key"] is None
+    client = leg.client()
+    assert await client.post_note(sid, "c", key="hive_state") == "ok"
+    if leg.fake is not None:
+        # the keyed note was replaced, the appended ones stay
+        assert [n["text"] for n in leg.fake.held_notes(sid)] == ["c", "probe", "b"]
+        assert leg.fake.notes[sid][0] == {"text": "probe", "key": None, "source": "orchestrator"}
+
+
+async def test_notes_route_errors(leg: Leg) -> None:
+    sid = await _note_leg(leg)
+    url = f"/v1/sessions/{sid}/notes"
+    for body in ({"text": ""}, {}, {"text": "x", "key": "Bad Key"}, {"text": "x", "extra": 1}):
+        resp = await leg.http.post(url, json=body)
+        assert resp.status_code == 422, body
+        assert resp.json()["error"]["code"] == "invalid_request"
+    missing = await leg.http.post("/v1/sessions/nope/notes", json={"text": "x"})
+    assert missing.status_code == 404
+    async with httpx.AsyncClient(base_url=leg.base_url) as anon:
+        assert (await anon.post(url, json={"text": "x"})).status_code == 401
+    assert await leg.client().post_note("nope", "x") == "failed"
+
+
+async def test_fake_notes_disabled_and_stopped_session(fake_leg: Leg, fake: FakeWrapper) -> None:
+    leg = fake_leg
+    sid = await leg.create()
+    fake.disable_notes()
+    resp = await leg.http.post(f"/v1/sessions/{sid}/notes", json={"text": "x"})
+    assert resp.status_code == 409 and resp.json()["error"]["code"] == "notes_disabled"
+    assert await leg.client().post_note(sid, "x") == "disabled"
+    fake.disable_notes(False)
+    await leg.http.delete(f"/v1/sessions/{sid}")
+    stopped = await leg.http.post(f"/v1/sessions/{sid}/notes", json={"text": "x"})
+    assert stopped.status_code == 409 and stopped.json()["error"]["code"] == "invalid_state"
+    assert fake.notes.get(sid) is None

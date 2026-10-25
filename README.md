@@ -22,6 +22,8 @@ Every process reads `ORCH_*` variables (the contract `agent-orchestrator-setting
 | `ORCH_DATABASE_URL` | required | all | Postgres DSN (required) |
 | `ORCH_MASTER_KEY` | unset | api (file and terminal proxies), reconciler | secret key, at least 32 bytes after stripping; only for commands that call require_master_key() |
 | `ORCH_MASTER_KEY_FILE` | empty | api (file and terminal proxies), reconciler | file holding the master key; wins over ORCH_MASTER_KEY |
+| `ORCH_AGENT_PORT` | `8001` | api | second listener (same server) serving only `/agent/v1/*`, `/healthz` and `/readyz` to agent pods; the source allowlist is skipped there |
+| `ORCH_AGENT_API_URL` | unset | api, reconciler | URL agent pods use to reach the agent port (set by the chart to the agents Service) |
 | `ORCH_NAMESPACE` | `agents` | api, reconciler, dispatcher | the one namespace of the orchestrator and every agent cluster |
 | `ORCH_AGENT_IMAGE` | empty | api, reconciler | claude-code-wrapper image the agent pods run (required to create clusters) |
 | `ORCH_CHECK_IMAGE` | empty | dispatcher | image for check jobs; defaults to agent_image |
@@ -70,7 +72,7 @@ Every process reads `ORCH_*` variables (the contract `agent-orchestrator-setting
 | `ORCH_DISCARD_HOOK_URL` | empty | api, reconciler | pre-discard hook http(s) webhook URL |
 | `ORCH_DISCARD_HOOK_TIMEOUT_SECONDS` | `120` | api, reconciler | discard hook timeout |
 | `ORCH_ANY_MCP_REPO` | `https://github.com/szymonrychu/any-mcp` | api, reconciler | any-mcp git repository |
-| `ORCH_ANY_MCP_REF` | `v0.1.0` | api, reconciler | any-mcp pinned release tag vX.Y.Z (never a branch) |
+| `ORCH_ANY_MCP_REF` | `v0.2.0` | api, reconciler | any-mcp pinned release tag vX.Y.Z (never a branch) |
 | `ORCH_ON_START_TIMEOUT_SECONDS` | `600` | api, reconciler | onStart hook timeout |
 
 ## Commands
@@ -97,8 +99,8 @@ One image, one `orch` entrypoint. Every command reads `ORCH_*` settings (see Con
 CI (`.github/workflows/ci.yaml`, job `images`) builds the orchestrator image from the root `Dockerfile` on every push and pull request and smoke-tests it with `docker run --rm <image> --help`. Only a push to `main` logs in to Harbor (secrets `HARBOR_USERNAME`, `HARBOR_PASSWORD`) and pushes it with `regctl`.
 
 - Orchestrator image: `harbor.szymonrichert.pl/containers/agent-orchestrator:<sha7>`, where `<sha7>` is the first seven characters of the commit sha. Tags are immutable; there is no `latest`.
-- Agent image: no agent image is built here. Agent pods run the claude-code-wrapper image named by `ORCH_AGENT_IMAGE`; the recommended one is `harbor.szymonrichert.pl/containers/claude-code-wrapper:e9ffa62`. This is the value for the chart's `agentImage` and agents-helmfile, and the commit the dev dependency `claude-code-wrapper` in `pyproject.toml` is pinned to, so config validation tests the wrapper the agents run.
-- any-mcp: it reaches agent pods through the rendered onStart hook, not through an image. The `any-mcp` dependency in `pyproject.toml` and `ORCH_ANY_MCP_REF` pin the same release tag (`v0.1.0`).
+- Agent image: no agent image is built here. Agent pods run the claude-code-wrapper image named by `ORCH_AGENT_IMAGE`; the recommended one is `harbor.szymonrichert.pl/containers/claude-code-wrapper:1f64e9f`. This is the value for the chart's `agentImage` and agents-helmfile, and the commit the dev dependency `claude-code-wrapper` in `pyproject.toml` is pinned to, so config validation tests the wrapper the agents run.
+- any-mcp: it reaches agent pods through the rendered onStart hook, not through an image. The `any-mcp` dependency in `pyproject.toml` and `ORCH_ANY_MCP_REF` pin the same release tag (`v0.2.0`).
 
 ## Helm chart
 
@@ -185,6 +187,10 @@ ingress:
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
 ```
 ## Security
+
+Agent pods reach `/agent/v1` on the agents Service only, with the cluster token and from their own pod IP. The agent port serves nothing else (404), and `/agent/v1` is 404 on the main port.
+
+Every agent pod receives `ORCH_AGENT_TOKEN` (a per-cluster HMAC of the master key, purpose `agent`), `ORCH_CLUSTER_ID` and, when `ORCH_AGENT_API_URL` is set, `ORCH_AGENT_URL`, as plain env; they are also passed through to the any-mcp stdio child. The token is therefore readable by every process in the pod, Bash and subagents included. The main-agent-only tool gate (`main_agent_only_tools`) is a best-effort guard, not a security boundary, and nothing here claims isolation from subagents. Without `ORCH_AGENT_API_URL` the reconciler logs one warning per cluster and omits `ORCH_AGENT_URL`.
 
 The api trusts only the direct socket peer (`ORCH_ALLOWED_CIDRS`, see API). Behind an ingress that peer is the ingress controller, but not its node LAN IP. ingress-nginx runs hostNetwork, yet on a flannel cluster its proxied connection reaches the api pod from the node's pod-network gateway address: from another node via `flannel.1` as `10.244.N.0`, from the same node via `cni0` as `10.244.N.1`. A LAN client therefore gets `403` if `ORCH_ALLOWED_CIDRS` lists only the LAN CIDR. Set `ORCH_ALLOWED_CIDRS` to each node's podCIDR `.0/31` (covers `.0` and `.1`; agent pods get `.2` and up, so they stay outside), derived from `kubectl get nodes -o jsonpath='{range .items[*]}{.spec.podCIDR}{"\n"}{end}'`, for example `10.244.0.0/31,10.244.1.0/31`. Update the list whenever nodes are added or removed. The allowlist is blind to who the original client was.
 
@@ -306,19 +312,22 @@ One repo and one image; the entrypoint is `orch <cmd>`. The processes coordinate
 
 ### Single-writer interpretation of "no shared state"
 
-The rule "services talk only through the queue or HTTP APIs, with no shared state" is read as single-writer: one writer per table. The queue tables (`messages`, `commands`, `checks`) are the only multi-writer tables, and only through state-machine-guarded UPDATEs (`WHERE status = '<expected>'`). Every other table has exactly one writing process:
+The rule "services talk only through the queue or HTTP APIs, with no shared state" is read as single-writer: one writer per table. The queue tables (`messages`, `commands`, `checks`, `leadership_requests`) are the only multi-writer tables, and only through state-machine-guarded UPDATEs (`WHERE status = '<expected>'`). Every other table has exactly one writing process:
 
 | Table | Writer |
 |---|---|
 | `clusters` | api; the reconciler writes only `status` and `observed_generation` and deletes the row when a discard completes. `preset_id` is also set to null by the `ON DELETE SET NULL` cascade when the api deletes a preset, an api-originated write |
 | `presets` | api |
-| `agents` | reconciler; `last_dispatched_at` is written by the dispatch claim |
+| `agents` | reconciler; `last_dispatched_at` is written by the dispatch claim; `pod_ip` is written by the reconciler |
 | `agent_status` | ingester |
 | `messages` | api inserts and cancels while queued; the dispatcher does the rest |
 | `turns` | ingester |
 | `events` | ingester |
 | `commands` | api inserts; the dispatcher claims interrupt and compact and inserts `rebootstrap`; the reconciler claims restart and rebootstrap |
 | `checks` | api inserts; the reconciler does the rest |
+| `leadership_requests` | api inserts; the dispatcher decides rows (`applied` or `rejected`) only through `WHERE status = 'queued'` guarded updates |
+| `cluster_leaders` | dispatcher |
+| `file_locks` | api |
 
 ### NOTIFY channels and polling fallbacks
 
@@ -330,8 +339,43 @@ NOTIFY payloads are wake-up hints that carry ids only. Every loop also polls, be
 | `agent_free` | `{cluster_id, agent_id}` | ingester | dispatcher |
 | `events` | `{cluster_id, max_id}` | ingester | events stream |
 | `status` | `{cluster_id}` | ingester, dispatcher, reconciler | status stream |
+| `leadership_requested` | `{cluster_id}` | api (leadership routes) | dispatcher |
+| `leader_changed` | `{cluster_id, agent_id, epoch}` | dispatcher (leadership pass) | hive-state push, cluster stream |
 
 Polling fallbacks: dispatcher `ORCH_DISPATCH_POLL_SECONDS` (2 s), reconciler `ORCH_RECONCILE_POLL_SECONDS` (10 s), ingester stream refresh `ORCH_INGEST_REFRESH_SECONDS` (5 s); the api SSE streams re-read on a 5 s poll when no NOTIFY arrives.
+
+### Hive
+
+A hive is a cluster that may run several agents. It is derived, not switched: `coalesce(spec.max_replicas, spec.replicas) > 1` (`spec.hive`). A cluster whose cap is 1 runs alone: no leader row, no `hive_state`, no peer notes, no orchestrator tools, and routing is the usual agent free the longest.
+
+- Leader and epoch. Each hive has at most one leader, recorded in `cluster_leaders` with an `epoch` that grows on every change. Untargeted messages go to the leader only (see Routing); an explicit `target_agent_id` always wins.
+- Handover only. The leader hands leadership away with `POST /agent/v1/leadership/handover` (or the `leadership_handover` tool), carrying the epoch it read; there is no takeover route. The one other way to change the leader is the user override `POST /api/v1/clusters/{cluster_id}/leader`. A lost leader (gone, or unready longer than `LEADER_GRACE_SECONDS`) is replaced automatically. Details are under Leadership.
+- `hive_state` and the feed. The dispatcher pushes each agent a keyed `hive_state` note (leader, epoch, members, handover hint) when it changes, and an appended feed note with the peers' activity, at most every `PUSH_INTERVAL_SECONDS` (10 s) per cluster. Both are wrapper notes, so they are peer data and not user instructions. The push runs in the dispatcher, never the ingester.
+- Advisory locks. Agents claim files through the lock tools; the `onAgentToolCall` check hook warns about a file another live agent holds and never denies a write. See File locks.
+- Tool gating is fixed at render time. The orchestrator any-mcp plugin and its tool allowlist (`me`, `leadership_handover`, `lock_claim`, `lock_release`, `lock_list`, `lock_reassign`) are rendered into the pod only when the cluster is a hive, from `max_replicas` and `static`; a later scale never changes what the agents see. The wrapper peer seeds are also rendered from the cap (`max_replicas`, else `replicas`), so agents added by scaling are already known peers.
+- The plugin name `orchestrator` is reserved in a cluster's any-mcp `plugins`. The entry rendered by `k8s/on_start.py` replaces any user entry of that name (and a spec that sets it is rejected 422 `invalid_request`).
+- Agents reach the orchestrator on the separate agent port (see Agent API), with a per-cluster token and the pod IP as identity.
+
+### Leadership
+
+Every hive cluster (`coalesce(spec.max_replicas, spec.replicas) > 1`) has at most one leader row in `cluster_leaders`, written only by the dispatcher in `leadership_pass` (`db/leadership.py`). Alone clusters never get a leader row. The pass is one transaction under the per-cluster claim lock (`pg_try_advisory_xact_lock` with the claim namespace and `hashtext(cluster_id)`, the lock `claim_and_pick` takes), so a leader change and a message claim never interleave; a dispatcher that cannot take the lock skips the cluster for that wake. Each pass runs three steps in order:
+
+1. Initial leader (Q2). With no leader row, the lowest-ordinal ready agent (ready, not gone, with a session) becomes leader at epoch 1, reason `initial`. The new row starts `feed_cursor` at the cluster's newest event id, so history is never pushed as current activity.
+2. Queued requests, in id order. Each is decided with one `WHERE status = 'queued'` guarded update that sets `status`, `reject_reason` and `decided_at`, and is checked against the leader as it is at apply time, not when it was queued:
+   - `handover`: rejected `not_leader` unless `from_agent_id` is the current leader; `stale_epoch` unless its epoch equals the current epoch; a named target must be in the cluster, ready, not gone and not the leader, else `target_not_ready`; without a target the ready agent free the longest other than the leader is picked (idle first, then `free_since` ascending, then id, the claim's order), and with none the request is rejected `no_peers`. Applied: reason `handover: <reason>`.
+   - `user` (Q10, the make-leader override): the target must be in the cluster, ready and not gone, else `target_not_ready`. The epoch is not checked (user requests carry none). A target that already leads is applied with no change and no epoch bump. Applied: reason `user`.
+   - An applied change writes the target, `epoch + 1` and `since = now()`.
+3. Lost leader. A gone leader, or one not ready for longer than `LEADER_GRACE_SECONDS` (30 s, a module constant), is replaced by the ready agent free the longest at `epoch + 1`, reason `leader_lost`; with no ready agent the row stays. `unready_since` is set when a pass first sees the leader not ready and cleared by the next pass that sees it ready again, so two separate short unready windows never add up to a takeover.
+
+Every change sends `NOTIFY leader_changed {cluster_id, agent_id, epoch}`.
+
+Election and lost-leader detection are poll-driven. Readiness is observed by the reconciler and is not a NOTIFY the dispatcher hears, so the initial election, the grace clock and the takeover run on the next dispatcher drain, within `ORCH_DISPATCH_POLL_SECONDS` of the readiness change. "The first ready agent leads" therefore means the lowest-ordinal ready agent at the first pass that sees one ready, within the poll window, not the first instantaneous ready event. Requests are applied promptly: `leadership_requested` wakes the dispatcher. Each drain runs the pass, before claiming messages, for hive clusters with queued requests, with no leader row while an agent could lead, whose leader is gone or not ready, or whose `unready_since` is still set.
+
+### Routing
+
+Untargeted messages go to the leader of a hive. When the cluster has a `cluster_leaders` row, `_claim_in_cluster` treats an untargeted queued message as targeted to the leader and dispatches it through the same pick (idle, ready, not gone, free since its last dispatch). While the leader is busy the untargeted head holds the cluster's untargeted FIFO, so later untargeted messages wait, while later messages with an explicit `target_agent_id` to other free agents still dispatch. An explicit target always wins. A gone leader does not fail untargeted messages with `target_gone`: they stay queued until the leadership pass elects a successor. With no leader row (alone clusters, or a hive before its first pass) the pick stays the agent free the longest. Peer-delivered turns never pass the dispatcher, so this rule does not apply to them.
+
+Hive state push (`dispatcher/hive.py`, dispatcher process only, in its own task): at most every 10 s per cluster (and on `leader_changed`), each not-gone agent with a session gets a keyed `hive_state` note (leader, epoch, members with ready, state and context, the handover hint when `auto_compact_pct` is set) whenever the state hash changes, and an appended feed note with the peers' activity since `cluster_leaders.feed_cursor`. `state_hash` is a JSON map of the hash each agent last accepted, so one unreachable agent is retried alone. The cluster lock is held only around the DB read and write, never across wrapper HTTP; each push has a 3 s timeout. Feed rows younger than 5 s are not consumed yet (ids commit out of order), and Bash calls without a result are carried to a later tick.
 
 ## Delivery and retries
 
@@ -392,6 +436,8 @@ Plain SQL migrations (`src/agent_orchestrator/db/migrations`), psycopg 3, no ORM
 | `turns` | one row per wrapper turn: origin, start, completion, status, final text, usage |
 | `events` | every stored wrapper event; UNIQUE(agent_id, session_id, seq); the global bigserial id is the SSE id and the page cursor |
 | `commands` | queue: `interrupt`, `compact`, `restart`, `rebootstrap` with status and result |
+| `leadership_requests` | queue: `handover` (from the leader) or `user` requests with target agent, epoch, status (`queued`, `applied`, `rejected`); the api inserts, the dispatcher decides |
+| `cluster_leaders` | one row per hive: leader agent, `epoch`, `since`, `reason` (`initial`, `handover: <reason>`, `user`, `leader_lost`), `unready_since`, feed cursor and pushed hive-state hash; the dispatcher is the only writer (see Leadership) |
 | `checks` | queue: a shell command run as a Kubernetes Job; exit code and log tail |
 
 ## API
@@ -401,6 +447,8 @@ Base path `/api/v1`. JSON in and out. There is no authentication; access is rest
 Versioning: `/api/v1` is additive only. New routes, new optional request fields and new response fields may appear; existing routes, fields and error codes are never removed or changed in meaning. A breaking change is a new `/api/v2`.
 
 Documented exception, 2026-10-23: `PATCH /api/v1/clusters/{cluster_id}` was removed (it now answers 405), and `POST /api/v1/clusters` requires exactly one of `spec` and `preset_id`. Why: a live spec edit rolled every agent pod of a running cluster; clusters now snapshot their preset at create and the spec is fixed from then on. To change it, discard the cluster and schedule again from a preset.
+
+In-place fields (amends the exception above): `spec.replicas` and `spec.init_scripts` are the only spec fields that change in place (no generation bump, no pod roll); PATCH stays 405.
 
 Source allowlist: the api checks the direct socket peer against `ORCH_ALLOWED_CIDRS` (default `192.168.1.0/24`). `Forwarded`, `X-Forwarded-For` and `X-Real-IP` are never read. A caller outside the list gets `403 forbidden`. `/healthz` and `/readyz` are exempt.
 
@@ -443,21 +491,25 @@ All clusters as a list of cluster views. Response 200.
 Schedules a cluster. The body holds exactly one of `spec` and `preset_id`, else 422 `invalid_request` ("exactly one of spec or preset_id"):
 
 - From a preset: `{"preset_id": "<uuid>", "slug": "<dns label, optional>"}`. Without `slug` the API generates `<preset name as a dns label>-<4 random letters>` (for example `default-qkzt`) and retries a clash with a fresh suffix up to 5 times, then answers 409 `conflict`. The preset spec is validated against the current settings when you schedule (a preset that has become invalid is 422 `invalid_request` with a message starting `preset '<name>': `), empty resource keys and an unset `replicas` are filled from the current defaults (`ORCH_DEFAULT_*`, `ORCH_DEFAULT_REPLICAS`), and the result is stored as the cluster's own spec: a snapshot. Editing or deleting the preset afterwards never changes the cluster, its `spec` or its `generation`; the cluster view keeps `preset_name` and `preset_id` becomes null once the preset is deleted. An unknown `preset_id` is 404 `not_found`.
-- Raw spec, for headless callers: `{"slug": "<dns label>", "spec": {...}}`; `slug` is required with `spec` (422 otherwise). `spec` fields (all optional): `replicas`, `image`, `model`, `effort`, `peers`, `workdir`, `pvc_size`, `resources`, `env`, `any_mcp_config`, `max_attempts`, `auto_compact_pct`, `discard_hook_url`. Such a cluster has null `preset_id` and `preset_name`.
+- Raw spec, for headless callers: `{"slug": "<dns label>", "spec": {...}}`; `slug` is required with `spec` (422 otherwise). `spec` fields (all optional): `replicas`, `max_replicas`, `static`, `image`, `model`, `effort`, `peers`, `workdir`, `pvc_size`, `resources`, `env`, `any_mcp_config`, `max_attempts`, `auto_compact_pct`, `discard_hook_url`. `max_replicas` (1 to 16, at most `ORCH_MAX_REPLICAS`, at least `replicas`) is the replica cap and defaults to `replicas`; `static` (default false) pins the size and requires `max_replicas == replicas`. A cluster with `max_replicas > 1` is a hive (no switch): it may run several agents; `static` only forbids scaling. A cluster with `max_replicas == 1` runs alone. The any-mcp plugin name and namespace `orchestrator` are reserved for the rendered plugin (422 `invalid_request`). Presets stay sparse: unset `max_replicas` and `static` are not stored. Such a cluster has null `preset_id` and `preset_name`.
 
 Response 201 with the cluster view. Errors: 422 `invalid_request` (bad slug, both or neither of `spec` and `preset_id`, `spec` without `slug`, image outside `ORCH_AGENT_IMAGES`, reserved env key, replicas or PVC size above the caps, invalid `any_mcp_config`, an invalid preset), 404 `not_found` (unknown preset), 409 `conflict` (slug exists, or no free generated slug), 409 `cluster_limit`, 403 `forbidden`.
 
 ### `GET /api/v1/clusters/{cluster_id}`
 
-One cluster view: `id`, `slug`, `spec`, `desired`, `status`, `generation`, `observed_generation`, `created_at`, `preset_id` (null for a raw-spec cluster or once the preset is deleted), `preset_name` and `summary` (`state` of `working`, `waiting`, `booting`, `error`, `deleting`; `ready`, `replicas`, `context_pct_max`, `auto_compact_pct`, `queued`, `failed`). Response 200. Errors: 404 `not_found`.
+One cluster view: `id`, `slug`, `spec`, `desired`, `status`, `generation`, `observed_generation`, `created_at`, `preset_id` (null for a raw-spec cluster or once the preset is deleted), `preset_name`, `summary` (`state` of `working`, `waiting`, `booting`, `error`, `deleting`; `ready`, `replicas`, `context_pct_max`, `auto_compact_pct`, `queued`, `failed`), `hive`, `max_replicas` (the cap), `static`, `leader_agent_id` and `leader_epoch` (both null for an alone cluster or before the first election). Response 200. Errors: 404 `not_found`.
 
 ### `DELETE /api/v1/clusters/{cluster_id}`
 
 Discards the cluster: after the optional history-export hook, deletes every Kubernetes object, the PVC and the chat history. Takes no query parameters. Response 202 with the cluster view (`desired: deleting`). Errors: 404 `not_found`, 422 `invalid_request` (any query parameter).
 
+### `POST /api/v1/clusters/{cluster_id}/leader`
+
+Queues a user leadership override (the UI "Make leader"): body `{agent_id}`, any agent of the cluster. A user request overrides the handover-only rule; the dispatcher applies it and bumps the epoch. Response 202 `{request_id}`. Errors: 404 `not_found` (unknown cluster, or an agent that is not in this cluster), 409 `alone` (a single-agent cluster has no leader).
+
 ### `GET /api/v1/clusters/{cluster_id}/agents`
 
-List of agent views: `id`, `ordinal`, `pod_name`, `ready`, `state`, `free_since`, `current_turn_id`, `context` (`used_tokens`, `window_tokens`, `used_percentage`, or null), `peers`, `gone`. Response 200. Errors: 404 `not_found`.
+List of agent views: `id`, `ordinal`, `pod_name`, `ready`, `state`, `free_since`, `current_turn_id`, `context` (`used_tokens`, `window_tokens`, `used_percentage`, or null), `context_pct` (null until known), `leader` (true for the cluster's current leader), `peers`, `gone`. Response 200. Errors: 404 `not_found`.
 
 ### `POST /api/v1/clusters/{cluster_id}/messages`
 
@@ -653,13 +705,61 @@ The `/clusters/{cluster_id}/events/stream` frames are named by the stored wrappe
 | `agent_status` | `/stream` | `{"cluster_id", "agent": <agent view>}` when an agent changed |
 | `message_status` | `/stream` | `{"cluster_id", "queued", "failed", "messages": [<changed message views>]}` |
 | `cluster_removed` | `/stream` | `{"cluster_id"}` when a discard completed |
+| `leader_changed` | `/stream` | `{"cluster_id", "agent_id", "epoch"}` on NOTIFY `leader_changed`; the `cluster_status` and `agent_status` frames that follow carry the new leader |
+
+## Agent API
+
+Agent pods call the orchestrator on `/agent/v1`. It is served only on the agent port (`ORCH_AGENT_PORT`, default 8001, reached through the agents Service); the main port answers 404 for it, and the agent port serves nothing else except `/healthz` and `/readyz`. The pod env carries `ORCH_AGENT_URL`, `ORCH_CLUSTER_ID` and `ORCH_AGENT_TOKEN`.
+
+Every request needs:
+
+- `Authorization: Bearer <ORCH_AGENT_TOKEN>`, the cluster's derived agent token.
+- `X-Orch-Cluster: <cluster id>`.
+
+The caller's identity is its socket peer: the direct peer IP must be the `pod_ip` of a not-gone agent of that cluster. Forwarded headers are never read.
+
+Errors use the usual `{"error": {"code", "message"}}` shape:
+
+- `401 unauthorized`: a header is missing, the cluster is unknown or the token is wrong. One shared message for every case.
+- `403 forbidden`: the peer IP is not a live agent pod of that cluster (including the former IP of a gone agent).
+
+### `GET /agent/v1/me`
+
+The caller's identity, the leader and the hive members.
+
+```json
+{
+  "cluster_id": "uuid", "agent_id": "uuid", "pod_name": "string", "ordinal": 0,
+  "leader": "pod name or null", "epoch": "int or null",
+  "max_replicas": 4, "static": false,
+  "members": [
+    {"pod_name": "string", "ready": true, "state": "idle", "context_pct": 12.5, "leader": true}
+  ]
+}
+```
+
+`leader` and `epoch` come from the cluster's leader record and are null while there is none. `members` are the not-gone agents by ordinal; `state` is the stored agent state and `context_pct` is null when unknown.
+
+### `POST /agent/v1/leadership/handover`
+
+The current leader hands leadership away. Body `{to?, reason, epoch}`: `to` is the pod name of a member (omitted: any agent), `reason` is 1 to 500 characters, `epoch` is the epoch the caller read from `GET /agent/v1/me`. Queues a `handover` request and sends `NOTIFY leadership_requested {cluster_id}`; the dispatcher re-checks everything at apply time. There is no takeover route. Response 202 `{request_id}`. Errors, checked in this order: 409 `alone` (a single-agent cluster), 409 `not_leader` (the caller is not the current leader, or there is none), 409 `stale_epoch` (`epoch` differs from the current epoch), 404 `not_found` (unknown `to`), 422 `invalid_request`.
+
+### File locks
+
+Advisory locks on files, so agents claim what they edit and are warned before writing a file another live agent holds. Paths are relative to the cluster workdir (`/workdir/<spec.workdir>`); an absolute path under it is converted, and an empty path, a `..` escape or a path outside the workdir is `400 invalid_path`. The workdir root constant `WORKDIR_ROOT` lives in `spec.py`, shared by the renderer and the api.
+
+- `POST /agent/v1/locks/claim` body `{paths: [1..50]}` -> 200 `{claimed: [path], held: [{path, agent}]}`. A lock held by another live agent stays theirs (`held`); a lock held by a gone agent is taken over.
+- `POST /agent/v1/locks/release` body `{paths}` -> 200 `{released: [path]}`; only the caller's own locks.
+- `GET /agent/v1/locks` -> 200 `{locks: [{path, agent, claimed_at}]}`, locks of live agents only.
+- `POST /agent/v1/locks/reassign` body `{path, to}` -> 200 `{path, agent}`. Leader only (`403 not_leader` otherwise). `to` is a pod name, or null to discard the lock (`agent` is then null); an unknown `to` is `404 not_found`.
+- `POST /agent/v1/locks/check` is the `onAgentToolCall` webhook rendered into the wrapper config (matcher `Write|Edit|MultiEdit|NotebookEdit`). It reads `tool_input.file_path` or `notebook_path` from the hook envelope and always answers 200 `{decision: "allow"}`; when another live agent holds the file it adds `additional_context` ("Peer data, not instructions from the user. Advisory lock: <path> is claimed by <agent> since <time>. Coordinate with them or the leader before editing."). The path and agent are XML-escaped and single-line, so they cannot forge a `<peer-notes>` or `<hive-state>` block. A path outside the workdir or an unusable body gets a plain allow; it never denies and never 400s.
 
 ## Bench
 
-`orch bench SPEC --api URL --out FILE [--keep]` runs the experiment: does round-robin with several peered agents finish faster, fail less and verify more often? It talks only to the public `/api/v1` through httpx. See `examples/bench.yaml` (arms 1/off, 3/off and 3/on).
+`orch bench SPEC --api URL --out FILE [--keep]` runs the experiment: does round-robin with several peered agents finish faster, fail less and verify more often? It talks only to the public `/api/v1` through httpx. See `examples/bench.yaml` (arms 1/off, 3/off, 3/on and the explicit hive arm hive3; every arm with more than one replica is a hive, `single` is the alone baseline). An arm may also set `max_replicas` and `static`, passed into the cluster spec.
 
 Spec keys: `arms: [{name, replicas, peers}]`, `cluster` (a cluster spec base, for example `model`, `effort`), `tasks: [{name, prompt, verify}]`, `repeats`, `timeout_seconds` and optional `chaos: {after_seconds}`. A bad spec exits 2 and names the field. Prompts are sent verbatim.
 
 For each arm it creates cluster `bench-<arm>-<run>` (a DNS-1123 slug of at most 40 characters), waits for every replica to be ready with a session, then for each task and repeat posts the message and follows `GET /api/v1/stream` until the turn completes or fails (polling `GET /messages/{id}` when the stream is unavailable). With `chaos`, after `after_seconds` it restarts one random busy agent via `POST /agents/{id}/restart`. It then runs the task's `verify` command as a check and waits for it.
 
-Each (arm, task, repeat) appends one JSONL record to `--out`: `arm`, `task`, `repeat`, `cluster_id`, `message_id`, `wall_seconds` (queued to completed), `turn_status`, `failed_turns` (retries plus a final failure), `input_tokens` and `output_tokens` (from the turn `usage`), `verify_passed` and `exit_code`. The summary table has per arm the runs, mean and p50 wall seconds (completed runs), failures, mean tokens and verify pass rate. The bench clusters are discarded at the end (which deletes their history too) unless `--keep`.
+Each (arm, task, repeat) appends one JSONL record to `--out`: `arm`, `task`, `repeat`, `cluster_id`, `message_id`, `wall_seconds` (queued to completed), `turn_status`, `failed_turns` (retries plus a final failure), `input_tokens` and `output_tokens` (from the turn `usage`), `verify_passed`, `exit_code` and `leader_epoch` (from the cluster view after the run). The summary table has per arm the runs, mean and p50 wall seconds (completed runs), failures, mean tokens, verify pass rate and the final leader epoch. The bench clusters are discarded at the end (which deletes their history too) unless `--keep`.

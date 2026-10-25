@@ -244,7 +244,7 @@ async def _refresh(
 async def stream_status(
     pool: Pool, settings: Cfg, listener: Notifier, poll: PollSeconds
 ) -> AsyncIterator[ServerSentEvent]:
-    sub: Subscription = listener.subscribe(["status", "cluster_changed"])
+    sub: Subscription = listener.subscribe(["status", "cluster_changed", "leader_changed"])
     try:
         known: dict[str, dict[str, Any]] = {}
         async with pool.connection() as conn:
@@ -256,9 +256,16 @@ async def stream_status(
         while True:
             try:
                 notified = await sub.wait(poll)
-                touched = {p["cluster_id"] for _, p in sub.drain() if "cluster_id" in p}
+                drained = sub.drain()
             except SubscriptionDropped:
                 return
+            touched = {p["cluster_id"] for _, p in drained if "cluster_id" in p}
+            for channel, payload in drained:
+                if channel == "leader_changed":
+                    yield ServerSentEvent(
+                        data={k: payload.get(k) for k in ("cluster_id", "agent_id", "epoch")},
+                        event="leader_changed",
+                    )
             # a NOTIFY refreshes its cluster; a timeout is the poll and refreshes everything
             for event in await _refresh(
                 pool, settings, known, (touched or None) if notified else None

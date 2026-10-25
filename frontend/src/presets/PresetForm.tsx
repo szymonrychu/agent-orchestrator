@@ -8,6 +8,7 @@ import DialogActions from '@mui/material/DialogActions'
 import DialogContent from '@mui/material/DialogContent'
 import DialogTitle from '@mui/material/DialogTitle'
 import FormControlLabel from '@mui/material/FormControlLabel'
+import FormHelperText from '@mui/material/FormHelperText'
 import IconButton from '@mui/material/IconButton'
 import MenuItem from '@mui/material/MenuItem'
 import Switch from '@mui/material/Switch'
@@ -76,22 +77,23 @@ function FormBody({ preset, copyOf, onClose, onSaved }: Omit<PresetFormProps, 'o
   const errors = validate(values, meta)
   const invalid = Object.keys(errors).length > 0
   const set = <K extends keyof FormValues>(key: K, value: FormValues[K]) => {
-    touched.current.add(key)
     setState((s) => {
+      touched.current.add(key)
       const setKey = setKeyOf(key)
       return { values: { ...s.values, [key]: value }, setKeys: setKey ? new Set(s.setKeys).add(setKey) : s.setKeys }
     })
   }
-  const text = (key: Exclude<keyof FormValues, 'peers' | 'env'>, label: string, extra: { disabled?: boolean; multiline?: boolean } = {}) => (
+  const text = (key: Exclude<keyof FormValues, 'peers' | 'static' | 'env'>, label: string, extra: { disabled?: boolean; multiline?: boolean; help?: string } = {}) => (
     <TextField
       size="small"
       label={label}
       value={values[key]}
       onChange={(e) => set(key, e.target.value)}
       error={Boolean(errors[key]) && values[key] !== ''}
-      helperText={values[key] !== '' ? errors[key] : undefined}
+      helperText={(values[key] !== '' ? errors[key] : undefined) ?? extra.help}
       fullWidth
-      {...extra}
+      disabled={extra.disabled}
+      multiline={extra.multiline}
     />
   )
   const setEnv = (index: number, patch: Partial<{ key: string; value: string }>) => set('env', values.env.map((r, i) => (i === index ? { ...r, ...patch } : r)))
@@ -131,6 +133,9 @@ function FormBody({ preset, copyOf, onClose, onSaved }: Omit<PresetFormProps, 'o
           {serverError && <Alert severity="error" variant="outlined">{serverError}</Alert>}
           {text('name', 'Name', { disabled: preset?.is_default === true })}
           {text('replicas', 'Replicas')}
+          {text('maxReplicas', 'Max replicas', { help: 'More than 1 makes the cluster a hive' })}
+          <FormControlLabel control={<Switch checked={values.static} onChange={(e) => set('static', e.target.checked)} />} label="Static (scaling disabled)" />
+          {errors.static && <FormHelperText error>{errors.static}</FormHelperText>}
           {meta && meta.models.length > 0 ? dropdown('model', 'Model', meta.models, 'default') : text('model', 'Model')}
           {meta && meta.efforts.length > 0 ? dropdown('effort', 'Effort', meta.efforts, 'model default') : text('effort', 'Effort')}
           <FormControlLabel control={<Switch checked={values.peers} onChange={(e) => set('peers', e.target.checked)} />} label="Peers" />

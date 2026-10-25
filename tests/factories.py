@@ -189,6 +189,7 @@ async def insert_event(
     turn_id: str | None = None,
     data: dict | None = None,
     ts: datetime | None = None,
+    created_at: datetime | None = None,
 ) -> dict[str, Any]:
     if seq is None:
         async with pool.connection() as conn:
@@ -199,8 +200,9 @@ async def insert_event(
             seq = (await cur.fetchone())[0]
     return await _one(
         pool,
-        "INSERT INTO events (cluster_id, agent_id, session_id, seq, ts, type, turn_id, data)"
-        " VALUES (%s,%s,%s,%s,COALESCE(%s, now()),%s,%s,%s) RETURNING *",
+        "INSERT INTO events (cluster_id, agent_id, session_id, seq, ts, type, turn_id, data,"
+        " created_at) VALUES (%s,%s,%s,%s,COALESCE(%s, now()),%s,%s,%s,"
+        " COALESCE(%s, clock_timestamp())) RETURNING *",
         (
             cluster_id,
             agent_id,
@@ -210,6 +212,7 @@ async def insert_event(
             type,
             turn_id,
             Jsonb(data if data is not None else {}),
+            created_at,
         ),
     )
 

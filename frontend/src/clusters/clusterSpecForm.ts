@@ -9,6 +9,9 @@ export interface EnvRow {
 export interface FormValues {
   name: string
   replicas: string
+  /** Empty means same as replicas. */
+  maxReplicas: string
+  static: boolean
   model: string
   effort: string
   peers: boolean
@@ -30,7 +33,7 @@ export interface FormValues {
 export type FormErrors = Partial<Record<Exclude<keyof FormValues, 'env'>, string>> & { env?: (string | undefined)[] }
 
 /** What the user set: a spec key, with the four resource fields counting as one `resources` key. */
-export type SetKey = 'replicas' | 'model' | 'effort' | 'peers' | 'workdir' | 'pvcSize' | 'env' | 'anyMcp' | 'maxAttempts' | 'autoCompact' | 'resources' | 'hookUrl' | 'image'
+export type SetKey = 'replicas' | 'maxReplicas' | 'static' | 'model' | 'effort' | 'peers' | 'workdir' | 'pvcSize' | 'env' | 'anyMcp' | 'maxAttempts' | 'autoCompact' | 'resources' | 'hookUrl' | 'image'
 
 /** Form values together with the fields that are set (the ones a save writes to the preset). */
 export interface FormState {
@@ -49,7 +52,7 @@ const COPY_SUFFIX = ' copy'
 export function blankValues(meta: Meta | null): FormValues {
   const d = meta?.defaults
   return {
-    name: '', replicas: d ? String(d.replicas) : '', model: d?.model ?? '', effort: d?.effort ?? '', peers: true, workdir: d?.workdir ?? 'workdir',
+    name: '', replicas: d ? String(d.replicas) : '', maxReplicas: '', static: false, model: d?.model ?? '', effort: d?.effort ?? '', peers: true, workdir: d?.workdir ?? 'workdir',
     pvcSize: d?.pvc_size ?? '', env: [], anyMcp: d && Object.keys(d.any_mcp_config).length > 0 ? JSON.stringify(d.any_mcp_config, null, 2) : '',
     maxAttempts: d ? String(d.max_attempts) : '', autoCompact: d ? String(d.auto_compact_pct) : '',
     cpuRequest: d?.resources.requests.cpu ?? '', cpuLimit: d?.resources.limits.cpu ?? '',
@@ -75,12 +78,17 @@ export function stateFromPreset(meta: Meta | null, name: string, spec: Partial<C
     values[field] = stored
     setKeys.add(key)
   }
-  const num = (key: SetKey, field: 'replicas' | 'maxAttempts' | 'autoCompact', stored: number | null | undefined) => {
+  const num = (key: SetKey, field: 'replicas' | 'maxReplicas' | 'maxAttempts' | 'autoCompact', stored: number | null | undefined) => {
     if (stored === null || stored === undefined) return
     values[field] = String(stored)
     setKeys.add(key)
   }
   num('replicas', 'replicas', spec.replicas)
+  num('maxReplicas', 'maxReplicas', spec.max_replicas)
+  if (spec.static !== undefined && spec.static !== null) {
+    values.static = spec.static
+    setKeys.add('static')
+  }
   text('model', 'model', spec.model)
   text('effort', 'effort', spec.effort)
   if (spec.peers !== undefined && spec.peers !== null) {
@@ -164,6 +172,9 @@ export function validate(v: FormValues, meta: Meta | null): FormErrors {
   const e: FormErrors = {}
   e.name = nameError(v.name)
   e.replicas = v.replicas.trim() === '' ? undefined : intIn(v.replicas, 1, meta?.caps.max_replicas ?? 16, 'Replicas')
+  const replicas = /^\d+$/.test(v.replicas.trim()) ? Number(v.replicas) : meta?.defaults.replicas ?? 1
+  e.maxReplicas = v.maxReplicas.trim() === '' ? undefined : intIn(v.maxReplicas, Math.max(1, replicas), meta?.caps.max_replicas ?? 16, 'Max replicas')
+  if (e.maxReplicas === undefined && v.static && v.maxReplicas.trim() !== '' && Number(v.maxReplicas) !== replicas) e.static = 'Static needs max replicas equal to replicas'
   e.maxAttempts = v.maxAttempts.trim() === '' ? undefined : intIn(v.maxAttempts, 1, 100, 'Max attempts')
   e.autoCompact = v.autoCompact.trim() === '' ? undefined : intIn(v.autoCompact, 1, 100, 'Auto-compact percent')
   e.anyMcp = anyMcpError(v.anyMcp)
@@ -190,6 +201,8 @@ export function toPresetSpec(v: FormValues, setKeys: ReadonlySet<SetKey>): Parti
   const str = (s: string): string | undefined => (s.trim() === '' ? undefined : s.trim())
   const int = (s: string): number | undefined => (s.trim() === '' ? undefined : Number(s))
   if (setKeys.has('replicas')) spec.replicas = int(v.replicas)
+  if (setKeys.has('maxReplicas')) spec.max_replicas = int(v.maxReplicas)
+  if (setKeys.has('static')) spec.static = v.static
   if (setKeys.has('model')) spec.model = str(v.model)
   if (setKeys.has('effort')) spec.effort = str(v.effort)
   if (setKeys.has('peers')) spec.peers = v.peers

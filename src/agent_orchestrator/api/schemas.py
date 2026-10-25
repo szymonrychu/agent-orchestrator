@@ -63,6 +63,11 @@ class ClusterView(BaseModel):
     preset_id: uuid.UUID | None
     preset_name: str | None
     summary: ClusterSummary
+    hive: bool
+    max_replicas: int
+    static: bool
+    leader_agent_id: uuid.UUID | None
+    leader_epoch: int | None
 
 
 class AgentContext(BaseModel):
@@ -80,6 +85,8 @@ class AgentView(BaseModel):
     free_since: datetime | None
     current_turn_id: str | None
     context: AgentContext | None
+    context_pct: float | None
+    leader: bool
     peers: int
     gone: bool
 
@@ -248,3 +255,21 @@ class TerminalView(BaseModel):
 class TerminalList(BaseModel):
     terminals: list[TerminalView]
     unavailable_agents: list[uuid.UUID]
+
+
+class HandoverIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    to: str | None = None
+    reason: str = Field(min_length=1, max_length=500)
+    epoch: int
+
+
+class MakeLeaderIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: uuid.UUID
+
+
+class LeadershipRequested(BaseModel):
+    request_id: int

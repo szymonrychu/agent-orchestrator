@@ -88,11 +88,15 @@ def test_api_command_serves_healthz(dsn):
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        agent_port = s.getsockname()[1]
     proc = _orch(
         "api",
         dsn=dsn,
         ORCH_HTTP_HOST="127.0.0.1",
         ORCH_HTTP_PORT=str(port),
+        ORCH_AGENT_PORT=str(agent_port),
         ORCH_ALLOWED_CIDRS="127.0.0.0/8",
     )
     try:

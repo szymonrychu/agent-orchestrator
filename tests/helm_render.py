@@ -62,6 +62,23 @@ def render(
     return [d for d in yaml.safe_load_all(proc.stdout) if d]
 
 
+def render_text(
+    values: dict[str, Any] | None = None,
+    *,
+    show_only: list[str] | None = None,
+    namespace: str = "agents",
+    release: str = "agent-orchestrator",
+    chart: Path = CHART,
+) -> str:
+    """helm template raw stdout, for assertions that parsing would hide (duplicate keys)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        cmd = _template_cmd(values, Path(tmp) / "values.yaml", show_only, namespace, release, chart)
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise AssertionError(f"helm template failed:\n{proc.stderr}")
+    return proc.stdout
+
+
 def render_error(
     values: dict[str, Any] | None = None,
     *,

@@ -35,7 +35,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "any-mcp", git = "https://github.com/szymonrychu/any-mcp?rev=v0.1.0" },
+    { name = "any-mcp", git = "https://github.com/szymonrychu/any-mcp?rev=v0.2.0" },
     { name = "fastapi", specifier = "==0.160.0" },
     { name = "httpx" },
     { name = "lightkube", specifier = "==1.0.1" },
@@ -49,7 +49,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "claude-code-wrapper", git = "https://github.com/szymonrychu/claude-code-wrapper?rev=e9ffa62cb924799b8cd79b9d07595d490b53b920" },
+    { name = "claude-code-wrapper", git = "https://github.com/szymonrychu/claude-code-wrapper?rev=1f64e9f9263f5feef15193d7d7acc159b0b65fee" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
@@ -88,8 +88,8 @@ wheels = [
 
 [[package]]
 name = "any-mcp"
-version = "0.1.0"
-source = { git = "https://github.com/szymonrychu/any-mcp?rev=v0.1.0#2b9cc653173a95aa74c73568db0c383ba2cd9618" }
+version = "0.2.0"
+source = { git = "https://github.com/szymonrychu/any-mcp?rev=v0.2.0#3322386b33927ef4b35f9befde6b6552edad4d48" }
 dependencies = [
     { name = "fastmcp" },
     { name = "httpx" },
@@ -418,8 +418,8 @@ wheels = [
 
 [[package]]
 name = "claude-code-wrapper"
-version = "0.1.0"
-source = { git = "https://github.com/szymonrychu/claude-code-wrapper?rev=e9ffa62cb924799b8cd79b9d07595d490b53b920#e9ffa62cb924799b8cd79b9d07595d490b53b920" }
+version = "0.2.0"
+source = { git = "https://github.com/szymonrychu/claude-code-wrapper?rev=1f64e9f9263f5feef15193d7d7acc159b0b65fee#1f64e9f9263f5feef15193d7d7acc159b0b65fee" }
 dependencies = [
     { name = "anyio" },
     { name = "fastapi" },

@@ -101,6 +101,19 @@ def labelled(kind: str, name: str, slug: str, *, api: str = "v1") -> dict:
 # ---------------------------------------------------------------- create, apply, guard
 
 
+async def test_no_agent_url_warns_once_per_cluster(env, caplog):
+    await env.cluster("alpha")
+    with caplog.at_level("WARNING", logger="agent_orchestrator.reconciler.loop"):
+        await env.rec.reconcile_once()
+        await env.rec.reconcile_once()
+        warned = [r for r in caplog.records if "ORCH_AGENT_URL" in r.getMessage()]
+        assert len(warned) == 1 and "alpha" in warned[0].getMessage()
+        await env.cluster("beta")
+        await env.rec.reconcile_once()
+    warned = [r for r in caplog.records if "ORCH_AGENT_URL" in r.getMessage()]
+    assert len(warned) == 2 and "beta" in warned[1].getMessage()
+
+
 async def test_create_applies_five_objects(env):
     c = await env.cluster("alpha", replicas=2)
     await env.rec.reconcile_once()
@@ -223,6 +236,42 @@ async def test_observe_pods_upserts_agents(env):
     env.kube.set_pod("agent-alpha-1", ready=True, phase="Running")
     await env.rec.reconcile_once()
     assert (await env.get(c.id)).status["phase"] == "ready"
+
+
+async def test_observe_stores_pod_ip(env):
+    c = await env.cluster("alpha", replicas=2)
+    await env.rec.reconcile_once()
+    env.kube.set_pod("agent-alpha-0", pod_ip="10.1.2.3")
+    del env.kube.objects[("Pod", "agents", "agent-alpha-1")]["status"]["podIP"]  # no IP yet
+    env.kube.controller_paused = True
+    await env.rec.reconcile_once()
+    agents = {a.ordinal: a for a in await env.agents(c.id)}
+    assert agents[0].pod_ip == "10.1.2.3"
+    assert agents[1].pod_ip is None
+
+
+async def test_observe_updates_pod_ip(env):
+    c = await env.cluster("alpha", replicas=1)
+    await env.rec.reconcile_once()
+    env.kube.set_pod("agent-alpha-0", pod_ip="10.1.2.3")
+    await env.rec.reconcile_once()
+    assert (await env.agents(c.id))[0].pod_ip == "10.1.2.3"
+    env.kube.set_pod("agent-alpha-0", pod_ip="10.9.9.9")  # restarted pod, new IP
+    await env.rec.reconcile_once()
+    assert (await env.agents(c.id))[0].pod_ip == "10.9.9.9"
+
+
+async def test_gone_agent_clears_pod_ip(env):
+    c = await env.cluster("alpha", replicas=2)
+    await env.rec.reconcile_once()
+    env.kube.set_pod("agent-alpha-1", pod_ip="10.1.2.4")
+    await env.rec.reconcile_once()
+    assert (await env.agents(c.id))[1].pod_ip == "10.1.2.4"
+    await env.update(c.id, replicas=1)
+    await env.rec.reconcile_once()
+    agents = {a.ordinal: a for a in await env.agents(c.id)}
+    assert agents[1].gone_at is not None and agents[1].pod_ip is None
+    assert agents[0].pod_ip is not None
 
 
 async def test_scale_down_marks_gone(env):
@@ -472,7 +521,11 @@ async def test_secrets_only_created_patched_deleted(env):
         ("patch", "agent-alpha-ccw")
     }
     secret = env.kube.applied("Secret")[-1].obj
-    assert set(secret["stringData"]) == {"CCW_AUTH_TOKEN", "CCW_PEER_TOKEN"}
+    assert set(secret["stringData"]) == {
+        "CCW_AUTH_TOKEN",
+        "CCW_PEER_TOKEN",
+        "ORCH_AGENT_TOKEN",
+    }
     got = await env.get(c.id)
     assert got.status["phase"] == "pending" and got.observed_generation == 2
 
