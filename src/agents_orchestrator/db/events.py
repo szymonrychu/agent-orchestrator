@@ -14,7 +14,7 @@ from agents_orchestrator.db.pool import notify
 
 MAX_LIMIT = 500
 CHANNEL = "events"
-_COLUMNS = "id, cluster_id, agent_id, session_id, seq, ts, type, turn_id, data"
+_COLUMNS = "id, cluster_id, agent_id, wrapper_session_id, seq, ts, type, turn_id, data"
 
 
 @dataclass
@@ -33,7 +33,7 @@ async def insert_events(
     conn: psycopg.AsyncConnection,
     cluster_id: uuid.UUID,
     agent_id: uuid.UUID,
-    session_id: str,
+    wrapper_session_id: str,
     envelopes: Sequence[dict[str, Any]],
 ) -> int | None:
     """Insert wrapper envelopes {seq, ts, type, data}; duplicates are ignored.
@@ -46,13 +46,14 @@ async def insert_events(
         data = e.get("data") or {}
         turn_id = data.get("turn_id") if isinstance(data, dict) else None
         cur = await conn.execute(
-            "INSERT INTO events (cluster_id, agent_id, session_id, seq, ts, type, turn_id, data)"
+            "INSERT INTO events"
+            " (cluster_id, agent_id, wrapper_session_id, seq, ts, type, turn_id, data)"
             " VALUES (%s,%s,%s,%s,COALESCE(%s::timestamptz, now()),%s,%s,%s)"
-            " ON CONFLICT (agent_id, session_id, seq) DO NOTHING RETURNING id",
+            " ON CONFLICT (agent_id, wrapper_session_id, seq) DO NOTHING RETURNING id",
             (
                 cluster_id,
                 agent_id,
-                session_id,
+                wrapper_session_id,
                 e["seq"],
                 e.get("ts"),
                 e["type"],
@@ -72,7 +73,7 @@ async def insert_gap(
     conn: psycopg.AsyncConnection,
     cluster_id: uuid.UUID,
     agent_id: uuid.UUID,
-    session_id: str,
+    wrapper_session_id: str,
     after_seq: int,
     before_seq: int,
 ) -> int | None:
@@ -82,13 +83,13 @@ async def insert_gap(
     and is ignored by last_seq. Returns the new id (None if the gap already exists).
     """
     cur = await conn.execute(
-        "INSERT INTO events (cluster_id, agent_id, session_id, seq, type, data)"
+        "INSERT INTO events (cluster_id, agent_id, wrapper_session_id, seq, type, data)"
         " VALUES (%s,%s,%s,%s,'gap',%s)"
-        " ON CONFLICT (agent_id, session_id, seq) DO NOTHING RETURNING id",
+        " ON CONFLICT (agent_id, wrapper_session_id, seq) DO NOTHING RETURNING id",
         (
             cluster_id,
             agent_id,
-            session_id,
+            wrapper_session_id,
             -before_seq,
             Jsonb({"after_seq": after_seq, "before_seq": before_seq}),
         ),
@@ -100,17 +101,29 @@ async def insert_gap(
     return row[0]
 
 
-async def last_seq(conn: psycopg.AsyncConnection, agent_id: uuid.UUID, session_id: str) -> int:
+async def last_seq(
+    conn: psycopg.AsyncConnection, agent_id: uuid.UUID, wrapper_session_id: str
+) -> int:
     cur = await conn.execute(
-        "SELECT COALESCE(MAX(seq), 0) FROM events WHERE agent_id=%s AND session_id=%s"
+        "SELECT COALESCE(MAX(seq), 0) FROM events WHERE agent_id=%s AND wrapper_session_id=%s"
         " AND type <> 'gap'",
-        (agent_id, session_id),
+        (agent_id, wrapper_session_id),
     )
     return (await cur.fetchone())[0]
 
 
 def _row(row: tuple) -> dict[str, Any]:
-    keys = ("id", "cluster_id", "agent_id", "session_id", "seq", "ts", "type", "turn_id", "data")
+    keys = (
+        "id",
+        "cluster_id",
+        "agent_id",
+        "wrapper_session_id",
+        "seq",
+        "ts",
+        "type",
+        "turn_id",
+        "data",
+    )
     return dict(zip(keys, row, strict=True))
 
 

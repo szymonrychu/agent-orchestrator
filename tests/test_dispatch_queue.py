@@ -19,7 +19,7 @@ from agents_orchestrator.db import queue as q
 async def _ready_agent(pool, cluster_id, *, free_ago: float = 0, state: str = "idle", **kw):
     """A ready agent with a session whose free_since is `free_ago` seconds before now()."""
     kw.setdefault("ready", True)
-    kw.setdefault("session_id", f"s-{uuid.uuid4().hex[:6]}")
+    kw.setdefault("wrapper_session_id", f"s-{uuid.uuid4().hex[:6]}")
     kw.setdefault("url", f"http://agent-{uuid.uuid4().hex[:6]}:8080")
     agent = await insert_agent(pool, cluster_id, **kw)
     await set_agent_status(pool, agent["id"], state=state)
@@ -91,7 +91,7 @@ async def test_claim_picks_oldest_free_since(pool):
     await _ready_agent(pool, cid, free_ago=20)
     # Older free_since, but each fails one pick condition.
     await _ready_agent(pool, cid, free_ago=100, ready=False)
-    await _ready_agent(pool, cid, free_ago=100, session_id=None)
+    await _ready_agent(pool, cid, free_ago=100, wrapper_session_id=None)
     await _ready_agent(pool, cid, free_ago=100, state="busy")
     await _ready_agent(pool, cid, free_ago=100, state="booting")
     gone = await _ready_agent(pool, cid, free_ago=100)
@@ -104,7 +104,7 @@ async def test_claim_picks_oldest_free_since(pool):
     assert claim.message_id == mid
     assert claim.agent_id == oldest["id"]
     assert claim.agent_url == oldest["url"]
-    assert claim.session_id == oldest["session_id"]
+    assert claim.wrapper_session_id == oldest["wrapper_session_id"]
     assert claim.cluster_id == cid
     assert claim.text == "task"
     assert claim.attempts == 0
@@ -699,7 +699,7 @@ async def test_list_verifying_age_from_db_clock(pool):
     assert v.cluster_id == cid
     assert v.agent_id == agent["id"]
     assert v.agent_url == agent["url"]
-    assert v.session_id == agent["session_id"]
+    assert v.wrapper_session_id == agent["wrapper_session_id"]
     assert v.dispatched_at == claim.dispatched_at
     assert v.text == "check me"
     assert v.error == "ambiguous"
@@ -748,7 +748,7 @@ async def test_commands_and_checks_lifecycle(pool):
         cmd = await q.claim_command(conn, ["restart", "rebootstrap"])
     assert (cmd.id, cmd.kind, cmd.status) == (restart, "restart", "running")
     assert (cmd.agent_id, cmd.cluster_id) == (agent["id"], cid)
-    assert (cmd.agent_url, cmd.session_id) == (agent["url"], agent["session_id"])
+    assert (cmd.agent_url, cmd.wrapper_session_id) == (agent["url"], agent["wrapper_session_id"])
     assert cmd.started_at is not None
     assert await _call(pool, q.claim_command, ["restart", "rebootstrap"]) is None
 

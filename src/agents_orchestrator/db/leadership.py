@@ -88,7 +88,7 @@ WHERE c.desired = 'active' AND {_HIVE} AND (
             WHERE r.cluster_id = c.id AND r.status = 'queued')
     OR (l.cluster_id IS NULL AND EXISTS (
         SELECT 1 FROM agents x WHERE x.cluster_id = c.id AND x.ready
-          AND x.gone_at IS NULL AND x.session_id IS NOT NULL))
+          AND x.gone_at IS NULL AND x.wrapper_session_id IS NOT NULL))
     OR a.gone_at IS NOT NULL OR NOT a.ready OR l.unready_since IS NOT NULL
     OR (c.spec->>'leader_lease_seconds' IS NOT NULL
         AND l.since < now() - make_interval(secs => (c.spec->>'leader_lease_seconds')::int))
@@ -100,7 +100,7 @@ ORDER BY c.id
 # first, so a hive whose other members are all busy still gets a leader.
 _FREE_LONGEST = """
 SELECT a.id FROM agents a LEFT JOIN agent_status s ON s.agent_id = a.id
-WHERE a.cluster_id = %s AND a.ready AND a.gone_at IS NULL AND a.session_id IS NOT NULL
+WHERE a.cluster_id = %s AND a.ready AND a.gone_at IS NULL AND a.wrapper_session_id IS NOT NULL
   AND a.id <> %s
 ORDER BY (s.state = 'idle') IS NOT TRUE, s.free_since ASC NULLS LAST, a.id
 LIMIT 1
@@ -275,7 +275,7 @@ async def leadership_pass(
             first = await _one(
                 conn,
                 "SELECT id FROM agents WHERE cluster_id = %s AND ready AND gone_at IS NULL"
-                " AND session_id IS NOT NULL ORDER BY ordinal LIMIT 1",
+                " AND wrapper_session_id IS NOT NULL ORDER BY ordinal LIMIT 1",
                 (cluster_id,),
             )
             if first is not None:

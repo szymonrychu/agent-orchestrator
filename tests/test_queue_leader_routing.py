@@ -14,7 +14,7 @@ async def _agent(pool, cluster_id, *, free_ago: float, state: str = "idle", **kw
         pool,
         cluster_id,
         ready=True,
-        session_id=f"s-{uuid.uuid4().hex[:6]}",
+        wrapper_session_id=f"s-{uuid.uuid4().hex[:6]}",
         url=f"http://agent-{uuid.uuid4().hex[:6]}:8080",
         **kw,
     )

@@ -71,7 +71,7 @@ class WrapperTarget:
     cluster_id: uuid.UUID
     pod_name: str
     url: str
-    session_id: str
+    wrapper_session_id: str
     token: str = field(repr=False)
 
 
@@ -80,7 +80,7 @@ def _usable(agent: agents_repo.Agent, state: str | None) -> bool:
         agent.ready
         and agent.gone_at is None
         and bool(agent.url)
-        and bool(agent.session_id)
+        and bool(agent.wrapper_session_id)
         and state != _DEAD
     )
 
@@ -133,13 +133,13 @@ def _cluster_token(settings: Settings, cluster_id: uuid.UUID) -> str:
 
 
 def _target(agent: agents_repo.Agent, cluster_id: uuid.UUID, token: str) -> WrapperTarget:
-    assert agent.url is not None and agent.session_id is not None
+    assert agent.url is not None and agent.wrapper_session_id is not None
     return WrapperTarget(
         agent_id=agent.id,
         cluster_id=cluster_id,
         pod_name=agent.pod_name,
         url=agent.url,
-        session_id=agent.session_id,
+        wrapper_session_id=agent.wrapper_session_id,
         token=token,
     )
 
@@ -262,7 +262,7 @@ async def _file_call[M: BaseModel](
     """Forward one file read to the agent chosen by `resolve_agent` and add the ids."""
     async with pool.connection() as conn:
         target = await resolve_agent(conn, settings, cluster_id=cluster_id, agent_id=agent_id)
-    sid = quote(target.session_id, safe="")
+    sid = quote(target.wrapper_session_id, safe="")
     body = await forward(request.app, target, "GET", f"/sessions/{sid}/{tail}", params=params)
     try:
         return model.model_validate(
@@ -342,7 +342,7 @@ def _terminal_view(target: WrapperTarget, body: Any) -> schemas.TerminalView:
 
 
 def _terminals_path(target: WrapperTarget, tail: str = "") -> str:
-    return f"/sessions/{quote(target.session_id, safe='')}/terminals{tail}"
+    return f"/sessions/{quote(target.wrapper_session_id, safe='')}/terminals{tail}"
 
 
 @router.post(

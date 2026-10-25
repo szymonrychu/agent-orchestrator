@@ -74,7 +74,9 @@ class Env:
     async def session(self, name: str = "s") -> str:
         client = WrapperClient(self.fake.base_url, TOKEN)
         try:
-            return (await client.create_session(f"{name}{uuid.uuid4().hex[:4]}", "/w")).session_id
+            return (
+                await client.create_session(f"{name}{uuid.uuid4().hex[:4]}", "/w")
+            ).wrapper_session_id
         finally:
             await client.aclose()
 
@@ -95,7 +97,7 @@ class Env:
             cluster_id,
             ordinal=ordinal,
             ready=True,
-            session_id=sid,
+            wrapper_session_id=sid,
             url=self.fake.base_url,
         )
         await set_agent_status(self.pool, a["id"], state="idle", context_pct=ctx)
@@ -121,7 +123,7 @@ class Env:
 
     def notes(self, agent: dict, key: str | None = "hive_state") -> list[str]:
         """Texts pushed to the agent's session: the keyed hive_state ones, or the appended."""
-        pushed = self.fake.notes.get(agent["session_id"], [])
+        pushed = self.fake.notes.get(agent["wrapper_session_id"], [])
         return [n["text"] for n in pushed if n["key"] == key]
 
     async def write_event(
@@ -170,7 +172,7 @@ async def test_hive_state_on_leader_change(env):
     assert "You are agent-0 (leader)" in env.notes(a0)[0]
     assert "You are agent-2 (member)" in env.notes(a2)[0]
     assert all(f"agent-{i}" in env.notes(a1)[0] for i in range(3))
-    sent = env.fake.notes[a0["session_id"]][0]
+    sent = env.fake.notes[a0["wrapper_session_id"]][0]
     assert sent["source"] == "orchestrator" and sent["key"] == "hive_state"
     row = await env.leader_row(c["id"])
     assert row["state_pushed_at"] is not None
@@ -226,7 +228,9 @@ async def test_hive_state_repush_on_session_change(env):
     c, (a0, a1, a2) = await env.hive()
     await env.push()
     new_session = await env.session()  # a fast wrapper restart: same pod, new session
-    await env.run("UPDATE agents SET session_id = %s WHERE id = %s", (new_session, a1["id"]))
+    await env.run(
+        "UPDATE agents SET wrapper_session_id = %s WHERE id = %s", (new_session, a1["id"])
+    )
     assert await env.push() == 3
     assert len(env.fake.notes[new_session]) == 1
     assert len(env.notes(a0)) == 2
@@ -234,7 +238,7 @@ async def test_hive_state_repush_on_session_change(env):
 
 async def test_failed_agent_does_not_repush_others(env):
     c, (a0, a1, a2) = await env.hive()
-    await env.run("UPDATE agents SET session_id = 'ses_missing' WHERE id = %s", (a2["id"],))
+    await env.run("UPDATE agents SET wrapper_session_id = 'ses_missing' WHERE id = %s", (a2["id"],))
     assert await env.push() == 2
     row = await env.leader_row(c["id"])
     assert row["state_pushed_at"] is None  # not every push succeeded
@@ -279,7 +283,7 @@ async def test_feed_push_and_cursor(env):
     assert "agent-1 wrote" not in own1 and "agent-2 ran: make test (exit 2)" in own1
     (own2,) = env.notes(a2, key=None)
     assert "agent-2 ran" not in own2 and "agent-1 wrote /work/a.py" in own2
-    assert env.fake.notes[a0["session_id"]][-1]["key"] is None
+    assert env.fake.notes[a0["wrapper_session_id"]][-1]["key"] is None
     row = await env.leader_row(c["id"])
     assert row["feed_cursor"] == res["id"] > w1["id"]
 
@@ -314,7 +318,7 @@ async def test_feed_cursor_settle_window(env):
             {"tool_use_id": "late", "tool_name": "Write", "tool_input": {"file_path": "/late.py"}}
         )
         cur = await slow.execute(
-            "INSERT INTO events (cluster_id, agent_id, session_id, seq, ts, type, data)"
+            "INSERT INTO events (cluster_id, agent_id, wrapper_session_id, seq, ts, type, data)"
             " VALUES (%s, %s, 's', 1, now() - interval '1 hour', 'tool_call', %s::jsonb)"
             " RETURNING id",
             (c["id"], a1["id"], data),
@@ -414,7 +418,7 @@ async def test_alone_and_disabled(env):
     s0 = await env.agent(solo["id"], 0)
     await env.write_event(solo["id"], s0, "/solo.py")
     assert await env.push() == 0
-    assert env.fake.notes.get(s0["session_id"]) is None
+    assert env.fake.notes.get(s0["wrapper_session_id"]) is None
     assert (
         await env.rows("SELECT 1 FROM cluster_leaders WHERE cluster_id = %s", (solo["id"],)) == []
     )

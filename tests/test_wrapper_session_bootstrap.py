@@ -14,7 +14,7 @@ from agents_orchestrator.db import agents as agents_repo
 from agents_orchestrator.db import clusters, queue
 from agents_orchestrator.k8s.render import workdir_path
 from agents_orchestrator.reconciler import Reconciler
-from agents_orchestrator.reconciler import sessions as sessions_mod
+from agents_orchestrator.reconciler import wrapper_sessions as sessions_mod
 from agents_orchestrator.settings import Settings
 from agents_orchestrator.spec import ClusterSpec
 from agents_orchestrator.tokens import tokens_for
@@ -62,11 +62,11 @@ class Env:
         snap = await client.create_session("seed", "seed")
         if state != "ready":
             self.fake.set_session_state(
-                state, has_transcript=transcript, session_id=snap.session_id
+                state, has_transcript=transcript, session_id=snap.wrapper_session_id
             )
         if transcript:
-            self.fake.sessions[snap.session_id].turns_completed = 1
-        return snap.session_id
+            self.fake.sessions[snap.wrapper_session_id].turns_completed = 1
+        return snap.wrapper_session_id
 
 
 @pytest_asyncio.fixture
@@ -89,8 +89,8 @@ async def test_creates_session_for_ready_pod(env, fake):
     ses = next(iter(fake.sessions.values()))
     assert ses.name == "repo"
     assert ses.model == "opus"
-    assert agent.session_id == ses.session_id
-    assert agent.session_created_at is not None
+    assert agent.wrapper_session_id == ses.session_id
+    assert agent.wrapper_session_created_at is not None
 
     await env.rec.reconcile_once()  # steady state: no second session
     assert len(fake.sessions) == 1
@@ -102,7 +102,7 @@ async def test_adopts_existing_session(env, fake):
     await env.rec.reconcile_once()
 
     (agent,) = await env.agents(c.id)
-    assert agent.session_id == sid
+    assert agent.wrapper_session_id == sid
     assert list(fake.sessions) == [sid]
 
 
@@ -112,7 +112,7 @@ async def test_unready_pod_skipped(env, fake):
     await env.rec.reconcile_once()
 
     (agent,) = await env.agents(c.id)
-    assert agent.session_id is None
+    assert agent.wrapper_session_id is None
     assert fake.sessions == {}
     assert env.factory_calls == []
 
@@ -128,14 +128,14 @@ async def test_wrapper_unavailable_retries_next_tick(env, fake):
     await env.rec.reconcile_once()
 
     (agent,) = await env.agents(c.id)
-    assert agent.session_id is None
+    assert agent.wrapper_session_id is None
     assert "503" in (await env.status(c.id))["message"]
     assert "agent-alpha-0" in (await env.status(c.id))["message"]
 
     env.client_override = None
     await env.rec.reconcile_once()
     (agent,) = await env.agents(c.id)
-    assert agent.session_id is not None
+    assert agent.wrapper_session_id is not None
     assert (await env.status(c.id))["message"] == ""
 
 
@@ -144,7 +144,7 @@ async def test_network_error_leaves_agent_without_session(env, fake):
     await fake.set_unreachable(True)
     await env.rec.reconcile_once()
     (agent,) = await env.agents(c.id)
-    assert agent.session_id is None
+    assert agent.wrapper_session_id is None
     assert (await env.status(c.id))["message"]
     await fake.set_unreachable(False)
 
@@ -153,13 +153,13 @@ async def test_lost_session_rebootstrapped(env, fake):
     c = await env.cluster("alpha")
     await env.rec.reconcile_once()
     (agent,) = await env.agents(c.id)
-    old = agent.session_id
+    old = agent.wrapper_session_id
     del fake.sessions[old]
 
     await env.rec.reconcile_once()
     (agent,) = await env.agents(c.id)
-    assert agent.session_id not in (None, old)
-    assert list(fake.sessions) == [agent.session_id]
+    assert agent.wrapper_session_id not in (None, old)
+    assert list(fake.sessions) == [agent.wrapper_session_id]
 
 
 async def test_uses_cluster_auth_token(env, fake):
@@ -179,8 +179,8 @@ async def test_adopts_only_live_sessions(env, fake):
     await env.rec.reconcile_once()
 
     (agent,) = await env.agents(c.id)
-    assert agent.session_id not in (stopped, failed, None)
-    assert fake.sessions[agent.session_id].state == "ready"
+    assert agent.wrapper_session_id not in (stopped, failed, None)
+    assert fake.sessions[agent.wrapper_session_id].state == "ready"
     assert fake.sessions[stopped].state == "stopped"
     assert fake.sessions[failed].state == "failed"
 
@@ -195,7 +195,7 @@ async def test_resumes_stopped_session_with_transcript(env, fake):
     await env.rec.reconcile_once()
 
     (agent,) = await env.agents(c.id)
-    assert agent.session_id == sid
+    assert agent.wrapper_session_id == sid
     assert fake.sessions[sid].state == "ready"
     assert list(fake.sessions) == [sid]
 
@@ -206,16 +206,16 @@ async def test_failed_session_without_transcript_gets_new_session(env, fake):
     await env.rec.reconcile_once()
 
     (agent,) = await env.agents(c.id)
-    assert agent.session_id not in (None, sid)
+    assert agent.wrapper_session_id not in (None, sid)
     assert fake.sessions[sid].state == "failed"
-    assert fake.sessions[agent.session_id].state == "ready"
+    assert fake.sessions[agent.wrapper_session_id].state == "ready"
 
 
 async def test_rebootstrap_command_clears_and_bootstraps(env, fake):
     c = await env.cluster("alpha")
     await env.rec.reconcile_once()
     (agent,) = await env.agents(c.id)
-    old = agent.session_id
+    old = agent.wrapper_session_id
     del fake.sessions[old]  # the wrapper answered 404 on submit
     cmd = await insert_command(env.pool, agent.id, kind="rebootstrap")
 
@@ -223,7 +223,7 @@ async def test_rebootstrap_command_clears_and_bootstraps(env, fake):
     await env.rec._run_rebootstraps()
 
     (agent,) = await env.agents(c.id)
-    assert agent.session_id not in (None, old)
+    assert agent.wrapper_session_id not in (None, old)
     async with env.pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute("SELECT status FROM commands WHERE id = %s", (cmd["id"],))
         assert (await cur.fetchone())["status"] == "done"
@@ -235,20 +235,20 @@ async def test_rebootstrap_runs_inside_reconcile_tick(env, fake):
     c = await env.cluster("alpha")
     await env.rec.reconcile_once()
     (agent,) = await env.agents(c.id)
-    old = agent.session_id
+    old = agent.wrapper_session_id
     del fake.sessions[old]
     await insert_command(env.pool, agent.id, kind="rebootstrap")
     await env.rec.reconcile_once()
     (agent,) = await env.agents(c.id)
-    assert agent.session_id not in (None, old)
-    assert list(fake.sessions) == [agent.session_id]
+    assert agent.wrapper_session_id not in (None, old)
+    assert list(fake.sessions) == [agent.wrapper_session_id]
 
 
 async def test_session_workdir_matches_rendered_workdir_path(env, fake):
     c = await env.cluster("alpha", workdir="my-repo")
     await env.rec.reconcile_once()
     (agent,) = await env.agents(c.id)
-    assert fake.sessions[agent.session_id].workdir == workdir_path(c.spec)
+    assert fake.sessions[agent.wrapper_session_id].workdir == workdir_path(c.spec)
     assert workdir_path(c.spec) == "/workdir/my-repo"
 
 
@@ -276,7 +276,7 @@ async def _bootstrapped(env, state: str, transcript: bool):
     c = await env.cluster("alpha")
     await env.rec.reconcile_once()
     (agent,) = await env.agents(c.id)
-    sid = agent.session_id
+    sid = agent.wrapper_session_id
     assert sid is not None
     if state != "ready":
         env.fake.set_session_state(state, has_transcript=transcript, session_id=sid)
@@ -291,7 +291,7 @@ async def test_stored_stopped_session_is_resumed(env, fake):
     await env.rec.reconcile_once()
 
     (agent,) = await env.agents(c.id)
-    assert agent.session_id == sid
+    assert agent.wrapper_session_id == sid
     assert fake.sessions[sid].state == "ready"
     assert list(fake.sessions) == [sid]
 
@@ -301,9 +301,9 @@ async def test_stored_failed_session_without_transcript_replaced(env, fake):
     await env.rec.reconcile_once()
 
     (agent,) = await env.agents(c.id)
-    assert agent.session_id not in (None, sid)
+    assert agent.wrapper_session_id not in (None, sid)
     assert fake.sessions[sid].state == "failed"
-    assert fake.sessions[agent.session_id].state == "ready"
+    assert fake.sessions[agent.wrapper_session_id].state == "ready"
 
 
 async def test_stored_live_session_kept(env, fake):
@@ -311,7 +311,7 @@ async def test_stored_live_session_kept(env, fake):
     await env.rec.reconcile_once()
 
     (agent,) = await env.agents(c.id)
-    assert agent.session_id == sid
+    assert agent.wrapper_session_id == sid
     assert list(fake.sessions) == [sid]
 
 
@@ -321,7 +321,7 @@ class ResumeFails:
     def __init__(self, inner, status: int) -> None:
         self.inner, self.status = inner, status
 
-    async def resume_session(self, session_id: str):
+    async def resume_session(self, wrapper_session_id: str):
         raise WrapperError(self.status, "resume", "nope")
 
     def __getattr__(self, name):
@@ -334,9 +334,9 @@ async def test_stored_stopped_session_refused_resume_replaced(env, fake):
     await env.rec.reconcile_once()
 
     (agent,) = await env.agents(c.id)
-    assert agent.session_id not in (None, sid)
+    assert agent.wrapper_session_id not in (None, sid)
     assert fake.sessions[sid].state == "stopped"
-    assert fake.sessions[agent.session_id].state == "ready"
+    assert fake.sessions[agent.wrapper_session_id].state == "ready"
 
 
 async def test_stored_stopped_session_resume_5xx_deferred_and_kept(env, fake):
@@ -345,6 +345,6 @@ async def test_stored_stopped_session_resume_5xx_deferred_and_kept(env, fake):
     await env.rec.reconcile_once()
 
     (agent,) = await env.agents(c.id)
-    assert agent.session_id == sid
+    assert agent.wrapper_session_id == sid
     assert list(fake.sessions) == [sid]
     assert "agent-alpha-0" in (await env.status(c.id))["message"]

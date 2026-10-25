@@ -45,7 +45,12 @@ class Rig:
             )
         sid = made.json()["session_id"]
         row = await insert_agent(
-            self.pool, cl["id"], ordinal=ordinal, url=fake.base_url, session_id=sid, ready=ready
+            self.pool,
+            cl["id"],
+            ordinal=ordinal,
+            url=fake.base_url,
+            wrapper_session_id=sid,
+            ready=ready,
         )
         await set_agent_status(self.pool, row["id"], state="idle")
         return fake, sid, row

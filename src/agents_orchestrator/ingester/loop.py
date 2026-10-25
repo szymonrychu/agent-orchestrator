@@ -50,7 +50,7 @@ def map_state(wrapper_state: str | None) -> str:
 class AgentRef:
     agent_id: uuid.UUID
     cluster_id: uuid.UUID
-    session_id: str
+    wrapper_session_id: str
     url: str
 
 
@@ -76,7 +76,9 @@ class _AgentStream:
                 try:
                     if await self._attach_and_stream(client):
                         log.info(
-                            "agent %s session %s closed", self.ref.agent_id, self.ref.session_id
+                            "agent %s session %s closed",
+                            self.ref.agent_id,
+                            self.ref.wrapper_session_id,
                         )
                         return
                     log.info("agent %s stream ended; reconnecting", self.ref.agent_id)
@@ -96,9 +98,9 @@ class _AgentStream:
     async def _attach_and_stream(self, client: WrapperClient) -> bool:
         """Attach, then stream until the stream ends. True when the session is closed."""
         ref = self.ref
-        snap = await client.get_session(ref.session_id)
+        snap = await client.get_session(ref.wrapper_session_id)
         async with self.ing.pool.connection() as conn:
-            self.last_seq = await events.last_seq(conn, ref.agent_id, ref.session_id)
+            self.last_seq = await events.last_seq(conn, ref.agent_id, ref.wrapper_session_id)
             closed = await self._stored_closed(conn)
             state = "dead" if closed else map_state(snap.state)
             change = await status.upsert_status(
@@ -117,7 +119,7 @@ class _AgentStream:
             return True
         await self._refresh_peers(client)
 
-        async for env in client.events(ref.session_id, self.last_seq):
+        async for env in client.events(ref.wrapper_session_id, self.last_seq):
             self.delay = self.ing.backoff_initial  # a received event resets the backoff
             projected = await self._store(env)
             if projected.became_idle:
@@ -128,9 +130,9 @@ class _AgentStream:
 
     async def _stored_closed(self, conn: Any) -> bool:
         cur = await conn.execute(
-            "SELECT type FROM events WHERE agent_id=%s AND session_id=%s AND type <> 'gap'"
+            "SELECT type FROM events WHERE agent_id=%s AND wrapper_session_id=%s AND type <> 'gap'"
             " ORDER BY seq DESC LIMIT 1",
-            (self.ref.agent_id, self.ref.session_id),
+            (self.ref.agent_id, self.ref.wrapper_session_id),
         )
         row = await cur.fetchone()
         return row is not None and row[0] == "session_closed"
@@ -154,10 +156,15 @@ class _AgentStream:
         async with self.ing.pool.connection() as conn:
             if env.seq > self.last_seq + 1:
                 await events.insert_gap(
-                    conn, ref.cluster_id, ref.agent_id, ref.session_id, self.last_seq, env.seq
+                    conn,
+                    ref.cluster_id,
+                    ref.agent_id,
+                    ref.wrapper_session_id,
+                    self.last_seq,
+                    env.seq,
                 )
             new_id = await events.insert_events(
-                conn, ref.cluster_id, ref.agent_id, ref.session_id, [env.model_dump()]
+                conn, ref.cluster_id, ref.agent_id, ref.wrapper_session_id, [env.model_dump()]
             )
             # a replayed (already stored) or late (below last_seq) event is never re-projected
             if fresh and new_id is not None:
@@ -268,8 +275,8 @@ class Ingester:
     async def _wanted(self) -> dict[uuid.UUID, AgentRef]:
         async with self.pool.connection() as conn:
             cur = await conn.execute(
-                "SELECT id, cluster_id, session_id, url FROM agents"
-                " WHERE session_id IS NOT NULL AND url IS NOT NULL AND gone_at IS NULL"
+                "SELECT id, cluster_id, wrapper_session_id, url FROM agents"
+                " WHERE wrapper_session_id IS NOT NULL AND url IS NOT NULL AND gone_at IS NULL"
             )
             rows = await cur.fetchall()
         return {r[0]: AgentRef(r[0], r[1], r[2], r[3]) for r in rows}

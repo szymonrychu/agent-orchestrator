@@ -57,9 +57,11 @@ class Env:
         fake = fake or self.fake
         if session is None:
             client = WrapperClient(fake.base_url, self.token)
-            session = (await client.create_session(f"s{uuid.uuid4().hex[:4]}", "/w")).session_id
+            session = (
+                await client.create_session(f"s{uuid.uuid4().hex[:4]}", "/w")
+            ).wrapper_session_id
         agent = await insert_agent(
-            self.pool, self.cid, ready=True, session_id=session, url=fake.base_url
+            self.pool, self.cid, ready=True, wrapper_session_id=session, url=fake.base_url
         )
         await set_agent_status(self.pool, agent["id"], state=state)
         await self.set_free(agent["id"], free_ago, state)
@@ -223,7 +225,7 @@ async def test_notify_loss_recovered_by_poll(env):
 async def test_interrupt_and_compact_commands(env):
     agent = await env.agent()
     client = WrapperClient(env.fake.base_url, env.token)
-    session = (await env.agent_row(agent["id"]))["session_id"]
+    session = (await env.agent_row(agent["id"]))["wrapper_session_id"]
     await client.submit_turn(session, "work")  # a running turn to interrupt
     ci = await insert_command(env.pool, agent["id"], kind="interrupt")
     cc = await insert_command(env.pool, agent["id"], kind="compact")
@@ -235,7 +237,7 @@ async def test_interrupt_and_compact_commands(env):
     assert (await client.get_session(session)).state == "ready"
     # a command the wrapper refuses completes as failed with the error
     bad = await insert_agent(
-        env.pool, env.cid, ready=True, session_id="nope", url=env.fake.base_url
+        env.pool, env.cid, ready=True, wrapper_session_id="nope", url=env.fake.base_url
     )
     cf = await insert_command(env.pool, bad["id"], kind="interrupt")
     await d.drain()

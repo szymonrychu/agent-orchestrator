@@ -549,7 +549,7 @@ def test_merged_event_stream(
     assert switches >= 2, sequence
     # each agent's own events keep their per-session order inside the merged timeline
     for agent in agent_ids:
-        own = [(e["session_id"], e["seq"]) for e in events if e["agent_id"] == agent]
+        own = [(e["wrapper_session_id"], e["seq"]) for e in events if e["agent_id"] == agent]
         for session in {s for s, _ in own}:
             seqs = [q for s, q in own if s == session]
             assert seqs == sorted(seqs), (agent, session, seqs)

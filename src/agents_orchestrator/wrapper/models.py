@@ -23,7 +23,8 @@ class Context(_Model):
 
 
 class Snapshot(_Model):
-    session_id: str
+    # the wrapper sends `session_id`; the orchestrator calls it wrapper_session_id (D3)
+    wrapper_session_id: str = Field(validation_alias="session_id")
     name: str | None = None
     state: str
     current_turn_id: str | None = None

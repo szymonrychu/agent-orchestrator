@@ -1016,10 +1016,6 @@
             "title": "Seq",
             "type": "integer"
           },
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
-          },
           "ts": {
             "format": "date-time",
             "title": "Ts",
@@ -1039,13 +1035,17 @@
           "type": {
             "title": "Type",
             "type": "string"
+          },
+          "wrapper_session_id": {
+            "title": "Wrapper Session Id",
+            "type": "string"
           }
         },
         "required": [
           "id",
           "cluster_id",
           "agent_id",
-          "session_id",
+          "wrapper_session_id",
           "seq",
           "ts",
           "type",

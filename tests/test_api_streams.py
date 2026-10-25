@@ -136,6 +136,15 @@ async def test_events_page_backwards(srv, pool):
         assert_error(await c.get(f"/api/v1/clusters/{cl['id']}x/events"), 422, "invalid_request")
 
 
+async def test_event_view_wrapper_session_id(srv, pool):
+    cl, _ = await _seed(pool, 1)
+    async with srv.client() as c:
+        page = (await c.get(f"/api/v1/clusters/{cl['id']}/events")).json()
+    [event] = page["events"]
+    assert event["wrapper_session_id"] == "s1"
+    assert "session_id" not in event
+
+
 async def test_events_page_rejects_both_cursors(srv, pool):
     cl, _ = await _seed(pool, 2)
     async with srv.client() as c:
@@ -248,7 +257,7 @@ async def test_stream_recovers_from_lost_notify(srv, pool, dsn):
         # a row inserted without NOTIFY (plain INSERT, no pg_notify)
         async with await psycopg.AsyncConnection.connect(dsn, autocommit=True) as conn:
             await conn.execute(
-                "INSERT INTO events (cluster_id, agent_id, session_id, seq, type, data)"
+                "INSERT INTO events (cluster_id, agent_id, wrapper_session_id, seq, type, data)"
                 " VALUES (%s,%s,'s1',99,'idle','{}')",
                 (cl["id"], ag["id"]),
             )

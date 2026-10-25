@@ -33,7 +33,7 @@ class EventView(BaseModel):
     id: int
     cluster_id: uuid.UUID
     agent_id: uuid.UUID
-    session_id: str
+    wrapper_session_id: str
     seq: int
     ts: datetime
     type: str

@@ -490,11 +490,11 @@ Plain SQL migrations (`src/agent_orchestrator/db/migrations`), psycopg 3, no ORM
 |---|---|
 | `clusters` | id, unique slug, `spec` (jsonb ClusterSpec), `generation` / `observed_generation` (the reconcile queue), `desired` (`active`, `deleting`), `status` (phase, message and the once-per-cluster init run in `status.init`), `preset_id` (nullable; the `ON DELETE SET NULL` cascade sets it to null when the api deletes the preset, an api-originated write, so `clusters` keeps a single writer) and `preset_name` (the name at create, kept) |
 | `presets` | named ClusterSpec templates: unique case-insensitive `name` (1 to 40 characters), `spec` (jsonb, only what the user set), `is_default`; migration `0002` seeds `Default` with `{"replicas": 1}`, which can be edited but not renamed or deleted |
-| `agents` | one row per pod: ordinal, pod name, url, readiness, session id, `last_dispatched_at`, `gone_at` |
+| `agents` | one row per pod: ordinal, pod name, url, readiness, the wrapper session (`wrapper_session_id`, `wrapper_session_created_at`), `last_dispatched_at`, `gone_at` |
 | `agent_status` | wrapper state (`unknown`, `booting`, `idle`, `busy`, `dead`), `free_since`, current turn, context tokens and percentage, last seq, peers |
 | `messages` | queue: text, status (`queued`, `dispatching`, `verifying`, `sent`, `failed`, `cancelled`), target and chosen agent, turn id, attempts, error, `not_before`, `ambiguous_at` |
 | `turns` | one row per wrapper turn: origin, start, completion, status, final text, usage |
-| `events` | every stored wrapper event; UNIQUE(agent_id, session_id, seq); the global bigserial id is the SSE id and the page cursor |
+| `events` | every stored wrapper event; UNIQUE(agent_id, wrapper_session_id, seq), where wrapper_session_id is the claude-code-wrapper's own session id; the global bigserial id is the SSE id and the page cursor |
 | `commands` | queue: `interrupt`, `compact`, `restart`, `rebootstrap` with status and result |
 | `leadership_requests` | queue: `handover` (from the leader) or `user` requests with target agent, epoch, status (`queued`, `applied`, `rejected`); the api inserts, the dispatcher decides |
 | `cluster_leaders` | one row per hive: leader agent, `epoch`, `since`, `reason` (`initial`, `handover: <reason>`, `user`, `leader_lost`), `unready_since`, feed cursor and pushed hive-state hash; the dispatcher is the only writer (see Leadership) |
@@ -629,11 +629,11 @@ Check view: `id`, `cluster_id`, `command`, `status`, `exit_code`, `log_tail`, `c
 
 ### `GET /api/v1/clusters/{cluster_id}/events`
 
-Pages stored events. Query `before_id` or `after_id` (mutually exclusive), `limit` (1-500, default 200), `agent_id`, `types` (repeatable or comma-separated). Response 200 `{"events": [...], "has_more_before": bool, "next_after_id": int|null}`; each event has `id`, `cluster_id`, `agent_id`, `session_id`, `seq`, `ts`, `type`, `turn_id`, `data`. Errors: 400 `bad_request` (both cursors), 404 `not_found`.
+Pages stored events. Query `before_id` or `after_id` (mutually exclusive), `limit` (1-500, default 200), `agent_id`, `types` (repeatable or comma-separated). Response 200 `{"events": [...], "has_more_before": bool, "next_after_id": int|null}`; each event has `id`, `cluster_id`, `agent_id`, `wrapper_session_id` (the claude-code-wrapper's own session id), `seq`, `ts`, `type`, `turn_id`, `data`. Errors: 400 `bad_request` (both cursors), 404 `not_found`.
 
 ### `GET /api/v1/clusters/{cluster_id}/events/stream`
 
-SSE stream of the cluster's stored events after a cursor: query `after_id` or the `Last-Event-ID` header; with neither, it starts at the current end. Each frame has `id` = the event id, `event` = the stored event type and `data` = the event JSON. Errors before the stream starts: 400 `bad_request`, 404 `not_found`.
+SSE stream of the cluster's stored events after a cursor: query `after_id` or the `Last-Event-ID` header; with neither, it starts at the current end. Each frame has `id` = the event id, `event` = the stored event type and `data` = the event JSON, with the same fields as a page event (`wrapper_session_id` included). Errors before the stream starts: 400 `bad_request`, 404 `not_found`.
 
 ### `GET /api/v1/clusters/{cluster_id}/files`
 

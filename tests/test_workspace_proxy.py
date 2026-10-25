@@ -43,7 +43,7 @@ async def ready_agent(pool, cluster_id, ordinal, *, state="idle", **kw):
         cluster_id,
         ordinal=ordinal,
         url=kw.pop("url", f"http://10.0.0.{ordinal + 1}:8080"),
-        session_id=kw.pop("session_id", f"ses_{ordinal}"),
+        wrapper_session_id=kw.pop("wrapper_session_id", f"ses_{ordinal}"),
         ready=kw.pop("ready", True),
         **kw,
     )
@@ -70,7 +70,7 @@ async def test_resolve_agent_rules(pool, dsn):
     # ordinal 0: not ready yet; 1: dead; 2: no session; 3: gone; 4: first usable; 5: also usable
     await ready_agent(pool, cid, 0, ready=False)
     await ready_agent(pool, cid, 1, state="dead")
-    await ready_agent(pool, cid, 2, session_id=None)
+    await ready_agent(pool, cid, 2, wrapper_session_id=None)
     from datetime import UTC, datetime
 
     await ready_agent(pool, cid, 3, gone_at=datetime.now(UTC))
@@ -83,7 +83,7 @@ async def test_resolve_agent_rules(pool, dsn):
     assert target.cluster_id == cid
     assert target.pod_name == a4["pod_name"]
     assert target.url == a4["url"]
-    assert target.session_id == "ses_4"
+    assert target.wrapper_session_id == "ses_4"
     assert target.token == token_of(cid)
 
     # explicit agent wins over ordinal order; cluster_id optional but checked
@@ -123,7 +123,7 @@ def test_target_repr_hides_token():
         cluster_id=uuid.uuid4(),
         pod_name="p",
         url="http://w:8080",
-        session_id="s",
+        wrapper_session_id="s",
         token="SECRET-TOKEN",
     )
     assert "SECRET-TOKEN" not in repr(t) and "SECRET-TOKEN" not in str(t)
@@ -135,7 +135,7 @@ def target_for(token="tok-123", url="http://w:8080") -> WrapperTarget:
         cluster_id=uuid.uuid4(),
         pod_name="agent-0",
         url=url,
-        session_id="ses_0",
+        wrapper_session_id="ses_0",
         token=token,
     )
 

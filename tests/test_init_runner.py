@@ -175,7 +175,7 @@ async def test_failure_records_and_releases_sessions(wenv, fake):
     assert not wenv.kube.has("Job", job)
 
     (agent,) = await wenv.agents(c.id)
-    assert agent.session_id is not None
+    assert agent.wrapper_session_id is not None
     assert len(fake.sessions) == 1
     status = await wenv.status(c.id)
     assert status["phase"] == "degraded"
@@ -318,7 +318,7 @@ async def test_sessions_held_while_running(wenv, fake):
     await wenv.tick()
     assert (await wenv.init(c.id))["state"] == "running"
     (agent,) = await wenv.agents(c.id)
-    assert agent.ready and agent.session_id is None
+    assert agent.ready and agent.wrapper_session_id is None
     assert not fake.sessions
     status = await wenv.status(c.id)
     assert status["phase"] == "pending"

@@ -230,7 +230,7 @@ async def test_observe_pods_upserts_agents(env):
     ]
     assert agents[0].url == "http://agent-alpha-0.agent-alpha.agents.svc.cluster.local:8080"
     assert agents[1].url == "http://agent-alpha-1.agent-alpha.agents.svc.cluster.local:8080"
-    assert all(a.gone_at is None and a.session_id is None for a in agents)
+    assert all(a.gone_at is None and a.wrapper_session_id is None for a in agents)
     states = await env.rows(
         "SELECT state FROM agent_status WHERE agent_id = ANY(%s)", ([a.id for a in agents],)
     )
@@ -820,12 +820,12 @@ async def test_agents_repo_writes(env):
             conn, c.id, 0, "agent-alpha-0", "http://x", "Running", True
         )
         assert again.id == a.id and again.ready and again.pod_phase == "Running"
-        assert await agents_repo.set_session(conn, a.id, "s-1", None) is True
+        assert await agents_repo.set_wrapper_session(conn, a.id, "s-1", None) is True
         got = await agents_repo.get_agent(conn, a.id)
-        assert got.session_id == "s-1" and got.session_created_at is not None
-        assert await agents_repo.clear_session(conn, a.id) is True
+        assert got.wrapper_session_id == "s-1" and got.wrapper_session_created_at is not None
+        assert await agents_repo.clear_wrapper_session(conn, a.id) is True
         got = await agents_repo.get_agent(conn, a.id)
-        assert got.session_id is None and got.session_created_at is None
+        assert got.wrapper_session_id is None and got.wrapper_session_created_at is None
         assert await agents_repo.mark_gone(conn, a.id) is True
         assert await agents_repo.mark_gone(conn, a.id) is False  # already gone
         listed = await agents_repo.list_agents(conn, c.id)

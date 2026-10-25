@@ -41,7 +41,7 @@ class Claim:
     target_agent_id: uuid.UUID | None
     agent_id: uuid.UUID
     agent_url: str | None
-    session_id: str
+    wrapper_session_id: str
     free_since: datetime
     dispatched_at: datetime
     previous_dispatched_at: datetime | None
@@ -51,7 +51,7 @@ class Claim:
 class Pick:
     agent_id: uuid.UUID
     url: str | None
-    session_id: str
+    wrapper_session_id: str
     free_since: datetime
     last_dispatched_at: datetime | None
 
@@ -65,7 +65,7 @@ class Verifying:
     error: str | None
     agent_id: uuid.UUID | None
     agent_url: str | None
-    session_id: str | None
+    wrapper_session_id: str | None
     dispatched_at: datetime | None
     ambiguous_at: datetime
     age_seconds: float
@@ -81,7 +81,7 @@ class Command:
     started_at: datetime
     cluster_id: uuid.UUID
     agent_url: str | None
-    session_id: str | None
+    wrapper_session_id: str | None
 
 
 @dataclass(frozen=True)
@@ -194,12 +194,12 @@ ORDER BY head
 """
 
 _PICK = """
-SELECT a.id AS agent_id, a.url, a.session_id, s.free_since, a.last_dispatched_at
+SELECT a.id AS agent_id, a.url, a.wrapper_session_id, s.free_since, a.last_dispatched_at
 FROM agents a JOIN agent_status s ON s.agent_id = a.id
 WHERE a.cluster_id = %(cluster_id)s
   AND a.ready
   AND a.gone_at IS NULL
-  AND a.session_id IS NOT NULL
+  AND a.wrapper_session_id IS NOT NULL
   AND s.state = 'idle'
   AND s.free_since > coalesce(a.last_dispatched_at, '-infinity'::timestamptz)
   AND (%(target)s::uuid IS NULL OR a.id = %(target)s::uuid)
@@ -322,7 +322,7 @@ async def _dispatch(conn: psycopg.AsyncConnection, message_id: int, pick: Pick) 
         target_agent_id=msg["target_agent_id"],
         agent_id=pick.agent_id,
         agent_url=pick.url,
-        session_id=pick.session_id,
+        wrapper_session_id=pick.wrapper_session_id,
         free_since=pick.free_since,
         dispatched_at=msg["dispatched_at"],
         previous_dispatched_at=pick.last_dispatched_at,
@@ -492,7 +492,7 @@ async def list_verifying(conn: psycopg.AsyncConnection, limit: int) -> list[Veri
     rows = await _all(
         conn,
         "SELECT m.id AS message_id, m.cluster_id, m.text, m.attempts, m.error, m.agent_id,"
-        " a.url AS agent_url, a.session_id, m.dispatched_at, m.ambiguous_at,"
+        " a.url AS agent_url, a.wrapper_session_id, m.dispatched_at, m.ambiguous_at,"
         " extract(epoch from now() - m.ambiguous_at)::float8 AS age_seconds"
         " FROM messages m LEFT JOIN agents a ON a.id = m.agent_id"
         " WHERE m.status = 'verifying' ORDER BY m.ambiguous_at, m.id LIMIT %s",
@@ -593,7 +593,7 @@ async def claim_command(conn: psycopg.AsyncConnection, kinds: Sequence[str]) -> 
             "  ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)"
             " AND status = 'queued'"
             " RETURNING id, agent_id, kind, status, created_at, started_at)"
-            " SELECT c.*, a.cluster_id, a.url AS agent_url, a.session_id"
+            " SELECT c.*, a.cluster_id, a.url AS agent_url, a.wrapper_session_id"
             " FROM c JOIN agents a ON a.id = c.agent_id",
             (list(kinds),),
         )

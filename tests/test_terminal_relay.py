@@ -98,7 +98,7 @@ class RelayRig(Rig):
             self.cluster["id"],
             ordinal=ordinal,
             url=upstream.base_url,
-            session_id=sid,
+            wrapper_session_id=sid,
             ready=True,
         )
         await set_agent_status(self.pool, row["id"], state="idle")
@@ -253,7 +253,9 @@ async def test_bearer_sent_upstream(rig):
     async with rig.attach(srow["id"], sid_tid):
         conn = await upstream.next_conn()
         assert upstream.auth == [f"Bearer {token_of(rig.cluster['id'])}"]
-        assert upstream.paths == [f"/v1/sessions/{srow['session_id']}/terminals/{sid_tid}/attach"]
+        assert upstream.paths == [
+            f"/v1/sessions/{srow['wrapper_session_id']}/terminals/{sid_tid}/attach"
+        ]
         assert token_of(rig.cluster["id"]) not in conn.request.path
     await no_relay_tasks()
 

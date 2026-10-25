@@ -209,7 +209,7 @@ class Dispatcher:
             heartbeat = asyncio.create_task(self._heartbeat(claim.message_id))
             try:
                 outcome = await client.submit_turn(
-                    claim.session_id,
+                    claim.wrapper_session_id,
                     claim.text,
                     {"orch_message_id": claim.message_id, "orch_attempt": claim.attempts + 1},
                 )
@@ -265,14 +265,14 @@ class Dispatcher:
                 await queue.complete_command(conn, cmd.id, status, result)
 
     async def _run_command(self, cmd: queue.Command) -> tuple[str, dict[str, Any]]:
-        if not cmd.agent_url or not cmd.session_id:
+        if not cmd.agent_url or not cmd.wrapper_session_id:
             return "failed", {"error": "agent has no session"}
         client = self._client(cmd.cluster_id, cmd.agent_url)
         try:
             if cmd.kind == "interrupt":
-                response = await client.interrupt(cmd.session_id)
+                response = await client.interrupt(cmd.wrapper_session_id)
             else:
-                response = await client.command(cmd.session_id, cmd.kind)
+                response = await client.command(cmd.wrapper_session_id, cmd.kind)
         except Exception as exc:
             return "failed", {"error": f"{type(exc).__name__}: {exc}"}
         return "done", {"response": response}

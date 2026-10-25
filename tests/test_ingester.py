@@ -103,11 +103,11 @@ class RecordingClient(WrapperClient):
         self._opened = opened
         self._replay_all = replay_all
 
-    async def events(self, session_id: str, last_event_id: int | str | None = None):
+    async def events(self, wrapper_session_id: str, last_event_id: int | str | None = None):
         if self._replay_all:
             last_event_id = 0
         self._opened.append(last_event_id)
-        async for env in super().events(session_id, last_event_id):
+        async for env in super().events(wrapper_session_id, last_event_id):
             yield env
 
 
@@ -134,12 +134,12 @@ class Harness:
         await self.fake.start()
         self.client = WrapperClient(self.fake.base_url, token)
         snap = await self.client.create_session("a0", "w")
-        self.session_id = snap.session_id
+        self.wrapper_session_id = snap.wrapper_session_id
         self.agent = await insert_agent(
             self.pool,
             self.cluster_id,
             url=self.fake.base_url,
-            session_id=self.session_id,
+            wrapper_session_id=self.wrapper_session_id,
             ready=True,
         )
         self.agent_id = self.agent["id"]
@@ -186,7 +186,7 @@ class Harness:
         await wait_until(done)
 
     def last_fake_seq(self) -> int:
-        return self.fake.sessions[self.session_id].events[-1]["seq"]
+        return self.fake.sessions[self.wrapper_session_id].events[-1]["seq"]
 
 
 @pytest_asyncio.fixture
@@ -220,7 +220,7 @@ def test_state_mapping() -> None:
 async def test_attach_seeds_status_from_snapshot(harness, pool) -> None:
     h = await harness()
     h.fake.set_context(used_tokens=50_000, window_tokens=200_000)
-    idle_since = h.fake.sessions[h.session_id].idle_since
+    idle_since = h.fake.sessions[h.wrapper_session_id].idle_since
     before = await db_now(pool)
     await h.start()
     await h.stored_through(h.last_fake_seq())
@@ -252,18 +252,18 @@ async def test_attach_seeds_status_from_snapshot(harness, pool) -> None:
 async def test_attach_maps_creating_to_booting(harness, pool) -> None:
     h = await harness()
     # the log is already stored, so the stream replays nothing and the snapshot decides
-    for env in h.fake.sessions[h.session_id].events:
+    for env in h.fake.sessions[h.wrapper_session_id].events:
         await insert_event(
             pool,
             h.cluster_id,
             h.agent_id,
-            session_id=h.session_id,
+            wrapper_session_id=h.wrapper_session_id,
             seq=env["seq"],
             type=env["type"],
             data=env["data"],
         )
     await set_agent_status(pool, h.agent_id, state="idle", free_since=None)
-    h.fake.sessions[h.session_id].state = "creating"
+    h.fake.sessions[h.wrapper_session_id].state = "creating"
     await h.start()
 
     async def booting() -> bool:
@@ -287,11 +287,14 @@ async def test_events_stored_and_notified(harness, pool, listener) -> None:
     await h.stored_through(h.last_fake_seq())
 
     rows = await events_rows(pool, h.agent_id)
-    fake_events = h.fake.sessions[h.session_id].events
+    fake_events = h.fake.sessions[h.wrapper_session_id].events
     assert [r["seq"] for r in rows] == [e["seq"] for e in fake_events]
     assert [r["type"] for r in rows] == [e["type"] for e in fake_events]
     assert rows[-1]["data"] == {"text": "hello there"}
-    assert all(r["cluster_id"] == h.cluster_id and r["session_id"] == h.session_id for r in rows)
+    assert all(
+        r["cluster_id"] == h.cluster_id and r["wrapper_session_id"] == h.wrapper_session_id
+        for r in rows
+    )
 
     await wait_until(lambda: rows[-1]["id"] in [p["max_id"] for p in listener.on("events")])
     assert all(p["cluster_id"] == str(h.cluster_id) for p in listener.on("events"))
@@ -322,7 +325,7 @@ async def test_resume_uses_last_event_id_no_duplicates(harness, pool) -> None:
     rows = await events_rows(pool, h.agent_id)
     seqs = [r["seq"] for r in rows]
     assert seqs == sorted(set(seqs))
-    assert seqs == [e["seq"] for e in h.fake.sessions[h.session_id].events]
+    assert seqs == [e["seq"] for e in h.fake.sessions[h.wrapper_session_id].events]
 
 
 async def test_gap_row_on_seq_hole(harness, pool) -> None:
@@ -442,7 +445,7 @@ async def test_turn_projection(harness, pool) -> None:
     await h.start()
     await h.stored_through(h.last_fake_seq())
 
-    accepted = await h.client.submit_turn(h.session_id, "do the thing")
+    accepted = await h.client.submit_turn(h.wrapper_session_id, "do the thing")
     turn_id = accepted.turn_id
     await h.stored_through(h.last_fake_seq())
     running = (await fetch(pool, "SELECT * FROM turns WHERE turn_id=%s", (turn_id,)))[0]
@@ -464,7 +467,7 @@ async def test_turn_projection(harness, pool) -> None:
     # usage travels on the terminal record; a failed turn projects too
     record = {
         "turn_id": "turn-failed-1",
-        "session_id": h.session_id,
+        "session_id": h.wrapper_session_id,
         "origin": "peer",
         "state": "interrupted",
         "text": "x",
@@ -541,7 +544,7 @@ async def test_agent_removed_stops_stream(harness, pool) -> None:
     ingester = await h.start()
     await h.stored_through(h.last_fake_seq())
     assert h.agent_id in ingester.agent_ids()
-    ses = h.fake.sessions[h.session_id]
+    ses = h.fake.sessions[h.wrapper_session_id]
     await wait_until(lambda: len(ses.subscribers) == 1)
 
     async with pool.connection() as conn:
@@ -559,8 +562,8 @@ async def test_agent_removed_stops_stream(harness, pool) -> None:
 class StubbornClient(RecordingClient):
     """A client whose stream absorbs the first cancellation, as a shielded close can."""
 
-    async def events(self, session_id: str, last_event_id: int | str | None = None):
-        async for env in super().events(session_id, last_event_id):
+    async def events(self, wrapper_session_id: str, last_event_id: int | str | None = None):
+        async for env in super().events(wrapper_session_id, last_event_id):
             yield env
         try:
             await asyncio.Event().wait()
@@ -584,7 +587,11 @@ async def test_cancel_retried_when_stream_absorbs_it(harness, pool) -> None:
     # the refresh loop is not wedged: a new agent still gets its stream
     snap = await h.client.create_session("a1", "w")
     other = await insert_agent(
-        pool, h.cluster_id, url=h.fake.base_url, session_id=snap.session_id, ready=True
+        pool,
+        h.cluster_id,
+        url=h.fake.base_url,
+        wrapper_session_id=snap.wrapper_session_id,
+        ready=True,
     )
     await wait_until(lambda: other["id"] in ingester.agent_ids(), timeout=3)
     await asyncio.wait_for(h.stop(), 3)
@@ -598,12 +605,15 @@ async def test_new_session_restarts_stream(harness, pool) -> None:
     snap = await h.client.create_session("a0-again", "w")
     async with pool.connection() as conn:
         await conn.execute(
-            "UPDATE agents SET session_id=%s WHERE id=%s", (snap.session_id, h.agent_id)
+            "UPDATE agents SET wrapper_session_id=%s WHERE id=%s",
+            (snap.wrapper_session_id, h.agent_id),
         )
 
     async def stored_new() -> bool:
         rows = await fetch(
-            pool, "SELECT count(*) AS n FROM events WHERE session_id=%s", (snap.session_id,)
+            pool,
+            "SELECT count(*) AS n FROM events WHERE wrapper_session_id=%s",
+            (snap.wrapper_session_id,),
         )
         return rows[0]["n"] >= 2
 

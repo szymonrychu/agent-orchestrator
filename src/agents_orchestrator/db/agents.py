@@ -18,8 +18,8 @@ from psycopg.rows import dict_row
 from agents_orchestrator.db.pool import notify
 
 _COLUMNS = (
-    "id, cluster_id, ordinal, pod_name, url, pod_phase, ready, session_id,"
-    " session_created_at, gone_at, last_dispatched_at, pod_ip"
+    "id, cluster_id, ordinal, pod_name, url, pod_phase, ready, wrapper_session_id,"
+    " wrapper_session_created_at, gone_at, last_dispatched_at, pod_ip"
 )
 
 
@@ -32,8 +32,8 @@ class Agent:
     url: str | None
     pod_phase: str | None
     ready: bool
-    session_id: str | None
-    session_created_at: datetime | None
+    wrapper_session_id: str | None
+    wrapper_session_created_at: datetime | None
     gone_at: datetime | None
     last_dispatched_at: datetime | None
     pod_ip: str | None = None
@@ -105,19 +105,20 @@ async def mark_gone(conn: psycopg.AsyncConnection, agent_id: uuid.UUID) -> bool:
         return True
 
 
-async def set_session(
+async def set_wrapper_session(
     conn: psycopg.AsyncConnection,
     agent_id: uuid.UUID,
-    session_id: str,
+    wrapper_session_id: str,
     created_at: datetime | None,
 ) -> bool:
     """Record the agent's wrapper session; `created_at` None means the database clock."""
     async with conn.transaction():
         row = await _one(
             conn,
-            "UPDATE agents SET session_id = %s, session_created_at = coalesce(%s, now())"
+            "UPDATE agents SET wrapper_session_id = %s,"
+            " wrapper_session_created_at = coalesce(%s, now())"
             " WHERE id = %s RETURNING cluster_id",
-            (session_id, created_at, agent_id),
+            (wrapper_session_id, created_at, agent_id),
         )
         if row is None:
             return False
@@ -125,11 +126,11 @@ async def set_session(
         return True
 
 
-async def clear_session(conn: psycopg.AsyncConnection, agent_id: uuid.UUID) -> bool:
+async def clear_wrapper_session(conn: psycopg.AsyncConnection, agent_id: uuid.UUID) -> bool:
     async with conn.transaction():
         row = await _one(
             conn,
-            "UPDATE agents SET session_id = NULL, session_created_at = NULL"
+            "UPDATE agents SET wrapper_session_id = NULL, wrapper_session_created_at = NULL"
             " WHERE id = %s RETURNING cluster_id",
             (agent_id,),
         )

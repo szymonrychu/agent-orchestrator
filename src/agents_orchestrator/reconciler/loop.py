@@ -39,7 +39,7 @@ from agents_orchestrator.k8s.render import pod_url, render_cluster
 from agents_orchestrator.reconciler.checks import CheckRunner
 from agents_orchestrator.reconciler.discard_hook import HookResult, resolve_hook, run_discard_hook
 from agents_orchestrator.reconciler.init import InitGate, InitRunner
-from agents_orchestrator.reconciler.sessions import SessionBootstrapper
+from agents_orchestrator.reconciler.wrapper_sessions import WrapperSessionBootstrapper
 from agents_orchestrator.settings import Settings
 from agents_orchestrator.tokens import tokens_for
 
@@ -76,7 +76,9 @@ class Reconciler:
         self.checks = CheckRunner(pool, kube, settings)
         self.init = InitRunner(pool, kube, settings, write_status=self._write_status)
         self.bootstrapper = (
-            SessionBootstrapper(pool, wrapper_factory) if wrapper_factory is not None else None
+            WrapperSessionBootstrapper(pool, wrapper_factory)
+            if wrapper_factory is not None
+            else None
         )
 
     # ------------------------------------------------------------------ lifecycle
@@ -555,8 +557,8 @@ class Reconciler:
         if cluster.desired == "deleting":
             return "failed", {"error": "cluster_deleting"}
         async with self.pool.connection() as conn:
-            await agents_repo.clear_session(conn, agent.id)
-        agent = replace(agent, session_id=None, session_created_at=None)
+            await agents_repo.clear_wrapper_session(conn, agent.id)
+        agent = replace(agent, wrapper_session_id=None, wrapper_session_created_at=None)
         if self.bootstrapper is None or not agent.ready:
             return "done", {"cleared": True, "bootstrapped": False}
         gate = InitGate.of(cluster.status.get("init"), cluster.spec.init_scripts)

@@ -307,7 +307,7 @@ async def fake() -> AsyncIterator[FakeWrapper]:
 async def _session(fake: FakeWrapper) -> tuple[WrapperClient, str]:
     client = WrapperClient(fake.base_url, TOKEN, send_timeout=0.5)
     snap = await client.create_session("c", "c")
-    return client, snap.session_id
+    return client, snap.wrapper_session_id
 
 
 async def test_fake_status_delay_and_reset_controls(fake: FakeWrapper) -> None:

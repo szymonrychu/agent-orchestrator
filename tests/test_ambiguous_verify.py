@@ -51,9 +51,9 @@ class Env:
 
     async def agent(self, session: str | None = None) -> dict:
         if session is None:
-            session = (await self.client.create_session("s", "/w")).session_id
+            session = (await self.client.create_session("s", "/w")).wrapper_session_id
         agent = await insert_agent(
-            self.pool, self.cid, ready=True, session_id=session, url=self.fake.base_url
+            self.pool, self.cid, ready=True, wrapper_session_id=session, url=self.fake.base_url
         )
         await set_agent_status(self.pool, agent["id"], state="idle")
         await self.exec(
@@ -258,7 +258,7 @@ async def test_ambiguous_fail_keeps_newer_reservation(env):
 
 async def test_stale_dispatching_resolved_by_verifier(env):
     agent = await env.agent()
-    session = agent["session_id"]
+    session = agent["wrapper_session_id"]
     m = await insert_message(env.pool, env.cid, status="dispatching", agent_id=agent["id"])
     await env.exec(
         "UPDATE messages SET dispatched_at = now() - interval '1 hour', heartbeat_at = NULL"
@@ -279,7 +279,7 @@ async def test_stale_dispatching_resolved_by_verifier(env):
 
 async def test_two_verifiers_resolve_once(env):
     agent = await env.agent()
-    session = agent["session_id"]
+    session = agent["wrapper_session_id"]
     started = await env.verifying(agent, age=0)
     turn_id = await env.submit(session, {"orch_message_id": started["id"]})
     await env.fake.complete_turn(turn_id)
@@ -302,7 +302,7 @@ async def test_two_verifiers_resolve_once(env):
 
 async def test_matches_on_message_id_not_any_turn(env):
     agent = await env.agent()
-    session = agent["session_id"]
+    session = agent["wrapper_session_id"]
     m = await env.verifying(agent, age=SETTLE + 0.1)
     # older turns of other messages, then a peer turn running right now on this agent
     for other in (m["id"] + 100, m["id"] + 101):

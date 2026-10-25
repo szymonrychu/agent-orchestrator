@@ -58,8 +58,8 @@ async def insert_agent(
     url: str | None = None,
     pod_phase: str | None = None,
     ready: bool = False,
-    session_id: str | None = None,
-    session_created_at: datetime | None = None,
+    wrapper_session_id: str | None = None,
+    wrapper_session_created_at: datetime | None = None,
     gone_at: datetime | None = None,
     last_dispatched_at: datetime | None = None,
     id: uuid.UUID | None = None,
@@ -72,8 +72,8 @@ async def insert_agent(
             ordinal = (await cur.fetchone())[0]
     return await _one(
         pool,
-        "INSERT INTO agents (id, cluster_id, ordinal, pod_name, url, pod_phase, ready, session_id,"
-        " session_created_at, gone_at, last_dispatched_at)"
+        "INSERT INTO agents (id, cluster_id, ordinal, pod_name, url, pod_phase, ready,"
+        " wrapper_session_id, wrapper_session_created_at, gone_at, last_dispatched_at)"
         " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
         (
             id or uuid.uuid4(),
@@ -83,8 +83,8 @@ async def insert_agent(
             url,
             pod_phase,
             ready,
-            session_id,
-            session_created_at,
+            wrapper_session_id,
+            wrapper_session_created_at,
             gone_at,
             last_dispatched_at,
         ),
@@ -183,7 +183,7 @@ async def insert_event(
     cluster_id: uuid.UUID,
     agent_id: uuid.UUID,
     *,
-    session_id: str = "s1",
+    wrapper_session_id: str = "s1",
     seq: int | None = None,
     type: str = "message",
     turn_id: str | None = None,
@@ -194,19 +194,20 @@ async def insert_event(
     if seq is None:
         async with pool.connection() as conn:
             cur = await conn.execute(
-                "SELECT COALESCE(MAX(seq)+1, 1) FROM events WHERE agent_id=%s AND session_id=%s",
-                (agent_id, session_id),
+                "SELECT COALESCE(MAX(seq)+1, 1) FROM events"
+                " WHERE agent_id=%s AND wrapper_session_id=%s",
+                (agent_id, wrapper_session_id),
             )
             seq = (await cur.fetchone())[0]
     return await _one(
         pool,
-        "INSERT INTO events (cluster_id, agent_id, session_id, seq, ts, type, turn_id, data,"
-        " created_at) VALUES (%s,%s,%s,%s,COALESCE(%s, now()),%s,%s,%s,"
+        "INSERT INTO events (cluster_id, agent_id, wrapper_session_id, seq, ts, type, turn_id,"
+        " data, created_at) VALUES (%s,%s,%s,%s,COALESCE(%s, now()),%s,%s,%s,"
         " COALESCE(%s, clock_timestamp())) RETURNING *",
         (
             cluster_id,
             agent_id,
-            session_id,
+            wrapper_session_id,
             seq,
             ts,
             type,

@@ -127,7 +127,7 @@ def state_hash(leader: str, epoch: int, members: list[dict[str, Any]]) -> str:
         leader,
         epoch,
         [
-            [m["pod_name"], m["ready"], m["state"], bucket, m["session_id"]]
+            [m["pod_name"], m["ready"], m["state"], bucket, m["wrapper_session_id"]]
             for m, bucket in zip(members, pct, strict=True)
         ],
     ]
@@ -154,7 +154,7 @@ class _Plan:
 
     @property
     def receivers(self) -> list[dict[str, Any]]:
-        return [m for m in self.members if m["url"] and m["session_id"]]
+        return [m for m in self.members if m["url"] and m["wrapper_session_id"]]
 
 
 async def _try_lock(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID) -> bool:
@@ -181,7 +181,7 @@ async def _read(
         if leader is None:
             return None
         await cur.execute(
-            "SELECT a.id, a.pod_name, a.url, a.session_id, a.ready,"
+            "SELECT a.id, a.pod_name, a.url, a.wrapper_session_id, a.ready,"
             " coalesce(s.state, 'unknown') AS state, s.context_pct"
             " FROM agents a LEFT JOIN agent_status s ON s.agent_id = a.id"
             " WHERE a.cluster_id = %s AND a.gone_at IS NULL ORDER BY a.ordinal",
@@ -236,16 +236,18 @@ def _load_hashes(raw: str | None) -> dict[str, str]:
 
 
 async def _note(
-    client: WrapperClient, session_id: str, text: str, key: str | None = None
+    client: WrapperClient, wrapper_session_id: str, text: str, key: str | None = None
 ) -> NoteOutcome:
     try:
         async with asyncio.timeout(PUSH_TIMEOUT_SECONDS):
-            return await client.post_note(session_id, text, key=key, timeout=PUSH_TIMEOUT_SECONDS)
+            return await client.post_note(
+                wrapper_session_id, text, key=key, timeout=PUSH_TIMEOUT_SECONDS
+            )
     except TimeoutError:
-        log.info("note to session %s timed out", session_id)
+        log.info("note to session %s timed out", wrapper_session_id)
         return "failed"
     except Exception:
-        log.exception("note to session %s failed", session_id)
+        log.exception("note to session %s failed", wrapper_session_id)
         return "failed"
 
 
@@ -266,13 +268,13 @@ async def _push_agent(
             plan.static,
         )
         text = render_hive_state(payload, plan.slug, plan.auto_compact_pct)
-        state_outcome = await _note(client, member["session_id"], text, STATE_KEY)
+        state_outcome = await _note(client, member["wrapper_session_id"], text, STATE_KEY)
         sent += state_outcome == "ok"
         if state_outcome != "ok":
             return state_outcome, sent  # no point trying the feed on a wrapper that said no
     text = feed.render_feed(plan.lines, member["pod_name"], max_chars=FEED_MAX_CHARS)
     if text:
-        sent += await _note(client, member["session_id"], text) == "ok"
+        sent += await _note(client, member["wrapper_session_id"], text) == "ok"
     return state_outcome, sent
 
 

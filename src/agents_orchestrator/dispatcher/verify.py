@@ -122,11 +122,11 @@ class Verifier:
 
     async def _lookup(self, msg: queue.Verifying) -> Lookup:
         """Ask the original agent's wrapper whether a turn carrying this message id exists."""
-        if not msg.agent_url or not msg.session_id:
+        if not msg.agent_url or not msg.wrapper_session_id:
             return Lookup(Answer.UNKNOWN)
         token = tokens_for(self.settings, msg.cluster_id).auth
         client = self.wrapper_factory(msg.agent_url, token)
-        session = msg.session_id
+        session = msg.wrapper_session_id
         try:
             try:
                 snap = await client.get_session(session)

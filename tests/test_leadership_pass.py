@@ -36,7 +36,7 @@ async def hive(pool, n: int = 3, *, ready: bool = True, max_replicas: int = 4) -
     c = await insert_cluster(pool, spec={"replicas": n, "max_replicas": max_replicas})
     agents = []
     for i in range(n):
-        a = await insert_agent(pool, c["id"], ordinal=i, ready=ready, session_id=f"s{i}")
+        a = await insert_agent(pool, c["id"], ordinal=i, ready=ready, wrapper_session_id=f"s{i}")
         await set_agent_status(pool, a["id"], state="idle")
         agents.append(a)
     return c, agents
@@ -148,7 +148,9 @@ async def test_initial_leader_needs_ready_agent_with_session(pool):
     c, (a0, a1, _a2) = await hive(pool, ready=False)
     assert await lpass(pool, c["id"]) is None
     assert await leader_row(pool, c["id"]) is None
-    await run(pool, "UPDATE agents SET ready = true, session_id = NULL WHERE id = %s", (a0["id"],))
+    await run(
+        pool, "UPDATE agents SET ready = true, wrapper_session_id = NULL WHERE id = %s", (a0["id"],)
+    )
     assert await lpass(pool, c["id"]) is None  # ready but no session yet
     await run(pool, "UPDATE agents SET ready = true WHERE id = %s", (a1["id"],))
     change = await lpass(pool, c["id"])
@@ -392,9 +394,9 @@ async def test_concurrent_passes_single_change(pool, dsn):
 
 async def test_alone_untouched_and_notify(pool, dsn):
     alone = await insert_cluster(pool, spec={"replicas": 1})
-    solo = await insert_agent(pool, alone["id"], ordinal=0, ready=True, session_id="s0")
+    solo = await insert_agent(pool, alone["id"], ordinal=0, ready=True, wrapper_session_id="s0")
     capped = await insert_cluster(pool, spec={"replicas": 1, "max_replicas": 1})
-    await insert_agent(pool, capped["id"], ordinal=0, ready=True, session_id="s0")
+    await insert_agent(pool, capped["id"], ordinal=0, ready=True, wrapper_session_id="s0")
     rid = await request(pool, alone["id"], "user", None, solo["id"], "user", None)
     for cl in (alone, capped):
         assert await lpass(pool, cl["id"]) is None
@@ -499,7 +501,7 @@ async def lease_hive(pool, *, lease: int = 60, n: int = 3, age: int = 120) -> tu
     )
     agents = []
     for i in range(n):
-        a = await insert_agent(pool, c["id"], ordinal=i, ready=True, session_id=f"s{i}")
+        a = await insert_agent(pool, c["id"], ordinal=i, ready=True, wrapper_session_id=f"s{i}")
         await set_agent_status(pool, a["id"], state="idle")
         agents.append(a)
     await set_leader(pool, c["id"], agents[0]["id"], epoch=3)

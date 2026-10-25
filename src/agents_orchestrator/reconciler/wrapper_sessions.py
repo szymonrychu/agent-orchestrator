@@ -51,7 +51,7 @@ def _describe(exc: Exception) -> str:
     return str(exc) or type(exc).__name__
 
 
-class SessionBootstrapper:
+class WrapperSessionBootstrapper:
     def __init__(
         self,
         pool: AsyncConnectionPool,
@@ -87,8 +87,10 @@ class SessionBootstrapper:
 
     async def _bootstrap(self, client: Any, agent: Agent, spec: ClusterSpec) -> str | None:
         listed = await client.list_sessions()
-        if agent.session_id is not None:
-            stored = next((s for s in listed if s.session_id == agent.session_id), None)
+        if agent.wrapper_session_id is not None:
+            stored = next(
+                (s for s in listed if s.wrapper_session_id == agent.wrapper_session_id), None
+            )
             if stored is not None and stored.state in ADOPTABLE:
                 return None
             if (
@@ -97,28 +99,30 @@ class SessionBootstrapper:
                 and stored.has_transcript is not False
             ):
                 try:
-                    resumed = await client.resume_session(stored.session_id)
+                    resumed = await client.resume_session(stored.wrapper_session_id)
                 except WrapperError as exc:
                     if exc.status >= 500 or exc.status == 429:
                         raise
-                    log.info("resume of stored %s refused: %s", stored.session_id, exc)
+                    log.info("resume of stored %s refused: %s", stored.wrapper_session_id, exc)
                 else:
                     async with self.pool.connection() as conn:
-                        await agents_repo.set_session(
-                            conn, agent.id, resumed.session_id, resumed.created_at
+                        await agents_repo.set_wrapper_session(
+                            conn, agent.id, resumed.wrapper_session_id, resumed.created_at
                         )
                     return None
             async with self.pool.connection() as conn:
-                await agents_repo.clear_session(conn, agent.id)
+                await agents_repo.clear_wrapper_session(conn, agent.id)
             log.info(
                 "session %s of %s is %s, bootstrapping again",
-                agent.session_id,
+                agent.wrapper_session_id,
                 agent.pod_name,
                 stored.state if stored else "gone",
             )
         snap = await self._pick(client, listed, spec)
         async with self.pool.connection() as conn:
-            await agents_repo.set_session(conn, agent.id, snap.session_id, snap.created_at)
+            await agents_repo.set_wrapper_session(
+                conn, agent.id, snap.wrapper_session_id, snap.created_at
+            )
         return None
 
     async def _pick(self, client: Any, listed: list[Snapshot], spec: ClusterSpec) -> Snapshot:
@@ -129,11 +133,11 @@ class SessionBootstrapper:
         for snap in ordered:
             if snap.state in RESUMABLE and snap.has_transcript is not False:
                 try:
-                    return await client.resume_session(snap.session_id)
+                    return await client.resume_session(snap.wrapper_session_id)
                 except WrapperError as exc:
                     if exc.status >= 500 or exc.status == 429:
                         raise
-                    log.info("resume of %s refused: %s", snap.session_id, exc)
+                    log.info("resume of %s refused: %s", snap.wrapper_session_id, exc)
         return await client.create_session(
             spec.workdir, spec.workdir, model=spec.model, effort=spec.effort
         )
