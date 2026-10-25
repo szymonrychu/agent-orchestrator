@@ -38,6 +38,8 @@ pytestmark = pytest.mark.e2e
 
 NAMESPACE = os.environ.get("ORCH_E2E_NAMESPACE", "agents")
 RELEASE = os.environ.get("ORCH_E2E_RELEASE", "agent-orchestrator")
+# not a secret: its sha256 is serviceApi.tokenHashes.e2e in e2e/values-kind.yaml
+E2E_SERVICE_TOKEN = "e2e-service-token-not-a-secret"
 API_URL = os.environ.get("ORCH_E2E_API_URL", "http://127.0.0.1:18080")
 KUBE_CONTEXT = os.environ.get("ORCH_E2E_KUBE_CONTEXT", "kind-agent-orchestrator-e2e")
 SLUG = "e2e-rr"
@@ -661,6 +663,59 @@ def test_in_cluster_pod_refused_by_allowlist(api: httpx.Client) -> None:
     # the port-forwarded caller arrives from loopback, inside ORCH_ALLOWED_CIDRS
     resp = api.get("/clusters")
     assert resp.status_code == 200, resp.text
+
+
+def test_in_cluster_service_token(api: httpx.Client) -> None:
+    image = kube_json("get", "deployment", f"{RELEASE}-api")["spec"]["template"]["spec"][
+        "containers"
+    ][0]["image"]
+    pod = f"service-probe-{uuid.uuid4().hex[:6]}"
+    services = f"http://{RELEASE}-services.{NAMESPACE}.svc:8002"
+    main = f"http://{RELEASE}.{NAMESPACE}.svc"
+    script = (
+        "import json, urllib.request, urllib.error\n"
+        "def call(method, url, token):\n"
+        "    req = urllib.request.Request(url, method=method)\n"
+        "    if token:\n"
+        "        req.add_header('Authorization', 'Bearer ' + token)\n"
+        "    try:\n"
+        "        return urllib.request.urlopen(req, timeout=10).status\n"
+        "    except urllib.error.HTTPError as e:\n"
+        "        return e.code\n"
+        f"tok = '{E2E_SERVICE_TOKEN}'\n"
+        "out = {\n"
+        f"    'with': call('GET', '{services}/api/v1/presets', tok),\n"
+        f"    'without': call('GET', '{services}/api/v1/presets', None),\n"
+        f"    'delete': call('DELETE', '{services}/api/v1/clusters/does-not-matter', tok),\n"
+        f"    'main': call('GET', '{main}/api/v1/presets', tok),\n"
+        "}\n"
+        "print('RESULT ' + json.dumps(out))\n"
+    )
+    overrides = {
+        "spec": {
+            "restartPolicy": "Never",
+            "automountServiceAccountToken": False,
+            "containers": [
+                {
+                    "name": "probe",
+                    "image": image,
+                    "imagePullPolicy": "IfNotPresent",
+                    "command": ["python", "-c", script],
+                }
+            ],
+        }
+    }
+    kubectl(
+        "run", pod, f"--image={image}", "--restart=Never", f"--overrides={json.dumps(overrides)}"
+    )
+    try:
+        kubectl("wait", f"pod/{pod}", "--for=jsonpath={.status.phase}=Succeeded", "--timeout=180s")
+        logs = kubectl("logs", pod).stdout
+    finally:
+        kubectl("delete", "pod", pod, "--wait=false", check=False)
+    line = next(ln for ln in logs.splitlines() if ln.startswith("RESULT "))
+    result = json.loads(line.removeprefix("RESULT "))
+    assert result == {"with": 200, "without": 401, "delete": 403, "main": 403}, result
 
 
 def test_files_list_and_read_through_api(api: httpx.Client, cluster: dict[str, Any]) -> None:
