@@ -1,8 +1,13 @@
-"""The Python project is agents-orchestrator (design D1, D10)."""
+"""The project is agents-orchestrator in every tracked file (design D1, D10, D12).
+
+Dated-history files (MEMORY.md, ROADMAP.md, CHANGELOG.md, docs/plans/) keep the old name; this
+file names it to pin its retirement.
+"""
 
 from __future__ import annotations
 
 import importlib
+import re
 import subprocess
 import tomllib
 from pathlib import Path
@@ -63,15 +68,27 @@ def test_chart_and_ci_named() -> None:
     assert 'helm push "agents-orchestrator-$VERSION.tgz"' in runs
     assert '"$CHART_REPO/agents-orchestrator"' in runs
 
-    paths = ("chart/", ".github/", "mise.toml", "scripts/", "e2e/", "tests/")
+
+def test_old_name_gone_from_every_tracked_file() -> None:
     out = _git(
         "grep",
         "-n",
         "-E",
         "agent[-_]orchestrator",
         "--",
-        *paths,
+        ".",
+        ":(exclude)MEMORY.md",
+        ":(exclude)ROADMAP.md",
+        ":(exclude)CHANGELOG.md",
+        ":(exclude)docs/plans/",
         ":(exclude)tests/test_project_name.py",
     )
     # git grep exits 1 when nothing matches, 0 with matches, >1 on error
     assert out.returncode == 1, out.stdout or out.stderr
+
+
+def test_no_tracked_path_names_the_old_project() -> None:
+    out = _git("ls-files")
+    assert out.returncode == 0, out.stderr
+    old = [p for p in out.stdout.split() if re.search("agent[-_]orchestrator", p)]
+    assert old == []

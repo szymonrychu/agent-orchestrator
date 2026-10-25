@@ -200,11 +200,11 @@ cnpg:
     size: 2Gi
     storageClass: ""
   resources: {}
-  # Rendered verbatim as the Cluster spec.backup when non-empty
+  # Rendered verbatim as the CloudNativePG Cluster spec.backup when non-empty
   # (barmanObjectStore, retentionPolicy, ...).
   backup: {}
 
-# Key that encrypts stored per-cluster tokens (ORCH_MASTER_KEY). Set value (stored in
+# Key that encrypts stored per-session tokens (ORCH_MASTER_KEY). Set value (stored in
 # <fullname>-master-key) or point existingSecret at your own Secret; one is required.
 masterKey:
   existingSecret: ""

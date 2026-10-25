@@ -1,6 +1,6 @@
 apiVersion: v2
 name: agents-orchestrator
-description: Web UI and /api/v1 that define, run, message and discard clusters of claude-code-wrapper pods
+description: Web UI and /api/v1 that define, run, message and discard sessions of claude-code-wrapper pods
 
 # A chart can be either an 'application' or a 'library' chart.
 #

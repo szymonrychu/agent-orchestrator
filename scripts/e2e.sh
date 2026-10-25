@@ -20,7 +20,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-CLUSTER=agents-orchestrator-e2e
+KIND_CLUSTER=agents-orchestrator-e2e
 NS=agents
 RELEASE=agents-orchestrator
 ORCH_IMAGE=agents-orchestrator:e2e
@@ -53,10 +53,10 @@ cleanup() {
   [ -n "$PF_PID" ] && kill "$PF_PID" 2>/dev/null
   if [ "$rc" -ne 0 ] && [ -f "$KUBECONFIG" ]; then diagnostics; fi
   if [ "${E2E_KEEP:-}" = 1 ]; then
-    log "keeping kind cluster $CLUSTER (KUBECONFIG=$KUBECONFIG)"
+    log "keeping kind cluster $KIND_CLUSTER (KUBECONFIG=$KUBECONFIG)"
   else
-    log "deleting kind cluster $CLUSTER"
-    kind delete cluster --name "$CLUSTER" >/dev/null 2>&1
+    log "deleting kind cluster $KIND_CLUSTER"
+    kind delete cluster --name "$KIND_CLUSTER" >/dev/null 2>&1
     rm -rf "$WORK"
   fi
   exit "$rc"
@@ -105,7 +105,7 @@ load_image() {
   # Older daemons have no --platform; their single-platform images save as they are.
   docker save --platform "$PLATFORM" -o "$tar" "$image" 2>/dev/null \
     || docker save -o "$tar" "$image"
-  kind load image-archive --name "$CLUSTER" "$tar"
+  kind load image-archive --name "$KIND_CLUSTER" "$tar"
   rm -f "$tar"
 }
 
@@ -164,7 +164,7 @@ EOF
 # ReadWriteMany). One node, so a node directory is a shared filesystem.
 setup_local_path_shared() {
   local node shared=/var/local-path-provisioner-shared
-  for node in $(kind get nodes --name "$CLUSTER"); do
+  for node in $(kind get nodes --name "$KIND_CLUSTER"); do
     docker exec "$node" mkdir -p "$shared"
     docker exec "$node" chmod 0777 "$shared"
   done
@@ -185,7 +185,7 @@ EOF
 # Option 2: a no-provisioner StorageClass with pre-created world-writable hostPath PVs.
 setup_hostpath() {
   local node i
-  for node in $(kind get nodes --name "$CLUSTER"); do
+  for node in $(kind get nodes --name "$KIND_CLUSTER"); do
     for i in 0 1 2 3; do
       docker exec "$node" mkdir -p "/var/e2e-rwx/pv$i"
       docker exec "$node" chmod 0777 "/var/e2e-rwx/pv$i"
@@ -223,7 +223,7 @@ choose_rwx_storage_class() {
   echo "local-path shared-filesystem mode did not provide RWX; using hostPath PVs" >&2
   setup_hostpath >&2
   probe_rwx e2e-rwx-hostpath >&2
-  # the probe claim consumed one Retain PV; free it for the agent clusters
+  # the probe claim consumed one Retain PV; free it for the agent sessions
   kubectl get pv -o name | while read -r pv; do
     if [ "$(kubectl get "$pv" -o jsonpath='{.status.phase}')" = Released ]; then
       kubectl patch "$pv" --type json -p '[{"op":"remove","path":"/spec/claimRef"}]' >/dev/null
@@ -232,8 +232,8 @@ choose_rwx_storage_class() {
   echo e2e-rwx-hostpath
 }
 
-log "creating kind cluster $CLUSTER"
-kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true
+log "creating kind cluster $KIND_CLUSTER"
+kind delete cluster --name "$KIND_CLUSTER" >/dev/null 2>&1 || true
 kind create cluster --config e2e/kind-config.yaml --kubeconfig "$KUBECONFIG" --wait 180s
 
 log "building $ORCH_IMAGE"
@@ -289,7 +289,7 @@ E2E_ENV=(
   "ORCH_E2E_API_URL=http://127.0.0.1:$PORT"
   "ORCH_E2E_NAMESPACE=$NS"
   "ORCH_E2E_RELEASE=$RELEASE"
-  "ORCH_E2E_KUBE_CONTEXT=kind-$CLUSTER"
+  "ORCH_E2E_KUBE_CONTEXT=kind-$KIND_CLUSTER"
 )
 
 if [ -n "${E2E_HOLD_FILE:-}" ]; then

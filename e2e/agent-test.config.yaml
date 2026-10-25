@@ -32,7 +32,7 @@ mise:
   install_workdir: false
   required: false
 
-# The orchestrator renders its own config for kind clusters (notes.enabled follows the hive
+# The orchestrator renders its own config for the sessions it runs (notes.enabled follows the hive
 # flag); this file is for the contract suite and a lone image run, so notes are on here too.
 notes:
   enabled: true
