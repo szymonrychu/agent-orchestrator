@@ -78,7 +78,9 @@ class _CappedWriter(io.RawIOBase):
         return size
 
     def flush(self) -> None:
-        self._out.flush()
+        # The caller owns `out` and may close it before this wrapper is finalized.
+        if not self._out.closed:
+            self._out.flush()
 
 
 def _excluded(rel: str, patterns: list[str]) -> bool:

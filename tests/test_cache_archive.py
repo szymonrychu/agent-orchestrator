@@ -295,3 +295,23 @@ def test_refuses_empty_or_root_workdir(tmp_path: Path, monkeypatch: pytest.Monke
         with pytest.raises(ValueError):
             unpack(src, bad)
         assert src.tell() == 0
+
+
+def test_pack_leaves_no_finalizer_error_after_out_is_closed(tmp_path, monkeypatch):
+    """Closing `out` after pack must not make the cap wrapper's finalizer flush a closed file.
+
+    The cache Job's outcome line is the last log line; a late "Exception ignored" on stderr
+    would follow it.
+    """
+    import gc
+    import sys
+
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "a.txt").write_text("alpha")
+    unraisable: list[object] = []
+    monkeypatch.setattr(sys, "unraisablehook", unraisable.append)
+    with (tmp_path / "out.tar.zst").open("wb") as out:
+        pack(work, out, exclude=[], max_bytes=BIG)
+    gc.collect()
+    assert unraisable == []
