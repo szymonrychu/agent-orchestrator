@@ -520,7 +520,11 @@ def test_main_agent_only_tools_rendered():
 
 @pytest.mark.parametrize(
     "low,high",
-    [({"replicas": 1}, {"replicas": 3}), ({"replicas": 2}, {"replicas": 4})],
+    [
+        ({"replicas": 1}, {"replicas": 3}),
+        ({"replicas": 2}, {"replicas": 4}),
+        ({"replicas": 2, "init_scripts": ["echo a"]}, {"replicas": 2, "init_scripts": ["b", "c"]}),
+    ],
 )
 def test_runtime_fields_change_only_statefulset_replicas(low, high):
     a = _render(make_cluster(max_replicas=4, **low))
@@ -530,6 +534,13 @@ def test_runtime_fields_change_only_statefulset_replicas(low, high):
     for objs in (a, b):
         sts_of(objs)["spec"]["replicas"] = 0
     assert a == b
+
+
+def test_init_scripts_never_rendered():
+    a = _render(make_cluster(init_scripts=["echo a"]))
+    b = _render(make_cluster(init_scripts=["echo b", "echo c"]))
+    c = _render(make_cluster())
+    assert a == b == c
 
 
 def _on_start_plugins(cluster) -> list[str]:

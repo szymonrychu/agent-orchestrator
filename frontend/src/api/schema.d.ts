@@ -675,6 +675,11 @@ export interface components {
             /** Image */
             image?: string | null;
             /**
+             * Init Scripts
+             * @default []
+             */
+            init_scripts: string[];
+            /**
              * Max Attempts
              * @default 5
              */
@@ -1194,6 +1199,7 @@ export interface components {
             /**
              * @default {
              *       "env": {},
+             *       "init_scripts": [],
              *       "max_attempts": 5,
              *       "max_replicas": 1,
              *       "peers": true,

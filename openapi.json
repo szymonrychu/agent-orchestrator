@@ -309,6 +309,14 @@
             ],
             "title": "Image"
           },
+          "init_scripts": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Init Scripts",
+            "type": "array"
+          },
           "max_attempts": {
             "default": 5,
             "maximum": 10.0,
@@ -1752,6 +1760,7 @@
             "$ref": "#/components/schemas/ClusterSpec",
             "default": {
               "env": {},
+              "init_scripts": [],
               "max_attempts": 5,
               "max_replicas": 1,
               "peers": true,
