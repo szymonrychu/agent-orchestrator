@@ -534,6 +534,18 @@
       },
       "ClusterView": {
         "properties": {
+          "closes_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closes At"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -586,6 +598,29 @@
               }
             ],
             "title": "Leader Epoch"
+          },
+          "leader_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leader Reason"
+          },
+          "leader_since": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leader Since"
           },
           "max_replicas": {
             "title": "Max Replicas",
@@ -655,6 +690,9 @@
           "static",
           "leader_agent_id",
           "leader_epoch",
+          "leader_since",
+          "leader_reason",
+          "closes_at",
           "init_edited_since_run"
         ],
         "title": "ClusterView",

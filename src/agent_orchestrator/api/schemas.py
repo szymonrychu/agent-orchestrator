@@ -68,6 +68,9 @@ class ClusterView(BaseModel):
     static: bool
     leader_agent_id: uuid.UUID | None
     leader_epoch: int | None
+    leader_since: datetime | None
+    leader_reason: str | None
+    closes_at: datetime | None
     init_edited_since_run: bool
 
 

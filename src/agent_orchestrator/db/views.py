@@ -19,13 +19,14 @@ SELECT c.id AS cluster_id,
          WHERE m.cluster_id = c.id AND m.status = 'queued') AS queued,
        (SELECT count(*) FROM messages m
          WHERE m.cluster_id = c.id AND m.status = 'failed') AS failed,
-       l.agent_id AS leader_agent_id, l.epoch AS leader_epoch
+       l.agent_id AS leader_agent_id, l.epoch AS leader_epoch,
+       l.since AS leader_since, l.reason AS leader_reason
 FROM clusters c
 LEFT JOIN cluster_leaders l ON l.cluster_id = c.id
 LEFT JOIN agents a ON a.cluster_id = c.id
 LEFT JOIN agent_status s ON s.agent_id = a.id
 {where}
-GROUP BY c.id, l.agent_id, l.epoch
+GROUP BY c.id, l.agent_id, l.epoch, l.since, l.reason
 """
 
 _AGENTS = """
