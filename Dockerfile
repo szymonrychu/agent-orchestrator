@@ -16,6 +16,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
     && uv sync --frozen --no-dev \
     && apt-get purge -y git && apt-get autoremove -y && rm -rf /var/lib/apt/lists/* /root/.cache
 COPY --from=frontend /build/frontend/dist /app/static
-ENV PATH="/app/.venv/bin:$PATH" ORCH_STATIC_DIR=/app/static
+ENV PATH="/app/.venv/bin:$PATH"
 USER 1000
 ENTRYPOINT ["orch"]

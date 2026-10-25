@@ -117,7 +117,6 @@ class Settings(BaseSettings):
     http_port: int = 8000
     agent_port: int = 8001
     agent_api_url: str | None = None
-    static_dir: str = ""
     dispatch_poll_seconds: float = 2
     reconcile_poll_seconds: float = 10
     ingest_refresh_seconds: float = 5
