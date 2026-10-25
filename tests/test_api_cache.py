@@ -81,3 +81,8 @@ async def test_meta_cache(pool, dsn):
         assert r.json()["cache"] == {"available": True, "max_bytes": 1234}
     async with app_client(pool, dsn, cache_s3_bucket="") as http:
         assert (await http.get("/api/v1/meta")).json()["cache"]["available"] is False
+
+
+def test_default_cache_key_is_pinned():
+    # Changing the salt or slice would orphan every existing cache in S3.
+    assert default_cache_key(uuid.UUID(int=1)) == "preset-4660fe5f5bc805e5"
