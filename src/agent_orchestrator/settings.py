@@ -10,7 +10,7 @@ from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 
 import yaml
-from pydantic import ValidationError, ValidationInfo, field_validator, model_validator
+from pydantic import Field, ValidationError, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from agent_orchestrator.spec import parse_quantity
@@ -129,6 +129,7 @@ class Settings(BaseSettings):
     max_replicas: int = 16
     max_pvc_size: str = "100Gi"
     max_clusters: int = 20
+    autoclose_min_seconds: int = Field(default=300, ge=1)
 
     wrapper_send_timeout_seconds: float = 15
     dispatching_stale_seconds: float = 60
