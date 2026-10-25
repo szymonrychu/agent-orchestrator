@@ -48,6 +48,7 @@ from agent_orchestrator.spec import INIT_DIR, init_scripts_hash
 log = logging.getLogger(__name__)
 
 INIT_LABEL = "agents.szymonrichert.pl/init"
+WORKDIR_ENV = "AGENT_INIT_WORKDIR"
 INIT_SH = "init.sh"
 INIT_LOG = "init.log"
 REASON_MAX = 2000
@@ -56,7 +57,11 @@ REASON_MAX = 2000
 ARG_CHUNK_CHARS = 16384
 
 # $1... is INIT_SH (in chunks); the Job's exit code is the script's.
+# The workdir is created here, as the pod user: a container `workingDir` that is missing is created
+# by the runtime as root, and the uid 1000 script could not write in it.
 WRAPPER = f"""set -e
+mkdir -p "${WORKDIR_ENV}"
+cd "${WORKDIR_ENV}"
 d={INIT_DIR}
 mkdir -p "$d"
 printf '*\\n' > "$d/.gitignore"
@@ -100,8 +105,10 @@ def render_init_job(cluster: Cluster, settings: Settings) -> Obj:
         "name": "init",
         "image": spec.image or settings.agent_image,
         "command": ["sh", "-c", WRAPPER, "agent-init", *chunks],
-        "workingDir": workdir_path(spec),
-        "env": [{"name": k, "value": v} for k, v in sorted(spec.env.items())],
+        "env": [
+            *({"name": k, "value": v} for k, v in sorted(spec.env.items())),
+            {"name": WORKDIR_ENV, "value": workdir_path(spec)},
+        ],
         "volumeMounts": [workdir_mount(spec)],
     }
     if spec.resources is not None:  # as the agent container

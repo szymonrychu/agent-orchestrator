@@ -28,6 +28,7 @@ from agent_orchestrator.reconciler.checks import (
 )
 from agent_orchestrator.reconciler.init import (
     INIT_LABEL,
+    WORKDIR_ENV,
     InitGate,
     init_job_name,
     render_init_job,
@@ -392,9 +393,13 @@ async def test_render_init_job(pool, dsn, tmp_path):
     ]
     (container,) = pod["containers"]
     assert container["image"] == IMAGE
-    assert container["workingDir"] == workdir_path(c.spec) == "/workdir/repo"
+    # no workingDir: the runtime would create a missing /workdir/repo as root, and the uid 1000
+    # script could then not write in it; the command creates it as the pod user instead
+    assert "workingDir" not in container
+    assert workdir_path(c.spec) == "/workdir/repo"
+    assert {"name": WORKDIR_ENV, "value": "/workdir/repo"} in container["env"]
     assert container["volumeMounts"] == [workdir_mount(c.spec)]
-    assert container["env"] == [{"name": "A", "value": "b"}, {"name": "FOO", "value": "bar"}]
+    assert container["env"][:2] == [{"name": "A", "value": "b"}, {"name": "FOO", "value": "bar"}]
     assert container["resources"] == {"requests": {"cpu": "500m"}, "limits": {"memory": "1Gi"}}
     cmd = container["command"]
     assert cmd[:2] == ["sh", "-c"] and cmd[3] == "agent-init" and len(cmd) == 5
@@ -415,17 +420,22 @@ async def test_render_init_job(pool, dsn, tmp_path):
     # the command really writes the files and returns the script's exit code
     sh = shutil.which("sh")
     assert sh is not None
+    # the workdir does not exist yet (as on a fresh PVC): the command creates it
+    target = tmp_path / "repo"
     run = subprocess.run(
-        cmd, cwd=tmp_path, env={"PATH": "/usr/bin:/bin", "FOO": "bar"}, capture_output=True
+        cmd,
+        cwd=tmp_path,
+        env={"PATH": "/usr/bin:/bin", "FOO": "bar", WORKDIR_ENV: str(target)},
+        capture_output=True,
     )
     assert run.returncode == 0, run.stderr
-    d = tmp_path / INIT_DIR
+    d = target / INIT_DIR
     assert (d / ".gitignore").read_text() == "*\n"
     assert (d / "init.sh").read_text() == init_sh
     log = (d / "init.log").read_text()
     assert "second bar" in log and "err" in log
     assert run.stdout.decode() == log
-    assert (tmp_path / "first.txt").read_text() == "first\n"
+    assert (target / "first.txt").read_text() == "first\n"
 
     failing = render_init_job(
         await env.cluster("gamma", init_scripts=["echo before", "exit 7", "echo never"]),
@@ -433,7 +443,12 @@ async def test_render_init_job(pool, dsn, tmp_path):
     )["spec"]["template"]["spec"]["containers"][0]["command"]
     work = tmp_path / "w2"
     work.mkdir()
-    run = subprocess.run(failing, cwd=work, env={"PATH": "/usr/bin:/bin"}, capture_output=True)
+    run = subprocess.run(
+        failing,
+        cwd=work,
+        env={"PATH": "/usr/bin:/bin", WORKDIR_ENV: str(work)},
+        capture_output=True,
+    )
     assert run.returncode == 7
     log = Path(work / INIT_DIR / "init.log").read_text()
     assert "before" in log and "never" not in log
@@ -444,7 +459,9 @@ async def test_render_init_job(pool, dsn, tmp_path):
     )["spec"]["template"]["spec"]["containers"][0]["command"]
     work = tmp_path / "w3"
     work.mkdir()
-    run = subprocess.run(unset, cwd=work, env={"PATH": "/usr/bin:/bin"}, capture_output=True)
+    run = subprocess.run(
+        unset, cwd=work, env={"PATH": "/usr/bin:/bin", WORKDIR_ENV: str(work)}, capture_output=True
+    )
     assert run.returncode != 0
     assert "never" not in (work / INIT_DIR / "init.log").read_text()
 
@@ -458,7 +475,12 @@ async def test_render_init_job(pool, dsn, tmp_path):
     assert "".join(big_cmd[4:]) == render_init_sh("eta", big)
     work = tmp_path / "w4"
     work.mkdir()
-    run = subprocess.run(big_cmd, cwd=work, env={"PATH": "/usr/bin:/bin"}, capture_output=True)
+    run = subprocess.run(
+        big_cmd,
+        cwd=work,
+        env={"PATH": "/usr/bin:/bin", WORKDIR_ENV: str(work)},
+        capture_output=True,
+    )
     assert run.returncode == 0, run.stderr
     assert (work / INIT_DIR / "init.sh").read_text() == render_init_sh("eta", big)
     assert f"big {INIT_SCRIPTS_MAX - 1}" in (work / INIT_DIR / "init.log").read_text()
