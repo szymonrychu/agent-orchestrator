@@ -30,3 +30,9 @@ env:
   # the autoclose e2e uses the smallest accepted window (the production default is higher)
   ORCH_AUTOCLOSE_MIN_SECONDS: "30"
   ORCH_LOG_LEVEL: INFO
+
+# Service port (other microservices): the e2e pod presents the fixed, non-secret token
+# "e2e-service-token-not-a-secret"; only its sha256 lives here.
+serviceApi:
+  tokenHashes:
+    e2e: d0c4480135ce7e2d8c3b4ae32acd5022a90d9c34b66738d8ea6807d324da401f

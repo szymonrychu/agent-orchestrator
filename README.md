@@ -23,6 +23,9 @@ Every process reads `ORCH_*` variables (the contract `agent-orchestrator-setting
 | `ORCH_MASTER_KEY` | unset | api (file and terminal proxies), reconciler | secret key, at least 32 bytes after stripping; only for commands that call require_master_key() |
 | `ORCH_MASTER_KEY_FILE` | empty | api (file and terminal proxies), reconciler | file holding the master key; wins over ORCH_MASTER_KEY |
 | `ORCH_AGENT_PORT` | `8001` | api | second listener (same server) serving only `/agent/v1/*`, `/healthz` and `/readyz` to agent pods; the source allowlist is skipped there |
+| `ORCH_SERVICE_PORT` | `8002` | api | third listener (same server) for in-cluster services; every request but `/healthz` and `/readyz` needs `Authorization: Bearer <service token>`, only the trigger-service routes answer (others 403), never `/agent/v1/*` or a WebSocket; the source allowlist is skipped there. Must differ from `ORCH_HTTP_PORT` and `ORCH_AGENT_PORT` |
+| `ORCH_SERVICE_TOKENS` | empty | api | CSV of `<name>:<sha256 hex of the token>` (name `^[a-z0-9][a-z0-9-]{0,62}$`, 64 lowercase hex, names unique); empty refuses every service request with 401 |
+| `ORCH_SERVICE_TOKENS_FILE` | empty | api | file holding the ORCH_SERVICE_TOKENS entries (comma or newline separated); wins over ORCH_SERVICE_TOKENS |
 | `ORCH_AGENT_API_URL` | unset | api, reconciler | URL agent pods use to reach the agent port (set by the chart to the agents Service) |
 | `ORCH_NAMESPACE` | `agents` | api, reconciler, dispatcher | the one namespace of the orchestrator and every agent cluster |
 | `ORCH_AGENT_IMAGE` | empty | api, reconciler | claude-code-wrapper image the agent pods run (required to create clusters) |
@@ -139,6 +142,10 @@ The master key and the Claude token each need a value or an `existingSecret`; wi
 
 `<fullname>-settings` carries `ORCH_NAMESPACE` (the release namespace), `ORCH_AGENT_IMAGE` (`agentImage`, required) and `ORCH_CLAUDE_SECRET_NAME` (`claude.existingSecret` or `<fullname>-claude`). Every entry of `env` is added verbatim; each key must start with `ORCH_` or the render fails naming it. No secret value is ever written to the ConfigMap; the database URL and master key reach the containers through `secretKeyRef`.
 
+### Service API
+
+`serviceApi.port` (default 8002) becomes `ORCH_SERVICE_PORT` and is exposed by the cluster-internal `<fullname>-services` Service (ClusterIP, never referenced by the ingress). `ORCH_SERVICE_TOKENS` comes from `serviceApi.existingSecret` (key `serviceApi.existingSecretKey`, default `service-tokens`), or else from the chart Secret built from `serviceApi.tokenHashes` (service name to sha256 hex of its token); `existingSecret` wins. With neither, every service request is refused with 401. See Security, Service tokens.
+
 ### RBAC
 
 `rbac.create` (default `true`) renders a namespaced Role `<fullname>-reconciler` in the release namespace and a RoleBinding to the ServiceAccount `<fullname>-reconciler` only. No ClusterRole or ClusterRoleBinding is ever rendered. The Role grants exactly:
@@ -214,6 +221,33 @@ Browsers apply no CORS to WebSocket upgrades, so any web page opened on a LAN ma
 - an empty list refuses every upgrade that carries an `Origin`, so the setting is mandatory for any deployment that serves the UI: list the UI origin exactly as the browser sends it (`scheme://host[:port]`), for example the ingress origin `https://orchestrator.example.com`.
 
 The POST and DELETE terminal routes apply the same rule and answer `403 forbidden_origin`. For local UI development list the dev server: `ORCH_ALLOWED_ORIGINS=http://localhost:5173`. An entry with a path, a trailing slash, userinfo or a scheme other than http or https fails settings validation naming `ORCH_ALLOWED_ORIGINS`.
+
+### Service tokens
+
+In-cluster trigger services (agents-webhook, agents-schedule) call the orchestrator on a dedicated service port, `ORCH_SERVICE_PORT` (default 8002), served by the same api process. Their pod CIDRs therefore stay out of `ORCH_ALLOWED_CIDRS`: the source allowlist is skipped on this port and a bearer token authenticates the caller instead. This is the `orch-service-tokens` contract consumers rely on.
+
+- Send `Authorization: Bearer <token>` on every request. Only the sha256 of each token is configured in the orchestrator (`ORCH_SERVICE_TOKENS`, `<name>:<sha256 hex>` entries, or `ORCH_SERVICE_TOKENS_FILE`); the token itself lives only in the calling service. Hashes are compared in constant time and the token never reaches a log line or error body.
+- Missing, malformed or unknown token (and an empty token list): `401 unauthorized` with `WWW-Authenticate: Bearer`.
+- A valid token on any route outside the list below: `403 forbidden`. The port never serves `/agent/v1/*` and refuses WebSocket upgrades. `GET` and `HEAD` of `/healthz` and `/readyz` need no token.
+- Routes served (same behaviour and bodies as on the main port):
+  - `GET /api/v1/meta`
+  - `GET /api/v1/presets`
+  - `GET /api/v1/presets/{preset_id}`
+  - `GET /api/v1/clusters`
+  - `POST /api/v1/clusters`
+  - `GET /api/v1/clusters/{cluster_id}`
+  - `GET /api/v1/clusters/{cluster_id}/messages`
+  - `POST /api/v1/clusters/{cluster_id}/messages`
+  - `GET /api/v1/messages/{message_id}`
+
+Mint a token and its hash:
+
+```sh
+T=$(openssl rand -hex 32)
+printf %s "$T" | sha256sum    # the hash goes to the orchestrator as <name>:<hash>
+```
+
+Give the service `$T` (a Secret it reads as its bearer token) and the orchestrator the hash, for example `serviceApi.tokenHashes.webhook=<hash>` in the chart.
 
 ### Hooks and credentials
 

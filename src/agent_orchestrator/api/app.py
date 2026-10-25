@@ -26,6 +26,7 @@ from agent_orchestrator.api.allowlist import PortGate, SourceAllowlist
 from agent_orchestrator.api.errors import error_response
 from agent_orchestrator.api.listener import Listener
 from agent_orchestrator.api.origin import OriginAllowlist
+from agent_orchestrator.api.service_auth import ServiceGate
 from agent_orchestrator.db.pool import open_pool
 from agent_orchestrator.settings import Settings
 
@@ -92,7 +93,15 @@ def create_app(
 
     app.add_middleware(OriginAllowlist, origins=settings.allowed_origins)
     app.add_middleware(
-        SourceAllowlist, networks=settings.allowed_networks(), skip_port=settings.agent_port
+        SourceAllowlist,
+        networks=settings.allowed_networks(),
+        skip_port=settings.agent_port,
+        service_port=settings.service_port,
     )
-    app.add_middleware(PortGate, agent_port=settings.agent_port)
+    app.add_middleware(
+        ServiceGate,
+        service_port=settings.service_port,
+        token_hashes=settings.service_token_hashes(),
+    )
+    app.add_middleware(PortGate, agent_port=settings.agent_port, service_port=settings.service_port)
     return app
