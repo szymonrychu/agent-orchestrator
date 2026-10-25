@@ -7,6 +7,7 @@ import json
 import re
 import secrets
 import string
+import uuid
 from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Annotated, Any, Literal
@@ -359,6 +360,12 @@ class WrapperSettings(_Strict):
                     f"wrapper.mcp_servers.{name!r}: name must match [A-Za-z0-9_-]{{1,64}}"
                 )
         return v
+
+
+def default_cache_key(preset_id: uuid.UUID) -> str:
+    """Stable cache key derived from the immutable preset id (a rename keeps the cache)."""
+    digest = hashlib.sha256(b"workspace-cache:" + preset_id.bytes).hexdigest()
+    return "preset-" + digest[:16]
 
 
 class WorkspaceCache(_Strict):

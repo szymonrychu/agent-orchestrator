@@ -1649,6 +1649,9 @@
             "title": "Agent Images",
             "type": "array"
           },
+          "cache": {
+            "$ref": "#/components/schemas/MetaCache"
+          },
           "caps": {
             "$ref": "#/components/schemas/MetaCaps"
           },
@@ -1686,9 +1689,28 @@
           "models",
           "efforts",
           "caps",
-          "discard_hook"
+          "discard_hook",
+          "cache"
         ],
         "title": "Meta",
+        "type": "object"
+      },
+      "MetaCache": {
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "max_bytes": {
+            "title": "Max Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "available",
+          "max_bytes"
+        ],
+        "title": "MetaCache",
         "type": "object"
       },
       "MetaCaps": {
@@ -2134,6 +2156,16 @@
               }
             ],
             "title": "Autoclose After Seconds"
+          },
+          "cache": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkspaceCache"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "discard_hook_url": {
             "anyOf": [
@@ -2848,6 +2880,32 @@
           "url"
         ],
         "title": "WebhookHook",
+        "type": "object"
+      },
+      "WorkspaceCache": {
+        "additionalProperties": false,
+        "properties": {
+          "exclude": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Exclude",
+            "type": "array"
+          },
+          "key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key"
+          }
+        },
+        "title": "WorkspaceCache",
         "type": "object"
       },
       "WrapperSettings": {
