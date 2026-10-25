@@ -1232,7 +1232,7 @@ def test_scale_up_and_down_keeps_surviving_pods(api: httpx.Client, baseline: dic
 
 def test_scale_refusals(api: httpx.Client, baseline: dict) -> None:
     with scale_cluster(api, "refuse", {"replicas": 3, "max_replicas": 3}) as created:
-        cid, slug = created["id"], created["slug"]
+        cid = created["id"]
         wait_sessions(api, cid, 3)
         for bad in (0, 4):
             resp = scale_to(api, cid, bad)
