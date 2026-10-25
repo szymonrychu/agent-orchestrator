@@ -1,6 +1,8 @@
 """Pack a session workdir into a capped tar.zst stream and unpack one safely (design D5, D6).
 
-Save never follows symlinks and skips sockets, FIFOs and device files. Restore streams through
+Save never follows symlinks, skips sockets, FIFOs and device files, and skips every symlink
+whose target is absolute or resolves outside the workdir (a `.venv` interpreter link), since
+restore would refuse it. Restore streams through
 `tarfile`'s `data` filter (no absolute paths, no `..`, no links out of the workdir, no device
 nodes, setuid bits cleared), refuses sparse members and anything past a decompressed byte budget,
 and never deletes or empties what is already in the workdir.
@@ -9,9 +11,13 @@ and never deletes or empties what is already in the workdir.
 from __future__ import annotations
 
 import fnmatch
+import io
+import logging
 import os
 import stat
 import tarfile
+from collections.abc import Buffer
+from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
@@ -24,6 +30,16 @@ MAX_ARCHIVE_BYTES = 5 * 1024**3
 # Decompressed budget of one restore: a decompression bomb stops here, not at a full volume.
 UNPACK_MAX_BYTES = 10 * MAX_ARCHIVE_BYTES
 COMPRESSION_LEVEL = 3
+
+_log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class Packed:
+    """Outcome of one pack: compressed bytes written, symlinks left out for pointing outside."""
+
+    compressed_bytes: int
+    skipped_links: int
 
 
 class TooLarge(Exception):
@@ -41,16 +57,20 @@ def _require_workdir(workdir: Path) -> None:
         raise ValueError(f"refusing workdir {text!r}: empty or the filesystem root")
 
 
-class _CappedWriter:
+class _CappedWriter(io.RawIOBase):
     """Forwards compressed output to `out`, raising TooLarge before it would pass the cap."""
 
     def __init__(self, out: BinaryIO, max_bytes: int) -> None:
+        super().__init__()
         self._out = out
         self._max = max_bytes
         self.written = 0
 
-    def write(self, data: bytes) -> int:
-        size = len(data)
+    def writable(self) -> bool:
+        return True
+
+    def write(self, data: Buffer, /) -> int:
+        size = memoryview(data).nbytes
         if self.written + size > self._max:
             raise TooLarge(f"compressed archive passes {self._max} bytes")
         self._out.write(data)
@@ -65,12 +85,26 @@ def _excluded(rel: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatchcase(rel, pattern) for pattern in patterns)
 
 
-def _add(tar: tarfile.TarFile, path: str, rel: str) -> None:
-    """Add one entry by lstat: directories, regular files and symlinks; nothing else."""
+def _link_escapes(path: str, real_root: str) -> bool:
+    """True when the symlink at `path` is absolute or resolves outside `real_root`."""
+    target = os.readlink(path)
+    if os.path.isabs(target):
+        return True
+    resolved = os.path.realpath(os.path.join(os.path.dirname(path), target))
+    return os.path.commonpath([resolved, real_root]) != real_root
+
+
+def _add(tar: tarfile.TarFile, path: str, rel: str, real_root: str) -> bool:
+    """Add one entry by lstat: directories, regular files and symlinks that stay inside.
+
+    Returns True when the entry is a symlink skipped for pointing outside the workdir.
+    """
     try:
         mode = os.lstat(path).st_mode
+        if stat.S_ISLNK(mode) and _link_escapes(path, real_root):
+            return True
         if not (stat.S_ISDIR(mode) or stat.S_ISREG(mode) or stat.S_ISLNK(mode)):
-            return
+            return False
         info = tar.gettarinfo(path, arcname=rel)
         if info.isreg():
             with open(path, "rb") as fh:
@@ -78,18 +112,23 @@ def _add(tar: tarfile.TarFile, path: str, rel: str) -> None:
         else:
             tar.addfile(info)
     except FileNotFoundError:
-        return  # removed while the workdir was walked
+        pass  # removed while the workdir was walked
+    return False
 
 
-def pack(workdir: Path, out: BinaryIO, *, exclude: list[str], max_bytes: int) -> int:
-    """Write `workdir` as a zstd-compressed tar to `out`; return the compressed bytes written.
+def pack(workdir: Path, out: BinaryIO, *, exclude: list[str], max_bytes: int) -> Packed:
+    """Write `workdir` as a zstd-compressed tar to `out`; return the bytes and skipped links.
 
     Members are workdir-relative POSIX paths. `.agent-init` and each `exclude` glob (fnmatch on
-    the relative path) are left out; an excluded directory prunes its subtree. Raises TooLarge
-    as soon as the compressed output would pass `max_bytes`.
+    the relative path) are left out; an excluded directory prunes its subtree. A symlink whose
+    target is absolute or resolves outside the workdir (directly or through other links) is
+    skipped and counted, logged as one count line, never the targets. Raises TooLarge as soon
+    as the compressed output would pass `max_bytes`.
     """
     _require_workdir(workdir)
     root = os.fspath(workdir)
+    real_root = os.path.realpath(root)
+    skipped = 0
     patterns = [*CACHE_ALWAYS_EXCLUDE, *exclude]
     capped = _CappedWriter(out, max_bytes)
     compressor = zstandard.ZstdCompressor(level=COMPRESSION_LEVEL)
@@ -104,29 +143,36 @@ def pack(workdir: Path, out: BinaryIO, *, exclude: list[str], max_bytes: int) ->
                 rel = name if base == "." else f"{base}/{name}"
                 if not _excluded(rel, patterns):
                     kept.append(name)
-                    _add(tar, os.path.join(dirpath, name), rel)
+                    skipped += _add(tar, os.path.join(dirpath, name), rel, real_root)
             dirnames[:] = kept  # prunes excluded subtrees; symlinked dirs are never entered
             for name in sorted(filenames):
                 rel = name if base == "." else f"{base}/{name}"
                 if not _excluded(rel, patterns):
-                    _add(tar, os.path.join(dirpath, name), rel)
-    return capped.written
+                    skipped += _add(tar, os.path.join(dirpath, name), rel, real_root)
+    _log.info("workspace pack skipped %d symlinks pointing outside the workdir", skipped)
+    return Packed(compressed_bytes=capped.written, skipped_links=skipped)
 
 
-class _BudgetReader:
+class _BudgetReader(io.RawIOBase):
     """Reads the decompressed tar stream, refusing it once it passes `max_bytes`."""
 
     def __init__(self, src: zstandard.ZstdDecompressionReader, max_bytes: int) -> None:
+        super().__init__()
         self._src = src
         self._max = max_bytes
         self.read_bytes = 0
 
-    def read(self, size: int = -1) -> bytes:
-        data = self._src.read(size)
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: Buffer, /) -> int:
+        view = memoryview(buffer).cast("B")
+        data = self._src.read(len(view))
         self.read_bytes += len(data)
         if self.read_bytes > self._max:
             raise ExtractError(f"archive expands past {self._max} bytes")
-        return data
+        view[: len(data)] = data
+        return len(data)
 
 
 def unpack(src: BinaryIO, workdir: Path, *, max_bytes: int = UNPACK_MAX_BYTES) -> int:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import os
 import socket
 import stat
@@ -13,7 +14,7 @@ import pytest
 import zstandard
 
 from agents_orchestrator.cache import archive
-from agents_orchestrator.cache.archive import ExtractError, TooLarge, pack, unpack
+from agents_orchestrator.cache.archive import ExtractError, Packed, TooLarge, pack, unpack
 from agents_orchestrator.spec import INIT_DIR
 
 BIG = 1 << 30
@@ -21,8 +22,8 @@ BIG = 1 << 30
 
 def _packed(workdir: Path, exclude: list[str] | None = None) -> bytes:
     out = io.BytesIO()
-    written = pack(workdir, out, exclude=exclude or [], max_bytes=BIG)
-    assert written == len(out.getvalue())
+    packed = pack(workdir, out, exclude=exclude or [], max_bytes=BIG)
+    assert packed.compressed_bytes == len(out.getvalue())
     return out.getvalue()
 
 
@@ -113,23 +114,59 @@ def test_symlinks_not_followed_specials_skipped(
     (outside / "host-secret").write_text("TOP-SECRET-CONTENT")
     src = tmp_path / "w"
     src.mkdir()
+    (src / "sub").mkdir()
+    (src / "sub" / "inside.txt").write_text("inside")
     os.symlink(outside / "host-secret", src / "file-link")
     os.symlink(outside, src / "dir-link")
+    os.symlink("../outside/host-secret", src / "dotdot-link")
+    os.symlink("../dir-link/host-secret", src / "sub" / "via-escaping-link")
+    os.symlink("sub/inside.txt", src / "inside-link")
+    os.symlink("../inside-link", src / "sub" / "chained-inside-link")
     os.mkfifo(src / "fifo")
     monkeypatch.chdir(src)
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.bind("sock")
+    out = io.BytesIO()
     try:
-        data = _packed(src)
+        packed = pack(src, out, exclude=[], max_bytes=BIG)
     finally:
         sock.close()
 
+    data = out.getvalue()
     members = _members(data)
-    assert set(members) == {"file-link", "dir-link"}
-    assert members["file-link"].issym()
-    assert members["file-link"].linkname == str(outside / "host-secret")
-    assert members["dir-link"].issym()
+    assert packed == Packed(compressed_bytes=len(data), skipped_links=4)
+    assert set(members) == {"sub", "sub/inside.txt", "inside-link", "sub/chained-inside-link"}
+    assert members["inside-link"].issym()
+    assert members["inside-link"].linkname == "sub/inside.txt"
     assert b"TOP-SECRET-CONTENT" not in _tar_bytes(data)
+    assert str(outside).encode() not in _tar_bytes(data)
+
+
+def test_venv_absolute_link_skipped(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    src = tmp_path / "src"
+    (src / ".venv" / "bin").mkdir(parents=True)
+    (src / ".venv" / "lib").mkdir()
+    (src / ".venv" / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    os.symlink("/usr/bin/python3", src / ".venv" / "bin" / "python")
+    os.symlink("lib", src / ".venv" / "lib64")
+    out = io.BytesIO()
+
+    with caplog.at_level(logging.INFO, logger="agents_orchestrator.cache.archive"):
+        packed = pack(src, out, exclude=[], max_bytes=BIG)
+
+    assert packed.skipped_links == 1
+    assert packed.compressed_bytes == len(out.getvalue())
+    lines = [
+        r.getMessage() for r in caplog.records if r.name == "agents_orchestrator.cache.archive"
+    ]
+    assert len(lines) == 1
+    assert "1" in lines[0]
+    assert "/usr/bin/python3" not in lines[0]
+    dst = tmp_path / "dst"
+    assert unpack(io.BytesIO(out.getvalue()), dst) == 5
+    assert not (dst / ".venv" / "bin" / "python").is_symlink()
+    assert os.readlink(dst / ".venv" / "lib64") == "lib"
+    assert (dst / ".venv" / "pyvenv.cfg").read_text() == "home = /usr/bin\n"
 
 
 def test_too_large(tmp_path: Path) -> None:
@@ -143,8 +180,8 @@ def test_too_large(tmp_path: Path) -> None:
     assert len(out.getvalue()) <= 64 * 1024
 
     fits = io.BytesIO()
-    written = pack(src, fits, exclude=[], max_bytes=4 << 20)
-    assert written == len(fits.getvalue()) > 1 << 20
+    packed = pack(src, fits, exclude=[], max_bytes=4 << 20)
+    assert packed.compressed_bytes == len(fits.getvalue()) > 1 << 20
 
 
 def test_unpack_refuses_unsafe_members(tmp_path: Path) -> None:
