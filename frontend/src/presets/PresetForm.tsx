@@ -83,7 +83,7 @@ function FormBody({ preset, copyOf, onClose, onSaved }: Omit<PresetFormProps, 'o
       return { values: { ...s.values, [key]: value }, setKeys: setKey ? new Set(s.setKeys).add(setKey) : s.setKeys }
     })
   }
-  const text = (key: Exclude<keyof FormValues, 'peers' | 'static' | 'env'>, label: string, extra: { disabled?: boolean; multiline?: boolean; help?: string } = {}) => (
+  const text = (key: Exclude<keyof FormValues, 'peers' | 'static' | 'env' | 'initScripts'>, label: string, extra: { disabled?: boolean; multiline?: boolean; help?: string } = {}) => (
     <TextField
       size="small"
       label={label}
@@ -97,6 +97,8 @@ function FormBody({ preset, copyOf, onClose, onSaved }: Omit<PresetFormProps, 'o
     />
   )
   const setEnv = (index: number, patch: Partial<{ key: string; value: string }>) => set('env', values.env.map((r, i) => (i === index ? { ...r, ...patch } : r)))
+
+  const setScript = (index: number, value: string) => set('initScripts', values.initScripts.map((s, i) => (i === index ? value : s)))
 
   async function submit() {
     setBusy(true)
@@ -154,6 +156,29 @@ function FormBody({ preset, copyOf, onClose, onSaved }: Omit<PresetFormProps, 'o
             </Box>
           </Box>
           {text('anyMcp', 'any-mcp config', { multiline: true })}
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+            {values.initScripts.map((script, i) => (
+              <Box key={i} sx={{ display: 'flex', gap: 1, alignItems: 'flex-start' }}>
+                <TextField
+                  size="small"
+                  label={`Init script ${i + 1}`}
+                  value={script}
+                  onChange={(e) => setScript(i, e.target.value)}
+                  error={Boolean(errors.initScripts?.[i])}
+                  helperText={errors.initScripts?.[i]}
+                  multiline
+                  minRows={3}
+                  fullWidth
+                  slotProps={{ input: { sx: { fontFamily: 'monospace' } } }}
+                />
+                <IconButton size="small" aria-label={`Remove init script ${i + 1}`} onClick={() => set('initScripts', values.initScripts.filter((_, j) => j !== i))}>x</IconButton>
+              </Box>
+            ))}
+            <Box>
+              <Button size="small" onClick={() => set('initScripts', [...values.initScripts, ''])}>Add init script</Button>
+            </Box>
+            <FormHelperText>Runs once when a cluster starts, in the shared workdir; agents can read and edit it; edits apply to the next cluster.</FormHelperText>
+          </Box>
           {text('maxAttempts', 'Max attempts')}
           {text('autoCompact', 'Auto-compact percent')}
           <Box sx={{ display: 'flex', gap: 1 }}>

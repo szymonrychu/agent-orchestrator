@@ -19,6 +19,7 @@ export interface FormValues {
   pvcSize: string
   env: EnvRow[]
   anyMcp: string
+  initScripts: string[]
   maxAttempts: string
   autoCompact: string
   cpuRequest: string
@@ -30,10 +31,10 @@ export interface FormValues {
   image: string
 }
 
-export type FormErrors = Partial<Record<Exclude<keyof FormValues, 'env'>, string>> & { env?: (string | undefined)[] }
+export type FormErrors = Partial<Record<Exclude<keyof FormValues, 'env' | 'initScripts'>, string>> & { env?: (string | undefined)[]; initScripts?: (string | undefined)[] }
 
 /** What the user set: a spec key, with the four resource fields counting as one `resources` key. */
-export type SetKey = 'replicas' | 'maxReplicas' | 'static' | 'model' | 'effort' | 'peers' | 'workdir' | 'pvcSize' | 'env' | 'anyMcp' | 'maxAttempts' | 'autoCompact' | 'resources' | 'hookUrl' | 'image'
+export type SetKey = 'replicas' | 'maxReplicas' | 'static' | 'model' | 'effort' | 'peers' | 'workdir' | 'pvcSize' | 'env' | 'anyMcp' | 'initScripts' | 'maxAttempts' | 'autoCompact' | 'resources' | 'hookUrl' | 'image'
 
 /** Form values together with the fields that are set (the ones a save writes to the preset). */
 export interface FormState {
@@ -47,13 +48,15 @@ const SECRET_KEY = /TOKEN|SECRET|PASSW(OR)?D|CREDENTIAL|API_?KEY|PRIVATE_?KEY|AC
 const RESERVED_KEY = /^(CCW_|CLAUDE_|ANTHROPIC_)|^POD_NAME$|_PROXY$|BASE_URL$/i
 export const MAX_SLUG = 40
 export const MAX_NAME = 40
+export const MAX_INIT_SCRIPTS = 20
+export const MAX_INIT_SCRIPT_CHARS = 16384
 const COPY_SUFFIX = ' copy'
 
 export function blankValues(meta: Meta | null): FormValues {
   const d = meta?.defaults
   return {
     name: '', replicas: d ? String(d.replicas) : '', maxReplicas: '', static: false, model: d?.model ?? '', effort: d?.effort ?? '', peers: true, workdir: d?.workdir ?? 'workdir',
-    pvcSize: d?.pvc_size ?? '', env: [], anyMcp: d && Object.keys(d.any_mcp_config).length > 0 ? JSON.stringify(d.any_mcp_config, null, 2) : '',
+    pvcSize: d?.pvc_size ?? '', env: [], anyMcp: d && Object.keys(d.any_mcp_config).length > 0 ? JSON.stringify(d.any_mcp_config, null, 2) : '', initScripts: [],
     maxAttempts: d ? String(d.max_attempts) : '', autoCompact: d ? String(d.auto_compact_pct) : '',
     cpuRequest: d?.resources.requests.cpu ?? '', cpuLimit: d?.resources.limits.cpu ?? '',
     memRequest: d?.resources.requests.memory ?? '', memLimit: d?.resources.limits.memory ?? '', hookUrl: '', image: '',
@@ -104,6 +107,10 @@ export function stateFromPreset(meta: Meta | null, name: string, spec: Partial<C
   if (spec.any_mcp_config) {
     values.anyMcp = JSON.stringify(spec.any_mcp_config, null, 2)
     setKeys.add('anyMcp')
+  }
+  if (spec.init_scripts) {
+    values.initScripts = [...spec.init_scripts]
+    setKeys.add('initScripts')
   }
   num('maxAttempts', 'maxAttempts', spec.max_attempts)
   num('autoCompact', 'autoCompact', spec.auto_compact_pct)
@@ -159,6 +166,17 @@ export function anyMcpError(text: string): string | undefined {
   }
 }
 
+/** Per-script errors mirroring the server (at most 20, each non-empty after trim and at most 16384 characters); undefined when all are fine. */
+export function initScriptErrors(scripts: string[]): (string | undefined)[] | undefined {
+  const errors = scripts.map((s, i): string | undefined => {
+    if (i >= MAX_INIT_SCRIPTS) return `Init script ${i + 1}: at most ${MAX_INIT_SCRIPTS} init scripts`
+    if (s.trim() === '') return `Init script ${i + 1} must not be empty`
+    if (s.length > MAX_INIT_SCRIPT_CHARS) return `Init script ${i + 1} must be at most ${MAX_INIT_SCRIPT_CHARS} characters`
+    return undefined
+  })
+  return errors.some(Boolean) ? errors : undefined
+}
+
 export function nameError(name: string): string | undefined {
   if (name === '') return 'Name is required'
   if (name.length > MAX_NAME) return `Name must be at most ${MAX_NAME} characters`
@@ -181,6 +199,8 @@ export function validate(v: FormValues, meta: Meta | null): FormErrors {
   e.hookUrl = hookUrlError(v.hookUrl)
   const envErrors = v.env.map((r) => envKeyError(r.key, v.env))
   if (envErrors.some(Boolean)) e.env = envErrors
+  const scriptErrors = initScriptErrors(v.initScripts)
+  if (scriptErrors) e.initScripts = scriptErrors
   for (const k of Object.keys(e) as (keyof FormErrors)[]) if (e[k] === undefined) delete e[k]
   return e
 }
@@ -210,6 +230,7 @@ export function toPresetSpec(v: FormValues, setKeys: ReadonlySet<SetKey>): Parti
   if (setKeys.has('pvcSize')) spec.pvc_size = str(v.pvcSize)
   if (setKeys.has('env') && v.env.length > 0) spec.env = Object.fromEntries(v.env.map((r) => [r.key, r.value]))
   if (setKeys.has('anyMcp') && v.anyMcp.trim() !== '') spec.any_mcp_config = JSON.parse(v.anyMcp) as Record<string, unknown>
+  if (setKeys.has('initScripts')) spec.init_scripts = [...v.initScripts]
   if (setKeys.has('maxAttempts')) spec.max_attempts = int(v.maxAttempts)
   if (setKeys.has('autoCompact')) spec.auto_compact_pct = int(v.autoCompact)
   if (setKeys.has('resources')) {
