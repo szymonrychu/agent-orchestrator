@@ -1157,3 +1157,158 @@ def test_shared_namespace_leaves_orchestrator_objects(
         assert dep["status"].get("availableReplicas", 0) >= 1, (component, dep["status"])
     pg = kube_json("get", "deployment", "postgres")
     assert pg["status"].get("availableReplicas", 0) >= 1, pg["status"]
+
+
+# ------------------------------------------------------------------ init scripts
+
+INIT_TIMEOUT = 300
+RECONCILE_INTERVALS = 10  # seconds: several reconcile polls (ORCH_RECONCILE_POLL_SECONDS=3)
+WORKDIR = "/workdir/workdir"
+
+
+@contextlib.contextmanager
+def init_preset(api: httpx.Client, scripts: list[str], replicas: int) -> Iterator[dict[str, Any]]:
+    resp = api.post(
+        "/presets",
+        json={
+            "name": f"e2e-init-{uuid.uuid4().hex[:6]}",
+            "spec": {"replicas": replicas, "env": FAKE_TURN_ENV, "init_scripts": scripts},
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    created = resp.json()
+    try:
+        yield created
+    finally:
+        api.delete(f"/presets/{created['id']}")
+
+
+@contextlib.contextmanager
+def init_cluster(api: httpx.Client, body: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    resp = api.post("/clusters", json=body)
+    assert resp.status_code == 201, resp.text
+    created = resp.json()
+    cid = created["id"]
+    try:
+        yield created
+    finally:
+        api.delete(f"/clusters/{cid}")
+        wait_for(
+            f"cluster {created['slug']} row to be gone",
+            lambda: api.get(f"/clusters/{cid}").status_code == 404,
+            DISCARD_TIMEOUT,
+        )
+
+
+def wait_init_state(api: httpx.Client, cid: str, states: tuple[str, ...]) -> dict[str, Any]:
+    def probe() -> dict[str, Any] | None:
+        view = api.get(f"/clusters/{cid}").json()
+        if view["status"].get("error"):
+            raise AssertionError(f"cluster reconcile error: {view['status']}")
+        init = view["status"].get("init")
+        return view if init and init.get("state") in states else None
+
+    return wait_for(f"status.init.state in {states}", probe, INIT_TIMEOUT)
+
+
+def wait_sessions(api: httpx.Client, cid: str, count: int) -> list[dict[str, Any]]:
+    def probe() -> list[dict[str, Any]] | None:
+        agents = [a for a in agents_of(api, cid) if not a["gone"]]
+        ready = [a for a in agents if a["ready"] and a["free_since"]]
+        return ready if len(ready) == count else None
+
+    return wait_for(f"{count} agents with sessions", probe, READY_TIMEOUT)
+
+
+def init_jobs(slug: str) -> list[str]:
+    out = kubectl("get", "jobs", "-o", "name", check=False).stdout
+    return [ln for ln in out.splitlines() if ln.endswith(f"agent-{slug}-init")]
+
+
+def test_init_scripts_run_once(api: httpx.Client, baseline: dict) -> None:
+    with (
+        init_preset(api, ["echo e2e-init > e2e-init.txt"], replicas=2) as preset,
+        init_cluster(api, {"preset_id": preset["id"]}) as created,
+    ):
+        cid, slug = created["id"], created["slug"]
+        view = wait_init_state(api, cid, ("succeeded", "failed"))
+        assert view["status"]["init"]["state"] == "succeeded", view["status"]
+        agents = wait_sessions(api, cid, 2)
+        for agent in agents:
+            pod = pod_name_of(agent)
+            assert pod_exec(pod, "cat", f"{WORKDIR}/e2e-init.txt").strip() == "e2e-init"
+            pod_exec(pod, "test", "-s", f"{WORKDIR}/.agent-init/init.sh")
+            pod_exec(pod, "test", "-e", f"{WORKDIR}/.agent-init/init.log")
+        # run once: the Job is gone after the outcome and the run is never started again
+        started = view["status"]["init"]["started_at"]
+        time.sleep(2 * RECONCILE_INTERVALS)
+        later = api.get(f"/clusters/{cid}").json()
+        assert later["status"]["init"]["started_at"] == started, later["status"]
+        assert later["status"]["init"]["state"] == "succeeded", later["status"]
+        assert init_jobs(slug) == []
+
+
+def test_init_scripts_edit_writes_cluster_and_preset_without_roll(
+    api: httpx.Client, baseline: dict
+) -> None:
+    with (
+        init_preset(api, ["echo first > first.txt"], replicas=1) as preset,
+        init_cluster(api, {"preset_id": preset["id"]}) as created,
+    ):
+        cid, slug = created["id"], created["slug"]
+        view = wait_init_state(api, cid, ("succeeded",))
+        wait_sessions(api, cid, 1)
+        started = view["status"]["init"]["started_at"]
+        pods_before = pods_of(slug)
+        assert len(pods_before) == 1, pods_before
+        pod = f"agent-{slug}-0"
+
+        def assert_no_roll() -> None:
+            time.sleep(2 * RECONCILE_INTERVALS)
+            now = api.get(f"/clusters/{cid}").json()
+            assert now["status"]["init"]["started_at"] == started, now["status"]
+            assert pods_of(slug) == pods_before
+            assert init_jobs(slug) == []
+
+        # public route
+        public = ["echo second > second.txt"]
+        put = api.put(f"/clusters/{cid}/init-scripts", json={"scripts": public})
+        assert put.status_code == 200, put.text
+        got = api.get(f"/clusters/{cid}/init-scripts").json()
+        assert got["scripts"] == public and got["edited_since_run"] is True, got
+        assert api.get(f"/presets/{preset['id']}").json()["spec"]["init_scripts"] == public
+        assert_no_roll()
+
+        # agent route from inside the pod
+        agent_scripts = ["echo third > third.txt"]
+        status, body = agent_call(pod, "PUT", "/agent/v1/init-scripts", {"scripts": agent_scripts})
+        assert status == 200, body
+        assert body["scripts"] == agent_scripts, body
+        status, body = agent_call(pod, "GET", "/agent/v1/init-scripts")
+        assert status == 200 and body["scripts"] == agent_scripts, body
+        assert body["edited_since_run"] is True, body
+        assert api.get(f"/clusters/{cid}/init-scripts").json()["scripts"] == agent_scripts
+        assert api.get(f"/presets/{preset['id']}").json()["spec"]["init_scripts"] == agent_scripts
+        assert_no_roll()
+
+
+def test_init_scripts_failure_starts_sessions_degraded(api: httpx.Client, baseline: dict) -> None:
+    spec = {"replicas": 1, "env": FAKE_TURN_ENV, "init_scripts": ["exit 3"]}
+    with init_cluster(api, {"spec": spec}) as created:
+        cid = created["id"]
+        view = wait_init_state(api, cid, ("failed",))
+        init = view["status"]["init"]
+        assert init["state"] == "failed" and init["exit_code"] == 3, init
+
+        def degraded() -> dict[str, Any] | None:
+            now = api.get(f"/clusters/{cid}").json()
+            st = now["status"]
+            return now if st.get("phase") == "degraded" and "init failed" in st["message"] else None
+
+        wait_for("phase degraded with init failed", degraded, INIT_TIMEOUT)
+        assert len(wait_sessions(api, cid, 1)) == 1
+
+
+def test_cluster_without_init_scripts_skipped(api: httpx.Client, cluster: dict[str, Any]) -> None:
+    view = api.get(f"/clusters/{cluster['id']}").json()
+    assert view["status"]["init"]["state"] == "skipped", view["status"]
