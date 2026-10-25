@@ -1239,9 +1239,10 @@ def test_scale_refusals(api: httpx.Client, baseline: dict) -> None:
             assert resp.status_code == 422, (bad, resp.text)
             assert error_code(resp) == "out_of_range", resp.text
 
-        _, epoch = leader_view(api, cid)
-        assert epoch is not None
-        top = agent_by_pod(api, cid, f"agent-{slug}-2")
+        wait_for("the first election", lambda: leader_view(api, cid)[1] is not None, LEADER_TIMEOUT)
+        current, epoch = leader_view(api, cid)
+        assert current is not None and epoch is not None
+        top = next(a for a in live_agents(api, cid) if a["id"] != current["id"])
         resp = api.post(f"/clusters/{cid}/leader", json={"agent_id": top["id"]})
         assert resp.status_code == 202, resp.text
         wait_leader(api, cid, epoch + 1, top["id"])
@@ -1319,13 +1320,20 @@ def test_scale_down_waits_for_busy_agent(api: httpx.Client, baseline: dict) -> N
         wait_for("the top agent to be busy", busy, TURN_TIMEOUT, interval=0.2)
         resp = scale_to(api, cid, 1)
         assert resp.status_code == 202, resp.text
-        assert pod_identity(slug).get(top_pod, (None,))[0] == uid  # the pod stays mid-turn
 
         def done() -> bool:
             turn = message(api, mid)["turn"]
             return bool(turn and turn["completed_at"])
 
-        wait_for("the turn to complete", done, TURN_TIMEOUT, interval=1)
+        # sample the pod for the whole turn: it must stay until the turn is sent
+        samples = 0
+        deadline = time.monotonic() + TURN_TIMEOUT
+        while not done():
+            assert pod_identity(slug).get(top_pod, (None,))[0] == uid, "pod left mid-turn"
+            samples += 1
+            assert time.monotonic() < deadline, "the turn did not complete"
+            time.sleep(0.5)
+        assert samples >= 1
         wait_pod_gone(slug, top_pod)
         wait_for("the top agent marked gone", lambda: agent_by_pod(api, cid, top_pod)["gone"], 120)
 
