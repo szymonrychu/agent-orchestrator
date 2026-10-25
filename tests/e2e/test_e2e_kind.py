@@ -1534,3 +1534,138 @@ def test_cluster_without_init_scripts_skipped(api: httpx.Client, baseline: dict)
     ):
         view = wait_init_state(api, created["id"], ("skipped",))
         assert view["status"]["init"]["state"] == "skipped", view["status"]
+
+
+# ------------------------------------------------------------------ configuration (A6)
+
+HOOK_FILE = "hook-ran.txt"
+HOOK_TIMEOUT = 120
+COMPACT_TIMEOUT = 180
+LEASE_TIMEOUT = 180  # lease 60 s plus the dispatcher poll and the turn-boundary wait
+AUTOCLOSE_TIMEOUT = 240  # 30 s window plus the sweeper interval and the discard
+
+
+@contextlib.contextmanager
+def config_cluster(
+    api: httpx.Client, suffix: str, spec: dict[str, Any]
+) -> Iterator[dict[str, Any]]:
+    """A cluster of its own through POST /clusters; always deleted and awaited in teardown."""
+    slug = f"e2e-cfg-{suffix}"
+    resp = api.post("/clusters", json={"slug": slug, "spec": {**spec, "env": FAKE_TURN_ENV}})
+    assert resp.status_code == 201, resp.text
+    created = resp.json()
+    cid = created["id"]
+    try:
+        yield created
+    finally:
+        api.delete(f"/clusters/{cid}")
+        wait_for(
+            f"cluster {slug} row to be gone",
+            lambda: api.get(f"/clusters/{cid}").status_code == 404,
+            DISCARD_TIMEOUT,
+        )
+
+
+def ready_agents(api: httpx.Client, cid: str, count: int) -> list[dict[str, Any]]:
+    def probe() -> list[dict[str, Any]] | None:
+        view = api.get(f"/clusters/{cid}").json()
+        if view["status"].get("error"):
+            raise AssertionError(f"cluster reconcile error: {view['status']}")
+        agents = [a for a in agents_of(api, cid) if not a["gone"]]
+        ready = [a for a in agents if a["ready"] and a["free_since"]]
+        return ready if len(ready) == count else None
+
+    return wait_for(f"{count} ready agents", probe, READY_TIMEOUT)
+
+
+def test_wrapper_hook_and_idle_compact(api: httpx.Client) -> None:
+    spec = {
+        "replicas": 1,
+        "wrapper": {
+            "hooks": {
+                "onTurnComplete": [
+                    {"type": "command", "run": f'echo "$POD_NAME" > {HOOK_FILE}'},
+                ]
+            },
+            "auto_compact": {"idle_seconds": 5},
+        },
+    }
+    with config_cluster(api, "hook", spec) as created:
+        cid = created["id"]
+        agent = ready_agents(api, cid, 1)[0]
+        resp = api.post(f"/clusters/{cid}/messages", json={"text": "say hello"})
+        assert resp.status_code == 202, resp.text
+        mid = resp.json()["message_id"]
+
+        def turn_done() -> bool:
+            view = message(api, mid)
+            return bool(view["status"] == "sent" and view["turn"] and view["turn"]["completed_at"])
+
+        wait_for(f"message {mid} turn to complete", turn_done, TURN_TIMEOUT, interval=1)
+
+        def hook_output() -> str | None:
+            r = api.get(f"/clusters/{cid}/files/content", params={"path": HOOK_FILE})
+            return r.json()["content"] if r.status_code == 200 else None
+
+        content = wait_for(
+            f"{HOOK_FILE} written by the onTurnComplete hook", hook_output, HOOK_TIMEOUT
+        )
+        assert content.strip() == agent["pod_name"], (content, agent["pod_name"])
+
+        def compacted() -> list[dict[str, Any]] | None:
+            r = api.get(f"/clusters/{cid}/events", params={"types": "compacted"})
+            r.raise_for_status()
+            return r.json()["events"] or None
+
+        events = wait_for("a compacted event after 5 s idle", compacted, COMPACT_TIMEOUT)
+        assert all(e["type"] == "compacted" for e in events), events
+
+
+def test_leader_lease_hands_over(api: httpx.Client) -> None:
+    spec = {"replicas": 2, "leader_lease_seconds": 60}
+    with config_cluster(api, "lease", spec) as created:
+        cid = created["id"]
+        ready_agents(api, cid, 2)
+
+        def first_leader() -> dict[str, Any] | None:
+            view = api.get(f"/clusters/{cid}").json()
+            return view if view["leader_agent_id"] and view["leader_epoch"] is not None else None
+
+        first = wait_for("a first leader", first_leader, LEADER_TIMEOUT)
+
+        def handed_over() -> dict[str, Any] | None:
+            view = api.get(f"/clusters/{cid}").json()
+            ok = (
+                view["leader_agent_id"] not in (None, first["leader_agent_id"])
+                and view["leader_epoch"] > first["leader_epoch"]
+                and view["leader_reason"] == "lease_expired"
+            )
+            return view if ok else None
+
+        wait_for(
+            f"leader to change from {first['leader_agent_id']} (epoch {first['leader_epoch']}) "
+            "with reason lease_expired",
+            handed_over,
+            LEASE_TIMEOUT,
+        )
+
+
+def test_autoclose_discards_cluster(api: httpx.Client) -> None:
+    from datetime import datetime, timedelta
+
+    with config_cluster(api, "autoclose", {"replicas": 1, "autoclose_after_seconds": 30}) as c:
+        cid = c["id"]
+        view = api.get(f"/clusters/{cid}").json()
+        created_at = datetime.fromisoformat(view["created_at"])
+        assert datetime.fromisoformat(view["closes_at"]) == created_at + timedelta(seconds=30), view
+
+        def closing() -> bool:
+            r = api.get(f"/clusters/{cid}")
+            return r.status_code == 404 or r.json()["desired"] == "deleting"
+
+        wait_for("the autoclose sweeper to mark the cluster deleting", closing, AUTOCLOSE_TIMEOUT)
+
+        def gone() -> bool:
+            return api.get(f"/clusters/{cid}").status_code == 404
+
+        wait_for("the closed cluster to answer 404", gone, DISCARD_TIMEOUT)
