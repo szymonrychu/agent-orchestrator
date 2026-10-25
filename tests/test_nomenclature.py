@@ -51,13 +51,15 @@ AGENT_API_SCHEMAS = ("Me",)
 # Old names that retirement tests pin as gone.
 RETIRED_PHRASES = ('"/api/v1/clusters"', "test_old_cluster_routes_gone")
 
-# Schema history: 0001-0004 stay byte-identical and their tests seed the pre-0005 schema.
+# Schema history: 0001-0004 stay byte-identical, 0005 renames their old names, and the migration
+# tests seed the pre-0005 schema.
 HISTORY = frozenset(
     {
         "src/agents_orchestrator/db/migrations/0001_init.sql",
         "src/agents_orchestrator/db/migrations/0002_presets.sql",
         "src/agents_orchestrator/db/migrations/0003_hive.sql",
         "src/agents_orchestrator/db/migrations/0004_wrapper_session_id.sql",
+        "src/agents_orchestrator/db/migrations/0005_sessions.sql",
         "tests/test_migrations.py",
         "tests/test_nomenclature.py",
     }

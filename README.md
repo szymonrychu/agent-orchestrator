@@ -333,6 +333,10 @@ A command comes only from settings, never from the spec: the API has no auth and
 
 JSONL, one JSON object per line, each with a `kind`. The first line is the `session` record (`id`, `slug`, `spec`, `created_at`). Then come the `agent`, `message`, `turn`, `command`, `check` and `event` records of the cluster, each kind in id order (turns in `started_at` order); a record carries the table's columns. A `command` record's own kind column is named `command_kind`. Timestamps are ISO 8601 UTC. The export is streamed from the database with server-side cursors, so a long history is never held in memory. The cluster is already `deleting` and the API refuses new messages, so, with the agents quiesced first, the history includes every event the agents produced.
 
+### Breaking change, 2026-10-25
+
+The hook contract renamed the unit to session with no alias: a command hook now gets `ORCH_SESSION_ID` and `ORCH_SESSION_SLUG` (formerly `ORCH_CLUSTER_ID` and `ORCH_CLUSTER_SLUG`), a webhook gets `X-Orch-Session-Id` and `X-Orch-Session-Slug` (formerly `X-Orch-Cluster-Id` and `X-Orch-Cluster-Slug`), and the first export record has kind `session` (formerly `cluster`). Operators must update their hook scripts and receivers before upgrading; the old names are never sent.
+
 ### Command contract
 
 Run through `sh -c` with the JSONL on stdin, `ORCH_SESSION_ID` and `ORCH_SESSION_SLUG` in its environment, in its own process group. Exit 0 is success. A non-zero exit is a failure whose reason carries the exit code and the tail of stderr (bounded). On timeout the whole process group is killed.
