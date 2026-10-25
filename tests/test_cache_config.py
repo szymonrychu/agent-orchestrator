@@ -1,0 +1,158 @@
+"""Workspace cache configuration: settings fields and the spec field (design D6, D7, D8)."""
+
+import pytest
+from pydantic import ValidationError
+
+from agents_orchestrator.settings import Settings, SettingsError
+from agents_orchestrator.spec import (
+    CACHE_ALWAYS_EXCLUDE,
+    CACHE_EXCLUDE_MAX,
+    INIT_DIR,
+    SessionSpec,
+    SpecInvalid,
+    WorkspaceCache,
+    validate_spec,
+)
+
+DB = "postgresql://x/y"
+
+
+def _settings(monkeypatch=None, **kw):
+    kw.setdefault("database_url", DB)
+    kw.setdefault("agent_image", "img:1")
+    return Settings(**kw)
+
+
+def test_cache_settings_defaults_and_env(monkeypatch):
+    s = _settings()
+    assert s.cache_s3_endpoint == ""
+    assert s.cache_s3_region == "us-east-1"
+    assert s.cache_s3_bucket == ""
+    assert s.cache_s3_prefix == "workspace-cache/"
+    assert s.cache_s3_path_style is False
+    assert s.cache_s3_verify_tls is True
+    assert s.cache_s3_access_key_id == ""
+    assert s.cache_s3_secret_access_key == ""
+    assert s.cache_image == ""
+    assert s.cache_max_bytes == 5368709120
+    assert s.cache_timeout_seconds == 1800
+    assert s.cache_available is False
+    for name, value in {
+        "ORCH_CACHE_S3_ENDPOINT": "http://rgw:80",
+        "ORCH_CACHE_S3_REGION": "eu-1",
+        "ORCH_CACHE_S3_BUCKET": "b",
+        "ORCH_CACHE_S3_PREFIX": "p/",
+        "ORCH_CACHE_S3_PATH_STYLE": "true",
+        "ORCH_CACHE_S3_VERIFY_TLS": "false",
+        "ORCH_CACHE_S3_ACCESS_KEY_ID": "ak",
+        "ORCH_CACHE_S3_SECRET_ACCESS_KEY": "sk",
+        "ORCH_CACHE_IMAGE": "cache:1",
+        "ORCH_CACHE_MAX_BYTES": "1000",
+        "ORCH_CACHE_TIMEOUT_SECONDS": "60",
+    }.items():
+        monkeypatch.setenv(name, value)
+    s = _settings()
+    assert s.cache_s3_endpoint == "http://rgw:80"
+    assert s.cache_s3_region == "eu-1"
+    assert s.cache_s3_bucket == "b"
+    assert s.cache_s3_prefix == "p/"
+    assert s.cache_s3_path_style is True
+    assert s.cache_s3_verify_tls is False
+    assert s.cache_s3_access_key_id == "ak"
+    assert s.cache_s3_secret_access_key == "sk"
+    assert s.cache_image == "cache:1"
+    assert s.cache_max_bytes == 1000
+    assert s.cache_timeout_seconds == 60
+    assert s.cache_available is True
+
+
+@pytest.mark.parametrize(
+    ("kw", "var"),
+    [
+        ({"cache_max_bytes": 5368709121}, "ORCH_CACHE_MAX_BYTES"),
+        ({"cache_max_bytes": 0}, "ORCH_CACHE_MAX_BYTES"),
+        ({"cache_s3_endpoint": "ftp://x"}, "ORCH_CACHE_S3_ENDPOINT"),
+        ({"cache_s3_endpoint": "rgw:80"}, "ORCH_CACHE_S3_ENDPOINT"),
+        ({"cache_timeout_seconds": 59}, "ORCH_CACHE_TIMEOUT_SECONDS"),
+        ({"cache_timeout_seconds": 86401}, "ORCH_CACHE_TIMEOUT_SECONDS"),
+    ],
+)
+def test_cache_settings_refused(kw, var):
+    with pytest.raises(SettingsError) as e:
+        _settings(**kw)
+    assert var in e.value.problems
+    _settings(
+        cache_max_bytes=5368709120, cache_timeout_seconds=86400, cache_s3_endpoint="https://s3"
+    )
+
+
+def test_require_cache_names_missing():
+    _settings().require_cache()
+    with pytest.raises(SettingsError) as e:
+        _settings(cache_s3_bucket="b").require_cache()
+    assert set(e.value.problems) == {
+        "ORCH_CACHE_S3_ACCESS_KEY_ID",
+        "ORCH_CACHE_S3_SECRET_ACCESS_KEY",
+        "ORCH_CACHE_IMAGE",
+    }
+    with pytest.raises(SettingsError) as e:
+        _settings(
+            cache_s3_bucket="b", cache_s3_access_key_id="a", cache_s3_secret_access_key="s"
+        ).require_cache()
+    assert set(e.value.problems) == {"ORCH_CACHE_IMAGE"}
+    _settings(
+        cache_s3_bucket="b",
+        cache_s3_access_key_id="a",
+        cache_s3_secret_access_key="s",
+        cache_image="i",
+    ).require_cache()
+
+
+def test_secret_key_not_in_repr():
+    s = _settings(cache_s3_secret_access_key="TOPSECRETVALUE")
+    assert "TOPSECRETVALUE" not in repr(s)
+    assert "TOPSECRETVALUE" not in str(s)
+
+
+def test_workspace_cache_validation():
+    assert CACHE_EXCLUDE_MAX == 50
+    assert CACHE_ALWAYS_EXCLUDE == (INIT_DIR,)
+    assert WorkspaceCache().key is None
+    assert WorkspaceCache().exclude == []
+    WorkspaceCache(key="a", exclude=["node_modules", "build/*.o"])
+    WorkspaceCache(key="a" + "b" * 62)
+    for bad in ("Bad Key", "", "-a", ".a", "a/b", "a" * 64):
+        with pytest.raises(ValidationError):
+            WorkspaceCache(key=bad)
+    for bad in ([""], ["/abs"], ["a/../b"], [".."], ["x" * 257], ["x"] * 51):
+        with pytest.raises(ValidationError):
+            WorkspaceCache(exclude=bad)
+    WorkspaceCache(exclude=["x" * 256] * 50)
+    with pytest.raises(ValidationError):
+        WorkspaceCache(bogus=1)
+    with pytest.raises(ValidationError):
+        SessionSpec.model_validate({"cache": {"key": "Bad Key"}})
+
+
+def test_cache_sparse_dump():
+    assert "cache" not in SessionSpec().model_dump(mode="json", exclude_none=True)
+    assert "cache" not in SessionSpec().model_dump(mode="json", exclude_unset=True)
+    spec = SessionSpec.model_validate({"cache": {}})
+    assert spec.cache == WorkspaceCache()
+    assert spec.model_dump(mode="json", exclude_none=True)["cache"] == {"exclude": []}
+
+
+def test_validate_spec_cache_unavailable():
+    off = _settings()
+    on = _settings(cache_s3_bucket="b")
+    spec = SessionSpec(cache=WorkspaceCache(key="k"))
+    validate_spec(SessionSpec(), off)
+    with pytest.raises(SpecInvalid) as e:
+        validate_spec(spec, off)
+    assert "workspace cache is not configured (ORCH_CACHE_S3_BUCKET is unset)" in e.value.errors
+    validate_spec(spec, on)
+    validate_spec(spec, off, stored=SessionSpec(cache=WorkspaceCache(key="k")))
+    with pytest.raises(SpecInvalid):
+        validate_spec(spec, off, stored=SessionSpec(cache=WorkspaceCache(key="other")))
+    with pytest.raises(SpecInvalid):
+        validate_spec(spec, off, stored=SessionSpec())
