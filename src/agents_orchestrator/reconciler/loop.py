@@ -1,16 +1,16 @@
-"""Level-triggered reconcile: the clusters table drives Kubernetes and the agents table.
+"""Level-triggered reconcile: the sessions table drives Kubernetes and the agents table.
 
-Every tick reads every cluster row and converges it (D6), so a crash mid-way leaves nothing
+Every tick reads every session row and converges it (D6), so a crash mid-way leaves nothing
 that the next tick does not repair. All calls target `settings.namespace`, the one namespace
 shared with the orchestrator's own objects (D26). The guards that keep the reconciler off those:
-- every list carries the cluster selector, and only objects carrying both the managed-by and
-  the cluster label are ever deleted
+- every list carries the session selector, and only objects carrying both the managed-by and
+  the session label are ever deleted
 - before applying a StatefulSet, Service, ConfigMap or PVC it reads the object; one that exists
-  without both labels is foreign, and then nothing of that cluster is applied
-- Secrets are never read or listed: the cluster Secret is applied with the rest and deleted by
+  without both labels is foreign, and then nothing of that session is applied
+- Secrets are never read or listed: the session Secret is applied with the rest and deleted by
   its deterministic name
 
-A deleting cluster (D15) waits for `pre_discard`, then loses every labelled object including
+A deleting session (D15) waits for `pre_discard`, then loses every labelled object including
 its PVC, and once none is left its row is purged, which cascades its whole history.
 """
 
@@ -29,13 +29,13 @@ import httpx
 from psycopg_pool import AsyncConnectionPool
 
 from agents_orchestrator.db import agents as agents_repo
-from agents_orchestrator.db import clusters, queue
-from agents_orchestrator.db.clusters import Cluster, ClusterNotFound
-from agents_orchestrator.db.export import export_cluster_history
+from agents_orchestrator.db import queue, sessions
+from agents_orchestrator.db.export import export_session_history
 from agents_orchestrator.db.pool import listen, notify
+from agents_orchestrator.db.sessions import Session, SessionNotFound
 from agents_orchestrator.k8s.kube import FIELD_MANAGER, KubeApi, Obj, is_owned, pod_ready
-from agents_orchestrator.k8s.labels import cluster_labels, object_names, prefix
-from agents_orchestrator.k8s.render import pod_url, render_cluster
+from agents_orchestrator.k8s.labels import object_names, prefix, session_labels
+from agents_orchestrator.k8s.render import pod_url, render_session
 from agents_orchestrator.reconciler.checks import CheckRunner
 from agents_orchestrator.reconciler.discard_hook import HookResult, resolve_hook, run_discard_hook
 from agents_orchestrator.reconciler.init import InitGate, InitRunner
@@ -45,12 +45,12 @@ from agents_orchestrator.tokens import tokens_for
 
 log = logging.getLogger(__name__)
 
-CHANNELS = ("cluster_changed",)
+CHANNELS = ("session_changed",)
 GUARDED_KINDS = frozenset({"StatefulSet", "Service", "ConfigMap", "PersistentVolumeClaim"})
 # Deletion order: the StatefulSet first so its pods stop using the config and the volume.
 PRUNE_ORDER = ("StatefulSet", "Service", "ConfigMap", "PersistentVolumeClaim")
 # A discard also deletes the check Jobs and the init Job, ahead of the PVC they mount. A converge
-# never prunes them: they are created per check and once per cluster, not rendered.
+# never prunes them: they are created per check and once per session, not rendered.
 DISCARD_ORDER = ("Job", *PRUNE_ORDER)
 
 _HOOK_FAILURE_KEYS = ("discard_hook_failed", "discard_hook_failures", "discard_hook_next_at")
@@ -84,7 +84,7 @@ class Reconciler:
     # ------------------------------------------------------------------ lifecycle
 
     async def run(self, stop: asyncio.Event) -> None:
-        """Reconcile every `reconcile_poll_seconds`, and at once on NOTIFY cluster_changed."""
+        """Reconcile every `reconcile_poll_seconds`, and at once on NOTIFY session_changed."""
         wake = asyncio.Event()
 
         async def listener() -> None:
@@ -124,20 +124,20 @@ class Reconciler:
         await self._run_rebootstraps()
         await self.checks.run_once()
         async with self.pool.connection() as conn:
-            rows = await clusters.list_clusters(conn)
-        for cluster in rows:
+            rows = await sessions.list_sessions(conn)
+        for session in rows:
             try:
-                if cluster.desired == "deleting":
-                    await self._discard(cluster)
+                if session.desired == "deleting":
+                    await self._discard(session)
                 else:
-                    await self._converge(cluster)
+                    await self._converge(session)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                log.exception("reconcile of cluster %s failed", cluster.slug)
-                await self._record_error(cluster, exc)
+                log.exception("reconcile of session %s failed", session.slug)
+                await self._record_error(session, exc)
 
-    async def pre_discard(self, cluster: Cluster) -> bool:
+    async def pre_discard(self, session: Session) -> bool:
         """The gate before a discard deletes anything (D15): True lets the deletion proceed.
 
         With no hook, or after the export was delivered, it is True. Otherwise the history
@@ -146,8 +146,8 @@ class Reconciler:
         `discard_hook_next_at` and returns False, so nothing is deleted. The hook is retried
         once the database clock passes `discard_hook_next_at`.
         """
-        hook = resolve_hook(cluster, self.settings)
-        status = cluster.status
+        hook = resolve_hook(session, self.settings)
+        status = session.status
         if hook is None or status.get("discard_hook_delivered"):
             return True
         next_at = status.get("discard_hook_next_at")
@@ -164,23 +164,23 @@ class Reconciler:
             try:
                 result = await run_discard_hook(
                     hook,
-                    cluster,
-                    export_cluster_history(conn, cluster.id),
+                    session,
+                    export_session_history(conn, session.id),
                     self.settings.discard_hook_timeout_seconds,
                     transport=self.hook_transport,
                 )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                log.exception("discard hook of cluster %s crashed", cluster.slug)
+                log.exception("discard hook of session %s crashed", session.slug)
                 result = HookResult(False, f"{type(exc).__name__}: {exc}")
         if result.ok:
             async with self.pool.connection() as conn:
                 now = (await (await conn.execute("SELECT now()")).fetchone())[0]
             await self._write_status(
-                cluster,
+                session,
                 {"discard_hook_delivered": now.isoformat()},
-                cluster.observed_generation,
+                session.observed_generation,
                 drop=_HOOK_FAILURE_KEYS,
             )
             return True
@@ -192,40 +192,40 @@ class Reconciler:
                     await conn.execute("SELECT now() + make_interval(secs => %s)", (delay,))
                 ).fetchone()
             )[0]
-        log.warning("discard hook of cluster %s failed: %s", cluster.slug, result.reason)
+        log.warning("discard hook of session %s failed: %s", session.slug, result.reason)
         await self._write_status(
-            cluster,
+            session,
             {
                 "discard_hook_failed": result.reason,
                 "discard_hook_failures": failures,
                 "discard_hook_next_at": retry_at.isoformat(),
             },
-            cluster.observed_generation,
+            session.observed_generation,
         )
         return False
 
-    # ------------------------------------------------------------------ an active cluster
+    # ------------------------------------------------------------------ an active session
 
-    async def _converge(self, cluster: Cluster) -> None:
-        ns, slug = self.settings.namespace, cluster.slug
-        if not self.settings.agent_api_url and cluster.id not in self._warned_no_agent_url:
-            self._warned_no_agent_url.add(cluster.id)
-            log.warning("ORCH_AGENT_API_URL unset: cluster %s agents get no ORCH_AGENT_URL", slug)
-        replicas = cluster.spec.replicas
-        applied, since = await self._drain_replicas(cluster)
+    async def _converge(self, session: Session) -> None:
+        ns, slug = self.settings.namespace, session.slug
+        if not self.settings.agent_api_url and session.id not in self._warned_no_agent_url:
+            self._warned_no_agent_url.add(session.id)
+            log.warning("ORCH_AGENT_API_URL unset: session %s agents get no ORCH_AGENT_URL", slug)
+        replicas = session.spec.replicas
+        applied, since = await self._drain_replicas(session)
         rendered = (
-            cluster
+            session
             if applied == replicas
-            else replace(cluster, spec=cluster.spec.model_copy(update={"replicas": applied}))
+            else replace(session, spec=session.spec.model_copy(update={"replicas": applied}))
         )
-        objs = render_cluster(rendered, self.settings, tokens_for(self.settings, cluster.id))
+        objs = render_session(rendered, self.settings, tokens_for(self.settings, session.id))
 
         foreign = await self._foreign(slug, objs)
         if foreign:
             await self._write_status(
-                cluster,
+                session,
                 {"phase": "error", "message": "; ".join(foreign)},
-                cluster.observed_generation,
+                session.observed_generation,
             )
             return
 
@@ -233,10 +233,10 @@ class Reconciler:
             await self.kube.apply(obj, field_manager=FIELD_MANAGER, force=True)
         desired = {(o["kind"], o["metadata"]["name"]) for o in objs}
         await self._prune(slug, desired)
-        gate = await self.init.step(cluster)
+        gate = await self.init.step(session)
 
-        ready = await self._observe(cluster)
-        draining = await self._draining(cluster.id, replicas)
+        ready = await self._observe(session)
+        draining = await self._draining(session.id, replicas)
         if ready >= replicas:
             phase, message = "ready", ""
         else:
@@ -246,7 +246,7 @@ class Reconciler:
         if gate.hold:  # sessions wait for the init run
             phase = "pending"
         else:
-            problems = await self._bootstrap_sessions(cluster)
+            problems = await self._bootstrap_wrapper_sessions(session)
             if gate.degraded:  # a failed init starts the sessions anyway
                 phase = "degraded"
         fields: dict[str, Any] = {"phase": phase, "ready": ready, "replicas": replicas}
@@ -259,12 +259,12 @@ class Reconciler:
             }
             drain = f"draining {len(draining)} agents"
         fields["message"] = "; ".join(filter(None, [message, drain, gate.message, *problems]))
-        log.debug("cluster %s in %s: %s", slug, ns, phase)
+        log.debug("session %s in %s: %s", slug, ns, phase)
         await self._write_status(
-            cluster, fields, cluster.generation, drop=() if draining else ("drain",)
+            session, fields, session.generation, drop=() if draining else ("drain",)
         )
 
-    async def _draining(self, cluster_id: UUID, replicas: int) -> list[tuple[int, bool]]:
+    async def _draining(self, session_id: UUID, replicas: int) -> list[tuple[int, bool]]:
         """(ordinal, busy) of each agent at or above `replicas` that is not gone (D3).
 
         Busy: its `agent_status.state` is `busy`, or a message dispatched to it is still
@@ -273,16 +273,16 @@ class Reconciler:
         async with self.pool.connection() as conn:
             cur = await conn.execute(
                 "SELECT a.ordinal, COALESCE(s.state = 'busy', false) OR EXISTS ("
-                "  SELECT 1 FROM messages m WHERE m.cluster_id = a.cluster_id"
+                "  SELECT 1 FROM messages m WHERE m.session_id = a.session_id"
                 "  AND m.agent_id = a.id AND m.status IN ('dispatching', 'verifying'))"
                 " FROM agents a LEFT JOIN agent_status s ON s.agent_id = a.id"
-                " WHERE a.cluster_id = %s AND a.ordinal >= %s AND a.gone_at IS NULL"
+                " WHERE a.session_id = %s AND a.ordinal >= %s AND a.gone_at IS NULL"
                 " ORDER BY a.ordinal",
-                (cluster_id, replicas),
+                (session_id, replicas),
             )
             return [(ordinal, busy) for ordinal, busy in await cur.fetchall()]
 
-    async def _drain_replicas(self, cluster: Cluster) -> tuple[int, str | None]:
+    async def _drain_replicas(self, session: Session) -> tuple[int, str | None]:
         """The StatefulSet replicas of this tick and the drain's `since`, None when none.
 
         A scale-down keeps the pods up to the highest busy draining agent, so idle agents above
@@ -291,33 +291,33 @@ class Reconciler:
         is not recreated. `scale_drain_seconds` after the first tick that saw the drain (kept
         in `status.drain.since`, so it survives a failover) the target applies regardless.
         """
-        target = cluster.spec.replicas
-        draining = await self._draining(cluster.id, target)
+        target = session.spec.replicas
+        draining = await self._draining(session.id, target)
         if not draining:
             return target, None
         now = await self._db_now()
-        since = (cluster.status.get("drain") or {}).get("since") or now.isoformat()
+        since = (session.status.get("drain") or {}).get("since") or now.isoformat()
         busy = [ordinal for ordinal, is_busy in draining if is_busy]
         elapsed = (now - datetime.fromisoformat(since)).total_seconds()
         if not busy or elapsed >= self.settings.scale_drain_seconds:
             return target, since
-        name = object_names(cluster.slug)["statefulset"]
+        name = object_names(session.slug)["statefulset"]
         sts = await self.kube.get_object("StatefulSet", self.settings.namespace, name)
         current = ((sts or {}).get("spec") or {}).get("replicas", target)
         return max(target, min(1 + max(busy), current)), since
 
-    async def _bootstrap_sessions(self, cluster: Cluster) -> list[str]:
+    async def _bootstrap_wrapper_sessions(self, session: Session) -> list[str]:
         """Give every ready agent without a live session one (D6); messages of the failures."""
         if self.bootstrapper is None:
             return []
         async with self.pool.connection() as conn:
             agents = [
                 a
-                for a in await agents_repo.list_agents(conn, cluster.id)
+                for a in await agents_repo.list_agents(conn, session.id)
                 if a.ready and a.gone_at is None
             ]
-        token = tokens_for(self.settings, cluster.id).auth
-        return await self.bootstrapper.bootstrap_many(agents, cluster.spec, token)
+        token = tokens_for(self.settings, session.id).auth
+        return await self.bootstrapper.bootstrap_many(agents, session.spec, token)
 
     async def _foreign(self, slug: str, objs: list[Obj]) -> list[str]:
         """`foreign_object <kind>/<name>` for each rendered name held by an unlabelled object."""
@@ -334,17 +334,17 @@ class Reconciler:
     async def _prune(
         self, slug: str, desired: set[tuple[str, str]], order: tuple[str, ...] = PRUNE_ORDER
     ) -> None:
-        ns, selector = self.settings.namespace, cluster_labels(slug)
+        ns, selector = self.settings.namespace, session_labels(slug)
         for kind in order:
             for obj in await self.kube.list_objects(kind, ns, selector):
                 name = obj["metadata"]["name"]
                 if (kind, name) not in desired and is_owned(obj, slug):
                     await self.kube.delete(kind, ns, name)
 
-    async def _observe(self, cluster: Cluster) -> int:
+    async def _observe(self, session: Session) -> int:
         """Pods into agents rows; returns the number of ready pods within replicas."""
-        slug, replicas = cluster.slug, cluster.spec.replicas
-        pods = await self.kube.list_pods(self.settings.namespace, cluster_labels(slug))
+        slug, replicas = session.slug, session.spec.replicas
+        pods = await self.kube.list_pods(self.settings.namespace, session_labels(slug))
         base = prefix(slug) + "-"
         seen: dict[int, Obj] = {}
         for pod in pods:
@@ -360,7 +360,7 @@ class Reconciler:
                 ready += is_ready
                 await agents_repo.upsert_agent(
                     conn,
-                    cluster.id,
+                    session.id,
                     ordinal,
                     name,
                     pod_url(slug, name, self.settings),
@@ -368,7 +368,7 @@ class Reconciler:
                     is_ready,
                     (pod.get("status") or {}).get("podIP"),
                 )
-            for agent in await agents_repo.list_agents(conn, cluster.id):
+            for agent in await agents_repo.list_agents(conn, session.id):
                 if agent.ordinal in seen or agent.gone_at is not None:
                     continue
                 if agent.ordinal >= replicas:
@@ -376,46 +376,46 @@ class Reconciler:
                 elif agent.ready or agent.pod_phase is not None:
                     # the pod is being recreated: keep the agent, but never pick it meanwhile
                     await agents_repo.upsert_agent(
-                        conn, cluster.id, agent.ordinal, agent.pod_name, agent.url, None, False
+                        conn, session.id, agent.ordinal, agent.pod_name, agent.url, None, False
                     )
         return ready
 
-    # ------------------------------------------------------------------ a deleting cluster
+    # ------------------------------------------------------------------ a deleting session
 
-    async def _discard(self, cluster: Cluster) -> None:
+    async def _discard(self, session: Session) -> None:
         async with self.pool.connection() as conn:
-            await queue.cancel_checks(conn, cluster.id)
-        if not await self._quiesce(cluster):
+            await queue.cancel_checks(conn, session.id)
+        if not await self._quiesce(session):
             return
-        if not await self.pre_discard(cluster):
+        if not await self.pre_discard(session):
             await self._write_status(
-                cluster,
+                session,
                 {"phase": "deleting", "message": "waiting for the pre-discard hook"},
-                cluster.observed_generation,
+                session.observed_generation,
             )
             return
-        ns, slug = self.settings.namespace, cluster.slug
+        ns, slug = self.settings.namespace, session.slug
         await self._prune(slug, set(), DISCARD_ORDER)
         await self.kube.delete("Secret", ns, object_names(slug)["secret"])  # absent is fine
 
         remaining = await self._remaining(slug)
         if remaining:
             await self._write_status(
-                cluster,
+                session,
                 {"phase": "deleting", "message": "waiting for " + ", ".join(remaining)},
-                cluster.generation,
+                session.generation,
             )
             return
         async with self.pool.connection() as conn, conn.transaction():
-            await clusters.purge(conn, cluster.id)
-            await notify(conn, "status", {"cluster_id": str(cluster.id)})
-        log.info("cluster %s discarded", slug)
+            await sessions.purge(conn, session.id)
+            await notify(conn, "status", {"session_id": str(session.id)})
+        log.info("session %s discarded", slug)
 
     async def _db_now(self) -> datetime:
         async with self.pool.connection() as conn:
             return (await (await conn.execute("SELECT now()")).fetchone())[0]
 
-    async def _quiesce(self, cluster: Cluster) -> bool:
+    async def _quiesce(self, session: Session) -> bool:
         """Stop the agents and let the ingester drain before the history is exported.
 
         Only when an export is still owed (a hook that has not delivered). The StatefulSet is
@@ -424,21 +424,21 @@ class Reconciler:
         `discard_quiesce_timeout_seconds` from the first pass, after which the discard goes on
         and logs what it could not confirm. True means the export may run.
         """
-        if resolve_hook(cluster, self.settings) is None or cluster.status.get(
+        if resolve_hook(session, self.settings) is None or session.status.get(
             "discard_hook_delivered"
         ):
             return True
-        ns, slug = self.settings.namespace, cluster.slug
+        ns, slug = self.settings.namespace, session.slug
         now = await self._db_now()
-        status = cluster.status
+        status = session.status
         started = datetime.fromisoformat(status.get("discard_quiesce_started") or now.isoformat())
         fields: dict[str, Any] = {"discard_quiesce_started": started.isoformat()}
 
         name = object_names(slug)["statefulset"]
         sts = await self.kube.get_object("StatefulSet", ns, name)
         if sts is not None and is_owned(sts, slug) and (sts.get("spec") or {}).get("replicas") != 0:
-            for obj in render_cluster(
-                cluster, self.settings, tokens_for(self.settings, cluster.id)
+            for obj in render_session(
+                session, self.settings, tokens_for(self.settings, session.id)
             ):
                 if obj["kind"] == "StatefulSet":
                     obj["spec"]["replicas"] = 0
@@ -447,22 +447,22 @@ class Reconciler:
         base = prefix(slug) + "-"
         running = [
             p["metadata"]["name"]
-            for p in await self.kube.list_pods(ns, cluster_labels(slug))
+            for p in await self.kube.list_pods(ns, session_labels(slug))
             if is_owned(p, slug) and p["metadata"]["name"][len(base) :].isdigit()
         ]
         timed_out = (now - started).total_seconds() >= self.settings.discard_quiesce_timeout_seconds
         if running and not timed_out:
             fields["message"] = "waiting for agent pods to stop: " + ", ".join(sorted(running))
             await self._write_status(
-                cluster,
+                session,
                 {"phase": "deleting", **fields},
-                cluster.observed_generation,
+                session.observed_generation,
                 drop=("discard_quiesced_at",),
             )
             return False
         if running:
             log.warning(
-                "cluster %s: agent pods %s still running after %gs; exporting anyway",
+                "session %s: agent pods %s still running after %gs; exporting anyway",
                 slug,
                 running,
                 self.settings.discard_quiesce_timeout_seconds,
@@ -474,14 +474,14 @@ class Reconciler:
             if not drained and not timed_out:
                 fields["message"] = "waiting for the ingester to drain the agent streams"
                 await self._write_status(
-                    cluster, {"phase": "deleting", **fields}, cluster.observed_generation
+                    session, {"phase": "deleting", **fields}, session.observed_generation
                 )
                 return False
-        await self._write_status(cluster, fields, cluster.observed_generation)
+        await self._write_status(session, fields, session.observed_generation)
         return True
 
     async def _remaining(self, slug: str) -> list[str]:
-        ns, selector = self.settings.namespace, cluster_labels(slug)
+        ns, selector = self.settings.namespace, session_labels(slug)
         left = []
         for kind in DISCARD_ORDER:
             for obj in await self.kube.list_objects(kind, ns, selector):
@@ -513,15 +513,15 @@ class Reconciler:
     async def _restart(self, cmd: queue.Command) -> tuple[str, dict[str, Any]]:
         async with self.pool.connection() as conn:
             agent = await agents_repo.get_agent(conn, cmd.agent_id)
-            cluster = await clusters.get(conn, cmd.cluster_id)
-        if agent is None or cluster is None:
+            session = await sessions.get(conn, cmd.session_id)
+        if agent is None or session is None:
             return "failed", {"error": "agent_not_found"}
-        if cluster.desired == "deleting":
-            return "failed", {"error": "cluster_deleting"}
+        if session.desired == "deleting":
+            return "failed", {"error": "session_deleting"}
         if agent.gone_at is not None:
             return "failed", {"error": "agent_gone"}
-        ns, slug = self.settings.namespace, cluster.slug
-        pods = await self.kube.list_pods(ns, cluster_labels(slug))
+        ns, slug = self.settings.namespace, session.slug
+        pods = await self.kube.list_pods(ns, session_labels(slug))
         if not any(p["metadata"]["name"] == agent.pod_name and is_owned(p, slug) for p in pods):
             return "failed", {"error": "pod_not_found"}
         await self.kube.delete_pod(ns, agent.pod_name)
@@ -549,23 +549,23 @@ class Reconciler:
     async def _rebootstrap(self, cmd: queue.Command) -> tuple[str, dict[str, Any]]:
         async with self.pool.connection() as conn:
             agent = await agents_repo.get_agent(conn, cmd.agent_id)
-            cluster = await clusters.get(conn, cmd.cluster_id)
-        if agent is None or cluster is None:
+            session = await sessions.get(conn, cmd.session_id)
+        if agent is None or session is None:
             return "failed", {"error": "agent_not_found"}
         if agent.gone_at is not None:
             return "failed", {"error": "agent_gone"}
-        if cluster.desired == "deleting":
-            return "failed", {"error": "cluster_deleting"}
+        if session.desired == "deleting":
+            return "failed", {"error": "session_deleting"}
         async with self.pool.connection() as conn:
             await agents_repo.clear_wrapper_session(conn, agent.id)
         agent = replace(agent, wrapper_session_id=None, wrapper_session_created_at=None)
         if self.bootstrapper is None or not agent.ready:
             return "done", {"cleared": True, "bootstrapped": False}
-        gate = InitGate.of(cluster.status.get("init"), cluster.spec.init_scripts)
+        gate = InitGate.of(session.status.get("init"), session.spec.init_scripts)
         if gate.hold:  # the converge bootstraps it once the init run is over
             return "done", {"cleared": True, "bootstrapped": False, "message": gate.message}
-        token = tokens_for(self.settings, cluster.id).auth
-        problem = await self.bootstrapper.bootstrap(agent, cluster.spec, token)
+        token = tokens_for(self.settings, session.id).auth
+        problem = await self.bootstrapper.bootstrap(agent, session.spec, token)
         if problem:  # the session stays cleared; the next reconcile tick bootstraps it again (D6)
             return "done", {"cleared": True, "bootstrapped": False, "message": problem}
         return "done", {"cleared": True, "bootstrapped": True}
@@ -574,7 +574,7 @@ class Reconciler:
 
     async def _write_status(
         self,
-        cluster: Cluster,
+        session: Session,
         fields: dict[str, Any],
         observed_generation: int,
         drop: tuple[str, ...] = (),
@@ -586,23 +586,23 @@ class Reconciler:
         from waking it.
         """
         async with self.pool.connection() as conn, conn.transaction():
-            current = await clusters.get(conn, cluster.id)
+            current = await sessions.get(conn, session.id)
             if current is None:
                 return
             status = {k: v for k, v in current.status.items() if k not in drop} | fields
             if status == current.status and observed_generation == current.observed_generation:
                 return
-            await clusters.set_status(conn, cluster.id, status, observed_generation)
-            await notify(conn, "status", {"cluster_id": str(cluster.id)})
+            await sessions.set_status(conn, session.id, status, observed_generation)
+            await notify(conn, "status", {"session_id": str(session.id)})
 
-    async def _record_error(self, cluster: Cluster, exc: Exception) -> None:
+    async def _record_error(self, session: Session, exc: Exception) -> None:
         try:
             await self._write_status(
-                cluster,
+                session,
                 {"phase": "error", "message": str(exc) or type(exc).__name__},
-                cluster.observed_generation,
+                session.observed_generation,
             )
-        except ClusterNotFound:
+        except SessionNotFound:
             pass
         except Exception:
-            log.exception("could not record the error of cluster %s", cluster.slug)
+            log.exception("could not record the error of session %s", session.slug)

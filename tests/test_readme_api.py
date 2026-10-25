@@ -74,10 +74,10 @@ def test_sse_event_types_documented() -> None:
     emitted = set(re.findall(r'event="([a-z_]+)"', STREAMS))
     assert {
         "snapshot",
-        "cluster_status",
+        "session_status",
         "agent_status",
         "message_status",
-        "cluster_removed",
+        "session_removed",
         "leader_changed",
     } <= emitted
     events = section("API").split("### Events", 1)
@@ -91,7 +91,7 @@ def test_readme_documents_allowlist_and_limits() -> None:
     api = section("API")
     for needle in (
         "forbidden",
-        "cluster_limit",
+        "session_limit",
         "ORCH_ALLOWED_CIDRS",
         "caps",
         "max_replicas",
@@ -105,7 +105,7 @@ def test_architecture_documents_single_writer() -> None:
     for needle in (
         "single-writer",
         "one writer per table",
-        "cluster_changed",
+        "session_changed",
         "agent_free",
         "polling",
     ):
@@ -123,11 +123,11 @@ SERVICE_ROUTES = (
     "GET /api/v1/meta",
     "GET /api/v1/presets",
     "GET /api/v1/presets/{preset_id}",
-    "GET /api/v1/clusters",
-    "POST /api/v1/clusters",
-    "GET /api/v1/clusters/{cluster_id}",
-    "GET /api/v1/clusters/{cluster_id}/messages",
-    "POST /api/v1/clusters/{cluster_id}/messages",
+    "GET /api/v1/sessions",
+    "POST /api/v1/sessions",
+    "GET /api/v1/sessions/{session_id}",
+    "GET /api/v1/sessions/{session_id}/messages",
+    "POST /api/v1/sessions/{session_id}/messages",
     "GET /api/v1/messages/{message_id}",
 )
 

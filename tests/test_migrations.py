@@ -9,10 +9,10 @@ import pytest
 from factories import (
     insert_agent,
     insert_check,
-    insert_cluster,
     insert_command,
     insert_event,
     insert_message,
+    insert_session,
     insert_turn,
     set_agent_status,
 )
@@ -21,7 +21,7 @@ from agents_orchestrator.db.migrate import MIGRATIONS_DIR, run_migrations
 from agents_orchestrator.db.pool import listen, notify
 
 TABLES = {
-    "clusters",
+    "sessions",
     "agents",
     "agent_status",
     "messages",
@@ -53,10 +53,10 @@ def test_fresh_database_gets_all_tables(empty_dsn):
         }
         versions = [r[0] for r in c.execute("SELECT version FROM schema_migrations")]
     assert tables >= TABLES
-    assert versions == ["0001", "0002", "0003", "0004"]
+    assert versions == ["0001", "0002", "0003", "0004", "0005"]
 
 
-def test_presets_migration_on_existing_clusters(empty_dsn, tmp_path):
+def test_presets_migration_on_existing_sessions(empty_dsn, tmp_path):
     shutil.copy(MIGRATIONS_DIR / "0001_init.sql", tmp_path / "0001_init.sql")
     assert run_migrations(empty_dsn, tmp_path) == ["0001"]
     spec = {"replicas": 3, "model": "opus"}
@@ -65,10 +65,10 @@ def test_presets_migration_on_existing_clusters(empty_dsn, tmp_path):
             "INSERT INTO clusters (id, slug, spec) VALUES (gen_random_uuid(), 'old', %s)",
             (json.dumps(spec),),
         )
-    assert run_migrations(empty_dsn) == ["0002", "0003", "0004"]
+    assert run_migrations(empty_dsn) == ["0002", "0003", "0004", "0005"]
     with psycopg.connect(empty_dsn) as c:
         row = c.execute(
-            "SELECT spec, preset_id, preset_name FROM clusters WHERE slug='old'"
+            "SELECT spec, preset_id, preset_name FROM sessions WHERE slug='old'"
         ).fetchall()
         default = c.execute("SELECT name, spec FROM presets WHERE is_default").fetchall()
     assert row == [({**spec, "max_replicas": 3}, None, None)]
@@ -99,13 +99,13 @@ def test_concurrent_migrate_serialises(empty_dsn):
     [t.start() for t in threads]
     [t.join() for t in threads]
     assert not errors
-    assert sorted(len(r) for r in results) == [0, 4]
+    assert sorted(len(r) for r in results) == [0, 5]
     with psycopg.connect(empty_dsn) as c:
-        assert c.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 4
+        assert c.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 5
 
 
 async def test_events_unique_agent_session_seq(pool):
-    cl = await insert_cluster(pool)
+    cl = await insert_session(pool)
     ag = await insert_agent(pool, cl["id"])
     await insert_event(pool, cl["id"], ag["id"], wrapper_session_id="s", seq=1)
     with pytest.raises(psycopg.errors.UniqueViolation):
@@ -113,8 +113,8 @@ async def test_events_unique_agent_session_seq(pool):
     await insert_event(pool, cl["id"], ag["id"], wrapper_session_id="s2", seq=1)
 
 
-async def test_cluster_delete_cascades(pool):
-    cl = await insert_cluster(pool)
+async def test_session_delete_cascades(pool):
+    cl = await insert_session(pool)
     ag = await insert_agent(pool, cl["id"])
     await set_agent_status(pool, ag["id"])
     await insert_message(pool, cl["id"])
@@ -123,7 +123,7 @@ async def test_cluster_delete_cascades(pool):
     await insert_command(pool, ag["id"])
     await insert_check(pool, cl["id"])
     async with pool.connection() as conn:
-        await conn.execute("DELETE FROM clusters WHERE id=%s", (cl["id"],))
+        await conn.execute("DELETE FROM sessions WHERE id=%s", (cl["id"],))
         for t in ("agents", "agent_status", "messages", "events", "turns", "commands", "checks"):
             cur = await conn.execute(f"SELECT count(*) FROM {t}")
             assert (await cur.fetchone())[0] == 0, t
@@ -202,7 +202,7 @@ async def test_dispatch_columns_and_rebootstrap_kind(pool):
     assert "last_dispatched_at" in _columns(pool.conninfo, "agents")
     assert "wrapper_idle_since" in _columns(pool.conninfo, "agent_status")
     assert "heartbeat_at" in _columns(pool.conninfo, "messages")
-    cl = await insert_cluster(pool)
+    cl = await insert_session(pool)
     ag = await insert_agent(pool, cl["id"])
     cmd = await insert_command(pool, ag["id"], kind="rebootstrap")
     assert cmd["kind"] == "rebootstrap"
@@ -213,12 +213,12 @@ async def test_dispatch_columns_and_rebootstrap_kind(pool):
 async def test_retry_columns_verifying_status_and_no_purge_columns(pool):
     cols = _columns(pool.conninfo, "messages")
     assert {"not_before", "ambiguous_at"} <= cols
-    cl = await insert_cluster(pool)
+    cl = await insert_session(pool)
     m = await insert_message(pool, cl["id"], status="verifying")
     assert m["status"] == "verifying"
     with pytest.raises(psycopg.errors.CheckViolation):
         await insert_message(pool, cl["id"], status="nope")
-    ccols = _columns(pool.conninfo, "clusters")
+    ccols = _columns(pool.conninfo, "sessions")
     assert "deleted_at" not in ccols
     assert not any("purge" in c for c in ccols)
 
@@ -242,27 +242,29 @@ def test_default_preset_seeded(dsn):
         c.execute("INSERT INTO presets (id, name) VALUES (gen_random_uuid(), %s)", ("x" * 41,))
 
 
-def test_presets_migration_reapply_keeps_edited_default(empty_dsn):
-    run_migrations(empty_dsn)
+def test_presets_migration_reapply_keeps_edited_default(empty_dsn, tmp_path):
+    for name in ("0001_init.sql", "0002_presets.sql", "0003_hive.sql"):
+        shutil.copy(MIGRATIONS_DIR / name, tmp_path / name)
+    run_migrations(empty_dsn, tmp_path)
     with psycopg.connect(empty_dsn, autocommit=True) as c:
         c.execute("UPDATE presets SET spec = '{\"replicas\": 4}' WHERE is_default")
         c.execute("DELETE FROM schema_migrations WHERE version IN ('0002', '0003')")
-    assert run_migrations(empty_dsn) == ["0002", "0003"]
+    assert run_migrations(empty_dsn, tmp_path) == ["0002", "0003"]
     with psycopg.connect(empty_dsn) as c:
         assert c.execute("SELECT name, spec FROM presets").fetchall() == [
             ("Default", {"replicas": 4})
         ]
-        assert c.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 4
+        assert c.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 3
 
 
-async def test_preset_delete_keeps_cluster_provenance(pool):
-    cols = _columns(pool.conninfo, "clusters")
+async def test_preset_delete_keeps_session_provenance(pool):
+    cols = _columns(pool.conninfo, "sessions")
     assert {"preset_id", "preset_name"} <= cols
-    cl = await insert_cluster(pool)
+    cl = await insert_session(pool)
     async with pool.connection() as conn:
         assert await (
             await conn.execute(
-                "SELECT preset_id, preset_name FROM clusters WHERE id=%s", (cl["id"],)
+                "SELECT preset_id, preset_name FROM sessions WHERE id=%s", (cl["id"],)
             )
         ).fetchone() == (None, None)
         await conn.execute(
@@ -270,12 +272,12 @@ async def test_preset_delete_keeps_cluster_provenance(pool):
             ("00000000-0000-0000-0000-0000000000aa",),
         )
         await conn.execute(
-            "UPDATE clusters SET preset_id=%s, preset_name='Big' WHERE id=%s",
+            "UPDATE sessions SET preset_id=%s, preset_name='Big' WHERE id=%s",
             ("00000000-0000-0000-0000-0000000000aa", cl["id"]),
         )
         await conn.execute("DELETE FROM presets WHERE name='Big'")
         cur = await conn.execute(
-            "SELECT preset_id, preset_name FROM clusters WHERE id=%s", (cl["id"],)
+            "SELECT preset_id, preset_name FROM sessions WHERE id=%s", (cl["id"],)
         )
         assert await cur.fetchone() == (None, "Big")
 
@@ -295,7 +297,7 @@ def test_0003_hive_schema(empty_dsn):
     run_migrations(empty_dsn)
     with psycopg.connect(empty_dsn) as c:
         lr = _cols(c, "leadership_requests")
-        cl = _cols(c, "cluster_leaders")
+        cl = _cols(c, "session_leaders")
         fl = _cols(c, "file_locks")
         ag = _cols(c, "agents")
         idx = [
@@ -313,39 +315,41 @@ def test_0003_hive_schema(empty_dsn):
             )
         ]
     assert set(lr) == {
-        "id", "cluster_id", "kind", "from_agent_id", "to_agent_id", "reason", "epoch",
+        "id", "session_id", "kind", "from_agent_id", "to_agent_id", "reason", "epoch",
         "status", "reject_reason", "created_at", "decided_at",
     }  # fmt: skip
     assert lr["to_agent_id"][1] == "YES" and lr["epoch"][1] == "YES"
     assert lr["reason"][1] == "NO" and lr["status"][1] == "NO"
     assert set(cl) == {
-        "cluster_id", "agent_id", "epoch", "since", "reason", "unready_since",
+        "session_id", "agent_id", "epoch", "since", "reason", "unready_since",
         "feed_cursor", "state_hash", "state_pushed_at",
     }  # fmt: skip
     assert cl["feed_cursor"] == ("bigint", "NO") and cl["state_hash"][1] == "YES"
     assert cl["epoch"] == ("integer", "NO")
-    assert set(fl) == {"cluster_id", "path", "agent_id", "claimed_at"}
-    assert pk == ["cluster_id", "path"]
+    assert set(fl) == {"session_id", "path", "agent_id", "claimed_at"}
+    assert pk == ["path", "session_id"]
     assert ag["pod_ip"] == ("text", "YES")
-    assert any("(cluster_id, id)" in i and "queued" in i for i in idx)
+    assert any("(session_id, id)" in i and "queued" in i for i in idx)
 
 
-def test_0003_idempotent(empty_dsn):
-    run_migrations(empty_dsn)
+def test_0003_idempotent(empty_dsn, tmp_path):
+    for name in ("0001_init.sql", "0002_presets.sql", "0003_hive.sql"):
+        shutil.copy(MIGRATIONS_DIR / name, tmp_path / name)
+    run_migrations(empty_dsn, tmp_path)
     sql = (MIGRATIONS_DIR / "0003_hive.sql").read_text()
     with psycopg.connect(empty_dsn, autocommit=True) as c:
         c.execute(sql)
         c.execute(sql)
         c.execute("DELETE FROM schema_migrations WHERE version = '0003'")
-    assert run_migrations(empty_dsn) == ["0003"]
-    assert run_migrations(empty_dsn) == []
+    assert run_migrations(empty_dsn, tmp_path) == ["0003"]
+    assert run_migrations(empty_dsn, tmp_path) == []
 
 
 async def test_0003_constraints(pool):
-    cl = await insert_cluster(pool)
+    cl = await insert_session(pool)
     ag = await insert_agent(pool, cl["id"])
     ins = (
-        "INSERT INTO leadership_requests (cluster_id, kind, from_agent_id, status)"
+        "INSERT INTO leadership_requests (session_id, kind, from_agent_id, status)"
         " VALUES (%s, %s, %s, %s)"
     )
     async with pool.connection() as conn:
@@ -372,7 +376,8 @@ def test_0003_backfills_max_replicas(empty_dsn, tmp_path):
                 "INSERT INTO clusters (id, slug, spec) VALUES (gen_random_uuid(), %s, %s)",
                 (slug, json.dumps(spec)),
             )
-    assert run_migrations(empty_dsn) == ["0003", "0004"]
+    shutil.copy(MIGRATIONS_DIR / "0003_hive.sql", tmp_path / "0003_hive.sql")
+    assert run_migrations(empty_dsn, tmp_path) == ["0003"]
 
     def specs():
         with psycopg.connect(empty_dsn) as c:
@@ -387,7 +392,7 @@ def test_0003_backfills_max_replicas(empty_dsn, tmp_path):
     with psycopg.connect(empty_dsn, autocommit=True) as c:
         c.execute("UPDATE clusters SET spec = jsonb_set(spec, '{replicas}', '1') WHERE slug='a'")
         c.execute("DELETE FROM schema_migrations WHERE version = '0003'")
-    assert run_migrations(empty_dsn) == ["0003"]
+    assert run_migrations(empty_dsn, tmp_path) == ["0003"]
     assert specs()[0] == ("a", {"replicas": 1, "max_replicas": 3})
 
 
@@ -397,21 +402,22 @@ def test_0004_renames_wrapper_session_columns(empty_dsn, tmp_path):
     assert run_migrations(empty_dsn, tmp_path) == ["0001", "0002", "0003"]
     created = datetime(2026, 10, 25, 12, 0, tzinfo=UTC)
     with psycopg.connect(empty_dsn, autocommit=True) as c:
-        cluster = c.execute(
+        unit = c.execute(
             "INSERT INTO clusters (id, slug, spec) VALUES (gen_random_uuid(), 'old', '{}')"
             " RETURNING id"
         ).fetchone()[0]
         agent = c.execute(
             "INSERT INTO agents (id, cluster_id, ordinal, pod_name, session_id, session_created_at)"
             " VALUES (gen_random_uuid(), %s, 0, 'old-0', 'ws-1', %s) RETURNING id",
-            (cluster, created),
+            (unit, created),
         ).fetchone()[0]
         event = c.execute(
             "INSERT INTO events (cluster_id, agent_id, session_id, seq, type, data)"
             " VALUES (%s, %s, 'ws-1', 1, 'assistant_text', '{}') RETURNING id",
-            (cluster, agent),
+            (unit, agent),
         ).fetchone()[0]
-    assert run_migrations(empty_dsn) == ["0004"]
+    shutil.copy(MIGRATIONS_DIR / "0004_wrapper_session_id.sql", tmp_path)
+    assert run_migrations(empty_dsn, tmp_path) == ["0004"]
     with psycopg.connect(empty_dsn) as c:
         assert c.execute(
             "SELECT wrapper_session_id, wrapper_session_created_at FROM agents WHERE id=%s",
@@ -440,18 +446,101 @@ def test_0004_renames_wrapper_session_columns(empty_dsn, tmp_path):
 
 
 async def test_0003_feed_cursor_default(pool):
-    cl = await insert_cluster(pool)
+    cl = await insert_session(pool)
     ag = await insert_agent(pool, cl["id"])
     async with pool.connection() as conn:
-        assert (await (await conn.execute("SELECT count(*) FROM cluster_leaders")).fetchone())[
+        assert (await (await conn.execute("SELECT count(*) FROM session_leaders")).fetchone())[
             0
         ] == 0
         await conn.execute(
-            "INSERT INTO cluster_leaders (cluster_id, agent_id, epoch, since, reason)"
+            "INSERT INTO session_leaders (session_id, agent_id, epoch, since, reason)"
             " VALUES (%s, %s, 1, now(), 'init')",
             (cl["id"], ag["id"]),
         )
         row = await (
-            await conn.execute("SELECT feed_cursor, state_hash FROM cluster_leaders")
+            await conn.execute("SELECT feed_cursor, state_hash FROM session_leaders")
         ).fetchone()
     assert row == (0, None)
+
+
+def test_0005_renames_clusters_to_sessions(empty_dsn, tmp_path):
+    for path in sorted(MIGRATIONS_DIR.glob("000[1-4]_*.sql")):
+        shutil.copy(path, tmp_path / path.name)
+    assert run_migrations(empty_dsn, tmp_path) == ["0001", "0002", "0003", "0004"]
+    preset = "00000000-0000-0000-0000-0000000000bb"
+    with psycopg.connect(empty_dsn, autocommit=True) as c:
+        c.execute("INSERT INTO presets (id, name) VALUES (%s, 'Kept')", (preset,))
+        unit = c.execute(
+            "INSERT INTO clusters (id, slug, spec, preset_id, preset_name)"
+            " VALUES (gen_random_uuid(), 'kept', '{\"replicas\": 1}', %s, 'Kept') RETURNING id",
+            (preset,),
+        ).fetchone()[0]
+        agent = c.execute(
+            "INSERT INTO agents (id, cluster_id, ordinal, pod_name, wrapper_session_id)"
+            " VALUES (gen_random_uuid(), %s, 0, 'kept-0', 'ws-1') RETURNING id",
+            (unit,),
+        ).fetchone()[0]
+        message = c.execute(
+            "INSERT INTO messages (cluster_id, text) VALUES (%s, 'hi') RETURNING id", (unit,)
+        ).fetchone()[0]
+        event = c.execute(
+            "INSERT INTO events (cluster_id, agent_id, wrapper_session_id, seq, type)"
+            " VALUES (%s, %s, 'ws-1', 1, 'assistant_text') RETURNING id",
+            (unit, agent),
+        ).fetchone()[0]
+        check = c.execute(
+            "INSERT INTO checks (cluster_id, command) VALUES (%s, 'true') RETURNING id", (unit,)
+        ).fetchone()[0]
+        request = c.execute(
+            "INSERT INTO leadership_requests (cluster_id, kind, from_agent_id)"
+            " VALUES (%s, 'user', %s) RETURNING id",
+            (unit, agent),
+        ).fetchone()[0]
+        c.execute(
+            "INSERT INTO cluster_leaders (cluster_id, agent_id, epoch, since, reason)"
+            " VALUES (%s, %s, 3, now(), 'init')",
+            (unit, agent),
+        )
+        c.execute(
+            "INSERT INTO file_locks (cluster_id, path, agent_id) VALUES (%s, 'a.py', %s)",
+            (unit, agent),
+        )
+    assert run_migrations(empty_dsn) == ["0005"]
+    with psycopg.connect(empty_dsn) as c:
+        assert c.execute(
+            "SELECT id, slug, preset_id::text, preset_name FROM sessions"
+        ).fetchall() == [(unit, "kept", preset, "Kept")]
+        assert c.execute("SELECT id, session_id FROM agents").fetchall() == [(agent, unit)]
+        assert c.execute("SELECT id, session_id FROM messages").fetchall() == [(message, unit)]
+        assert c.execute("SELECT id, session_id FROM events").fetchall() == [(event, unit)]
+        assert c.execute("SELECT id, session_id FROM checks").fetchall() == [(check, unit)]
+        assert c.execute("SELECT id, session_id FROM leadership_requests").fetchall() == [
+            (request, unit)
+        ]
+        assert c.execute("SELECT session_id, agent_id, epoch FROM session_leaders").fetchall() == [
+            (unit, agent, 3)
+        ]
+        assert c.execute("SELECT session_id, path, agent_id FROM file_locks").fetchall() == [
+            (unit, "a.py", agent)
+        ]
+        names = [
+            r[0]
+            for r in c.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema='public'"
+                " UNION ALL SELECT column_name FROM information_schema.columns"
+                " WHERE table_schema='public'"
+                " UNION ALL SELECT indexname FROM pg_indexes WHERE schemaname='public'"
+                " UNION ALL SELECT conname FROM pg_constraint k JOIN pg_namespace n"
+                " ON n.oid = k.connamespace WHERE n.nspname='public'"
+                " UNION ALL SELECT relname FROM pg_class r JOIN pg_namespace n"
+                " ON n.oid = r.relnamespace WHERE n.nspname='public'"
+            )
+        ]
+        indexes = {r[0] for r in c.execute("SELECT indexname FROM pg_indexes")}
+        with pytest.raises(psycopg.errors.ForeignKeyViolation):
+            c.execute(
+                "INSERT INTO messages (session_id, text) VALUES (gen_random_uuid(), 'orphan')"
+            )
+    assert [n for n in names if "cluster" in n] == []
+    assert {"sessions", "session_leaders"} <= set(names)
+    assert {"messages_session_status_id", "events_session_id_desc"} <= indexes

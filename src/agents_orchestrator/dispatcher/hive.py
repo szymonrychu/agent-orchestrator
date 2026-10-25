@@ -1,16 +1,16 @@
 """Hive state and activity feed push (D3, D9, D23).
 
 `push_once` runs in the dispatcher process only, never in the singleton ingester. For each hive
-cluster it takes the cluster's advisory lock (try; skip when held) around the DB read, releases
+session it takes the session's advisory lock (try; skip when held) around the DB read, releases
 it, pushes notes to the agents' wrappers with no transaction open, then takes the lock again
 around the DB write. Pushes are best effort: a wrapper that is down, stopped or hanging costs
 that agent its note for this tick and nothing else.
 
 State kept here:
-- `cluster_leaders.state_hash` is a JSON map `{agent_id: hash}` of the hive state each agent
+- `session_leaders.state_hash` is a JSON map `{agent_id: hash}` of the hive state each agent
   last accepted, so one failing agent never causes re-pushes to the others. The dispatcher is
   the only writer. `state_pushed_at` moves only when every receiver took the current state.
-- `cluster_leaders.feed_cursor` is the last event id whose activity was handed out. Event ids
+- `session_leaders.feed_cursor` is the last event id whose activity was handed out. Event ids
   commit out of order across the ingester's per-agent transactions, so only rows older than
   FEED_SETTLE_SECONDS are consumed, and never past the first newer one. Bash calls still
   awaiting a result are carried in memory (`HiveState`) and hold the stored cursor back.
@@ -57,7 +57,7 @@ ClientFactory = Callable[[uuid.UUID, str], WrapperClient]
 
 @dataclass
 class HiveState:
-    """In-memory push state of one dispatcher: throttle clock and feed carry-over per cluster."""
+    """In-memory push state of one dispatcher: throttle clock and feed carry-over per session."""
 
     last_tick: dict[uuid.UUID, float] = field(default_factory=dict)
     watermark: dict[uuid.UUID, int] = field(default_factory=dict)
@@ -121,7 +121,7 @@ def render_hive_state(payload: dict[str, Any], slug: str, auto_compact_pct: int 
 
 
 def state_hash(leader: str, epoch: int, members: list[dict[str, Any]]) -> str:
-    """Changes with the leader, epoch, member set and sessions, ready, state, 10% context."""
+    """Changes with leader, epoch, member set, wrapper sessions, ready, state, 10% context."""
     pct = [None if m["context_pct"] is None else int(m["context_pct"] // 10) for m in members]
     key = [
         leader,
@@ -134,12 +134,12 @@ def state_hash(leader: str, epoch: int, members: list[dict[str, Any]]) -> str:
     return hashlib.sha256(json.dumps(key).encode()).hexdigest()
 
 
-# ---------------------------------------------------------------- one cluster, three phases
+# ---------------------------------------------------------------- one session, three phases
 
 
 @dataclass
 class _Plan:
-    cluster_id: uuid.UUID
+    session_id: uuid.UUID
     slug: str
     auto_compact_pct: int | None
     max_replicas: int
@@ -157,24 +157,24 @@ class _Plan:
         return [m for m in self.members if m["url"] and m["wrapper_session_id"]]
 
 
-async def _try_lock(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID) -> bool:
+async def _try_lock(conn: psycopg.AsyncConnection, session_id: uuid.UUID) -> bool:
     cur = await conn.execute(
         "SELECT pg_try_advisory_xact_lock(%s, hashtext(%s::text))",
-        (_CLAIM_LOCK_NAMESPACE, cluster_id),
+        (_CLAIM_LOCK_NAMESPACE, session_id),
     )
     row = await cur.fetchone()
     return bool(row and row[0])
 
 
 async def _read(
-    conn: psycopg.AsyncConnection, cluster: dict[str, Any], state: HiveState
+    conn: psycopg.AsyncConnection, session: dict[str, Any], state: HiveState
 ) -> _Plan | None:
     """Phase 1: under the lock, read the hive and consume the settled feed rows."""
-    cid = cluster["id"]
+    cid = session["id"]
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             "SELECT a.pod_name AS leader, l.epoch, l.feed_cursor, l.state_hash"
-            " FROM cluster_leaders l JOIN agents a ON a.id = l.agent_id WHERE l.cluster_id = %s",
+            " FROM session_leaders l JOIN agents a ON a.id = l.agent_id WHERE l.session_id = %s",
             (cid,),
         )
         leader = await cur.fetchone()
@@ -184,7 +184,7 @@ async def _read(
             "SELECT a.id, a.pod_name, a.url, a.wrapper_session_id, a.ready,"
             " coalesce(s.state, 'unknown') AS state, s.context_pct"
             " FROM agents a LEFT JOIN agent_status s ON s.agent_id = a.id"
-            " WHERE a.cluster_id = %s AND a.gone_at IS NULL ORDER BY a.ordinal",
+            " WHERE a.session_id = %s AND a.gone_at IS NULL ORDER BY a.ordinal",
             (cid,),
         )
         members = await cur.fetchall()
@@ -194,7 +194,7 @@ async def _read(
             "SELECT e.id, e.type, e.data, e.ts, coalesce(a.pod_name, 'agent') AS agent,"
             " e.created_at <= now() - make_interval(secs => %s) AS settled"
             " FROM events e LEFT JOIN agents a ON a.id = e.agent_id"
-            " WHERE e.cluster_id = %s AND e.id > %s AND e.type = ANY(%s)"
+            " WHERE e.session_id = %s AND e.id > %s AND e.type = ANY(%s)"
             " ORDER BY e.id LIMIT %s",
             (FEED_SETTLE_SECONDS, cid, start, list(_FEED_TYPES), FEED_BATCH),
         )
@@ -210,10 +210,10 @@ async def _read(
     state.watermark[cid] = watermark
     state.carried[cid] = [r for r in [*carried, *rows] if r["id"] in set(pending)]
     new_cursor = min([watermark, *(p - 1 for p in pending)])
-    spec = cluster["spec"]
+    spec = session["spec"]
     return _Plan(
-        cluster_id=cid,
-        slug=cluster["slug"],
+        session_id=cid,
+        slug=session["slug"],
         auto_compact_pct=spec.get("auto_compact_pct"),
         max_replicas=spec.get("max_replicas") or spec.get("replicas") or 1,
         static=bool(spec.get("static")),
@@ -257,7 +257,7 @@ async def _push_agent(
     """(outcome of the hive_state push or None when it was not due, notes accepted)."""
     state_outcome: NoteOutcome | None = None
     sent = 0
-    client = client_factory(plan.cluster_id, member["url"])
+    client = client_factory(plan.session_id, member["url"])
     if due:
         payload = hive_state_payload(
             member["pod_name"],
@@ -291,8 +291,8 @@ async def _claim(conn: psycopg.AsyncConnection, plan: _Plan, current: str) -> li
     hashes = {k: v for k, v in plan.hashes.items() if k in live}
     hashes.update({str(m["id"]): current for m in due})
     await conn.execute(
-        "UPDATE cluster_leaders SET state_hash = %s, feed_cursor = %s WHERE cluster_id = %s",
-        (json.dumps(hashes), plan.new_cursor, plan.cluster_id),
+        "UPDATE session_leaders SET state_hash = %s, feed_cursor = %s WHERE session_id = %s",
+        (json.dumps(hashes), plan.new_cursor, plan.session_id),
     )
     return due
 
@@ -305,8 +305,8 @@ async def _release(
     async with pool.connection() as conn, conn.transaction():
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "SELECT state_hash FROM cluster_leaders WHERE cluster_id = %s FOR UPDATE",
-                (plan.cluster_id,),
+                "SELECT state_hash FROM session_leaders WHERE session_id = %s FOR UPDATE",
+                (plan.session_id,),
             )
             row = await cur.fetchone()
         if row is None:
@@ -316,26 +316,26 @@ async def _release(
             if hashes.get(agent_id) == current:
                 del hashes[agent_id]
         await conn.execute(
-            "UPDATE cluster_leaders SET state_hash = %s,"
+            "UPDATE session_leaders SET state_hash = %s,"
             " state_pushed_at = CASE WHEN %s THEN now() ELSE state_pushed_at END"
-            " WHERE cluster_id = %s",
-            (json.dumps(hashes), all_ok, plan.cluster_id),
+            " WHERE session_id = %s",
+            (json.dumps(hashes), all_ok, plan.session_id),
         )
 
 
-async def _push_cluster(
+async def _push_session(
     pool: AsyncConnectionPool,
-    cluster: dict[str, Any],
+    session: dict[str, Any],
     client_factory: ClientFactory,
     state: HiveState,
     clock: Callable[[], float],
 ) -> int:
-    cid = cluster["id"]
+    cid = session["id"]
     async with pool.connection() as conn, conn.transaction():
         if not await _try_lock(conn, cid):
             return 0
         state.last_tick[cid] = clock()
-        plan = await _read(conn, cluster, state)
+        plan = await _read(conn, session, state)
         if plan is None:
             return 0
         current = state_hash(plan.leader, plan.epoch, plan.members)
@@ -363,23 +363,23 @@ async def push_once(
     state: HiveState | None = None,
     clock: Callable[[], float] = time.monotonic,
 ) -> int:
-    """One push pass over every hive cluster; returns the number of notes accepted.
+    """One push pass over every hive session; returns the number of notes accepted.
 
-    A cluster is evaluated at most once per PUSH_INTERVAL_SECONDS (by `clock`). One failing
-    cluster is logged and never holds up the others.
+    A session is evaluated at most once per PUSH_INTERVAL_SECONDS (by `clock`). One failing
+    session is logged and never holds up the others.
     """
     state = state if state is not None else HiveState()
     async with pool.connection() as conn:
-        clusters = await leadership.hive_clusters(conn)
+        sessions = await leadership.hive_sessions(conn)
     total = 0
-    for cluster in clusters:
-        last = state.last_tick.get(cluster["id"])
+    for session in sessions:
+        last = state.last_tick.get(session["id"])
         if last is not None and clock() - last < PUSH_INTERVAL_SECONDS:
             continue
         try:
-            total += await _push_cluster(pool, cluster, client_factory, state, clock)
+            total += await _push_session(pool, session, client_factory, state, clock)
         except asyncio.CancelledError:
             raise
         except Exception:
-            log.exception("hive push for cluster %s failed", cluster["id"])
+            log.exception("hive push for session %s failed", session["id"])
     return total

@@ -1,4 +1,4 @@
-"""Event paging, the per-cluster event stream and the status stream (D11, D14)."""
+"""Event paging, the per-session event stream and the status stream (D11, D14)."""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ import psycopg
 import pytest
 import pytest_asyncio
 import uvicorn
-from factories import insert_agent, insert_cluster, insert_message, set_agent_status
-from test_api_clusters import assert_error, make_settings
+from factories import insert_agent, insert_message, insert_session, set_agent_status
+from test_api_sessions import assert_error, make_settings
 
 from agents_orchestrator.api.app import create_app
 from agents_orchestrator.api.listener import Listener
@@ -90,7 +90,7 @@ async def open_sse(srv: Served, path: str, **kw) -> AsyncIterator[SSE]:
 
 
 async def _seed(pool, n: int, **kw):
-    cl = await insert_cluster(pool)
+    cl = await insert_session(pool)
     ag = await insert_agent(pool, cl["id"])
     async with pool.connection() as conn:
         for i in range(1, n + 1):
@@ -111,7 +111,7 @@ def _ids(events) -> list[int]:
 async def test_events_page_backwards(srv, pool):
     cl, _ = await _seed(pool, 7)
     async with srv.client() as c:
-        url = f"/api/v1/clusters/{cl['id']}/events"
+        url = f"/api/v1/sessions/{cl['id']}/events"
         newest = (await c.get(url, params={"limit": 3})).json()
         assert len(newest["events"]) == 3
         assert newest["has_more_before"] is True
@@ -133,36 +133,36 @@ async def test_events_page_backwards(srv, pool):
         assert len(flt["events"]) == 2
         none = (await c.get(url, params={"types": "nothing"})).json()
         assert none["events"] == []
-        assert_error(await c.get(f"/api/v1/clusters/{cl['id']}x/events"), 422, "invalid_request")
+        assert_error(await c.get(f"/api/v1/sessions/{cl['id']}x/events"), 422, "invalid_request")
 
 
 async def test_event_view_wrapper_session_id(srv, pool):
     cl, _ = await _seed(pool, 1)
     async with srv.client() as c:
-        page = (await c.get(f"/api/v1/clusters/{cl['id']}/events")).json()
+        page = (await c.get(f"/api/v1/sessions/{cl['id']}/events")).json()
     [event] = page["events"]
     assert event["wrapper_session_id"] == "s1"
-    assert "session_id" not in event
+    assert event["session_id"] == str(cl["id"])
 
 
 async def test_events_page_rejects_both_cursors(srv, pool):
     cl, _ = await _seed(pool, 2)
     async with srv.client() as c:
         r = await c.get(
-            f"/api/v1/clusters/{cl['id']}/events", params={"before_id": 5, "after_id": 1}
+            f"/api/v1/sessions/{cl['id']}/events", params={"before_id": 5, "after_id": 1}
         )
         assert_error(r, 400, "bad_request")
         r = await c.get(
-            f"/api/v1/clusters/{cl['id']}/events/stream", headers={"Last-Event-ID": "x"}
+            f"/api/v1/sessions/{cl['id']}/events/stream", headers={"Last-Event-ID": "x"}
         )
         assert_error(r, 400, "bad_request")
-        r = await c.get("/api/v1/clusters/00000000-0000-0000-0000-000000000000/events/stream")
+        r = await c.get("/api/v1/sessions/00000000-0000-0000-0000-000000000000/events/stream")
         assert_error(r, 404, "not_found")
 
 
 async def test_events_stream_live_append(srv, pool):
     cl, ag = await _seed(pool, 3)
-    async with open_sse(srv, f"/api/v1/clusters/{cl['id']}/events/stream") as sse:
+    async with open_sse(srv, f"/api/v1/sessions/{cl['id']}/events/stream") as sse:
         # starts at the newest id: the 3 stored rows are not replayed
         await asyncio.sleep(0.2)
         async with pool.connection() as conn:
@@ -189,10 +189,10 @@ async def test_events_stream_live_append(srv, pool):
 async def test_events_stream_resumes_from_last_event_id(srv, pool):
     cl, ag = await _seed(pool, 5)
     async with srv.client() as c:
-        stored = (await c.get(f"/api/v1/clusters/{cl['id']}/events")).json()["events"]
+        stored = (await c.get(f"/api/v1/sessions/{cl['id']}/events")).json()["events"]
     ids = _ids(stored)
     async with open_sse(
-        srv, f"/api/v1/clusters/{cl['id']}/events/stream", headers={"Last-Event-ID": str(ids[1])}
+        srv, f"/api/v1/sessions/{cl['id']}/events/stream", headers={"Last-Event-ID": str(ids[1])}
     ) as sse:
         got = [int((await sse.next())["id"]) for _ in range(3)]
         assert got == ids[2:]
@@ -203,20 +203,20 @@ async def test_events_stream_resumes_from_last_event_id(srv, pool):
         nxt = await sse.next()
         assert int(nxt["id"]) == ids[-1] + 1
     async with open_sse(
-        srv, f"/api/v1/clusters/{cl['id']}/events/stream", params={"after_id": ids[3]}
+        srv, f"/api/v1/sessions/{cl['id']}/events/stream", params={"after_id": ids[3]}
     ) as sse:
         assert [int((await sse.next())["id"]) for _ in range(2)] == [ids[4], ids[4] + 1]
 
 
 async def test_status_stream_snapshot_and_delta(srv, pool):
-    cl = await insert_cluster(pool)
-    other = await insert_cluster(pool)
+    cl = await insert_session(pool)
+    other = await insert_session(pool)
     ag = await insert_agent(pool, cl["id"], ready=True)
     await set_agent_status(pool, ag["id"], state="idle")
     async with open_sse(srv, "/api/v1/stream") as sse:
         snap = await sse.next()
         assert snap["event"] == "snapshot"
-        by_id = {x["cluster"]["id"]: x for x in snap["data"]["clusters"]}
+        by_id = {x["session"]["id"]: x for x in snap["data"]["sessions"]}
         assert set(by_id) == {str(cl["id"]), str(other["id"])}
         assert [a["id"] for a in by_id[str(cl["id"])]["agents"]] == [str(ag["id"])]
         assert by_id[str(cl["id"])]["agents"][0]["state"] == "idle"
@@ -224,15 +224,15 @@ async def test_status_stream_snapshot_and_delta(srv, pool):
         await set_agent_status(pool, ag["id"], state="busy", current_turn_id="t1")
         await insert_message(pool, cl["id"])
         async with pool.connection() as conn:
-            await notify(conn, "status", {"cluster_id": str(cl["id"])})
+            await notify(conn, "status", {"session_id": str(cl["id"])})
         seen = {}
         for _ in range(3):
             f = await sse.next()
             seen[f["event"]] = f["data"]
-        assert set(seen) == {"cluster_status", "agent_status", "message_status"}
-        assert seen["cluster_status"]["cluster"]["id"] == str(cl["id"])
-        assert seen["cluster_status"]["cluster"]["summary"]["state"] == "working"
-        assert seen["agent_status"]["cluster_id"] == str(cl["id"])
+        assert set(seen) == {"session_status", "agent_status", "message_status"}
+        assert seen["session_status"]["session"]["id"] == str(cl["id"])
+        assert seen["session_status"]["session"]["summary"]["state"] == "working"
+        assert seen["agent_status"]["session_id"] == str(cl["id"])
         assert seen["agent_status"]["agent"]["state"] == "busy"
         ms = seen["message_status"]
         assert ms["queued"] == 1 and ms["failed"] == 0
@@ -252,12 +252,12 @@ async def test_stream_recovers_from_lost_notify(srv, pool, dsn):
             f = await sse.next()
             got[f["event"]] = f["data"]
         assert got["agent_status"]["agent"]["state"] == "busy"
-    async with open_sse(srv, f"/api/v1/clusters/{cl['id']}/events/stream") as sse:
+    async with open_sse(srv, f"/api/v1/sessions/{cl['id']}/events/stream") as sse:
         await asyncio.sleep(0.2)
         # a row inserted without NOTIFY (plain INSERT, no pg_notify)
         async with await psycopg.AsyncConnection.connect(dsn, autocommit=True) as conn:
             await conn.execute(
-                "INSERT INTO events (cluster_id, agent_id, wrapper_session_id, seq, type, data)"
+                "INSERT INTO events (session_id, agent_id, wrapper_session_id, seq, type, data)"
                 " VALUES (%s,%s,'s1',99,'idle','{}')",
                 (cl["id"], ag["id"]),
             )
@@ -278,7 +278,7 @@ async def test_shared_listener_single_connection(dsn, admin_dsn):
             )
             assert (await cur.fetchone())[0] == 1
         async with await psycopg.AsyncConnection.connect(dsn, autocommit=True) as conn:
-            await notify(conn, "events", {"cluster_id": "c", "max_id": 1})
+            await notify(conn, "events", {"session_id": "c", "max_id": 1})
         for s in subs:
             assert await s.wait(5) is True
     finally:
@@ -293,7 +293,7 @@ async def test_slow_subscriber_is_dropped(dsn):
         fast = listener.subscribe(["events"])
         async with await psycopg.AsyncConnection.connect(dsn, autocommit=True) as conn:
             for i in range(6):
-                await notify(conn, "events", {"cluster_id": "c", "max_id": i})
+                await notify(conn, "events", {"session_id": "c", "max_id": i})
                 await asyncio.sleep(0.05)
                 assert await fast.wait(1)
                 fast.drain()
@@ -308,7 +308,7 @@ async def test_slow_subscriber_is_dropped(dsn):
 
 async def test_sse_headers(srv, pool):
     cl, _ = await _seed(pool, 1)
-    for path in (f"/api/v1/clusters/{cl['id']}/events/stream", "/api/v1/stream"):
+    for path in (f"/api/v1/sessions/{cl['id']}/events/stream", "/api/v1/stream"):
         async with srv.client() as c, c.stream("GET", path) as resp:
             assert resp.status_code == 200
             assert resp.headers["x-accel-buffering"] == "no"
@@ -329,7 +329,7 @@ async def test_disconnect_unsubscribes(srv, pool):
     assert listener.subscriber_count() == 0
 
 
-async def test_events_stream_ignores_other_clusters_notify(pool, dsn, monkeypatch):
+async def test_events_stream_ignores_other_sessions_notify(pool, dsn, monkeypatch):
     from agents_orchestrator.api import streams
 
     calls = 0
@@ -343,14 +343,14 @@ async def test_events_stream_ignores_other_clusters_notify(pool, dsn, monkeypatc
     monkeypatch.setattr(streams.ev, "page", counting)
     cl, ag = await _seed(pool, 1)
     app = create_app(make_settings(dsn, allowed_cidrs="127.0.0.0/8"), pool, stream_poll_seconds=30)
-    async with serve(app) as s, open_sse(s, f"/api/v1/clusters/{cl['id']}/events/stream"):
+    async with serve(app) as s, open_sse(s, f"/api/v1/sessions/{cl['id']}/events/stream"):
         await asyncio.sleep(0.5)
         base = calls
         async with pool.connection() as conn:
-            await notify(conn, "events", {"cluster_id": "not-this-one", "max_id": 1})
+            await notify(conn, "events", {"session_id": "not-this-one", "max_id": 1})
         await asyncio.sleep(0.5)
         assert calls == base
         async with pool.connection() as conn:
-            await notify(conn, "events", {"cluster_id": str(cl["id"]), "max_id": 1})
+            await notify(conn, "events", {"session_id": str(cl["id"]), "max_id": 1})
         await asyncio.sleep(0.5)
         assert calls > base

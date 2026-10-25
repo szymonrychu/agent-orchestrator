@@ -1,1 +1,1 @@
-"""Kubernetes object rendering for agent clusters."""
+"""Kubernetes object rendering for agent sessions."""

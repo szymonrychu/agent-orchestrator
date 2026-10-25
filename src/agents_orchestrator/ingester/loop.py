@@ -49,7 +49,7 @@ def map_state(wrapper_state: str | None) -> str:
 @dataclass(frozen=True)
 class AgentRef:
     agent_id: uuid.UUID
-    cluster_id: uuid.UUID
+    session_id: uuid.UUID
     wrapper_session_id: str
     url: str
 
@@ -70,7 +70,7 @@ class _AgentStream:
         self.delay = ingester.backoff_initial
 
     async def run(self) -> None:
-        client = self.ing.wrapper_factory(self.ref.url, self.ref.cluster_id)
+        client = self.ing.wrapper_factory(self.ref.url, self.ref.session_id)
         try:
             while True:
                 try:
@@ -113,8 +113,8 @@ class _AgentStream:
                 last_seq=self.last_seq,
             )
             if change.became_idle:
-                await status.notify_agent_free(conn, ref.cluster_id, ref.agent_id)
-            await status.notify_status(conn, ref.cluster_id, ref.agent_id)
+                await status.notify_agent_free(conn, ref.session_id, ref.agent_id)
+            await status.notify_status(conn, ref.session_id, ref.agent_id)
         if closed:
             return True
         await self._refresh_peers(client)
@@ -145,7 +145,7 @@ class _AgentStream:
             return
         async with self.ing.pool.connection() as conn:
             await status.set_peers(conn, self.ref.agent_id, view.model_dump(mode="json"))
-            await status.notify_status(conn, self.ref.cluster_id, self.ref.agent_id)
+            await status.notify_status(conn, self.ref.session_id, self.ref.agent_id)
 
     # ------------------------------------------------------------------ envelopes
 
@@ -157,14 +157,14 @@ class _AgentStream:
             if env.seq > self.last_seq + 1:
                 await events.insert_gap(
                     conn,
-                    ref.cluster_id,
+                    ref.session_id,
                     ref.agent_id,
                     ref.wrapper_session_id,
                     self.last_seq,
                     env.seq,
                 )
             new_id = await events.insert_events(
-                conn, ref.cluster_id, ref.agent_id, ref.wrapper_session_id, [env.model_dump()]
+                conn, ref.session_id, ref.agent_id, ref.wrapper_session_id, [env.model_dump()]
             )
             # a replayed (already stored) or late (below last_seq) event is never re-projected
             if fresh and new_id is not None:
@@ -182,18 +182,18 @@ class _AgentStream:
                 conn, ref.agent_id, map_state(data.get("state")), since=data.get("since")
             )
             if change.became_idle:
-                await status.notify_agent_free(conn, ref.cluster_id, ref.agent_id)
+                await status.notify_agent_free(conn, ref.session_id, ref.agent_id)
             if change.changed:
-                await status.notify_status(conn, ref.cluster_id, ref.agent_id)
+                await status.notify_status(conn, ref.session_id, ref.agent_id)
             return _Projected(became_idle=change.became_idle)
         if env.type == "session_closed":
             change = await status.set_state(conn, ref.agent_id, "dead")
             if change.changed:
-                await status.notify_status(conn, ref.cluster_id, ref.agent_id)
+                await status.notify_status(conn, ref.session_id, ref.agent_id)
             return _Projected(closed=True)
         if env.type == "context":
             await status.set_context(conn, ref.agent_id, data)
-            await status.notify_status(conn, ref.cluster_id, ref.agent_id)
+            await status.notify_status(conn, ref.session_id, ref.agent_id)
         elif env.type == "turn_started" and data.get("turn_id"):
             turn_id = str(data["turn_id"])
             await status.upsert_turn(
@@ -205,7 +205,7 @@ class _AgentStream:
                 status="running",
             )
             await status.set_current_turn(conn, ref.agent_id, turn_id)
-            await status.notify_status(conn, ref.cluster_id, ref.agent_id)
+            await status.notify_status(conn, ref.session_id, ref.agent_id)
         elif env.type in _TURN_END:
             record = data.get("record") if isinstance(data.get("record"), dict) else data
             if record.get("turn_id"):
@@ -223,7 +223,7 @@ class _AgentStream:
                     usage=record.get("usage"),
                 )
                 await status.clear_current_turn(conn, ref.agent_id, turn_id)
-                await status.notify_status(conn, ref.cluster_id, ref.agent_id)
+                await status.notify_status(conn, ref.session_id, ref.agent_id)
         # user_message and every other type: stored as an events row only
         return _Projected()
 
@@ -249,10 +249,10 @@ class Ingester:
         self.cancel_grace = cancel_grace
         self._tasks: dict[uuid.UUID, tuple[AgentRef, asyncio.Task[None]]] = {}
 
-    def _default_factory(self, url: str, cluster_id: uuid.UUID) -> WrapperClient:
+    def _default_factory(self, url: str, session_id: uuid.UUID) -> WrapperClient:
         return WrapperClient(
             url,
-            tokens_for(self.settings, cluster_id).auth,
+            tokens_for(self.settings, session_id).auth,
             send_timeout=self.settings.wrapper_send_timeout_seconds,
         )
 
@@ -275,7 +275,7 @@ class Ingester:
     async def _wanted(self) -> dict[uuid.UUID, AgentRef]:
         async with self.pool.connection() as conn:
             cur = await conn.execute(
-                "SELECT id, cluster_id, wrapper_session_id, url FROM agents"
+                "SELECT id, session_id, wrapper_session_id, url FROM agents"
                 " WHERE wrapper_session_id IS NOT NULL AND url IS NOT NULL AND gone_at IS NULL"
             )
             rows = await cur.fetchall()

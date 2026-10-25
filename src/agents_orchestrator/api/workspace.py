@@ -1,7 +1,7 @@
 """The one seam through which the api calls wrapper pods (user decision N1, amends D5).
 
 This is the only api module allowed to import `agents_orchestrator.wrapper` or
-`agents_orchestrator.tokens` (tests/test_api_clusters.py pins it). The file and terminal proxy
+`agents_orchestrator.tokens` (tests/test_api_sessions.py pins it). The file and terminal proxy
 routes resolve an agent with `resolve_agent`, validate a terminal id with
 `validate_terminal_id`, and call the wrapper with `forward`; the terminal attach route relays
 a WebSocket to the wrapper with `websockets` (`attach_terminal`). There is no Kubernetes import:
@@ -33,11 +33,11 @@ from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 
 from agents_orchestrator.api import schemas
-from agents_orchestrator.api.clusters import Cfg, Pool
 from agents_orchestrator.api.errors import ApiError, not_found
 from agents_orchestrator.api.origin import require_allowed_origin
+from agents_orchestrator.api.sessions import Cfg, Pool
 from agents_orchestrator.db import agents as agents_repo
-from agents_orchestrator.db import clusters as clusters_repo
+from agents_orchestrator.db import sessions as sessions_repo
 from agents_orchestrator.settings import Settings, SettingsError
 from agents_orchestrator.tokens import tokens_for
 from agents_orchestrator.wrapper import WrapperClient, WrapperError, WrapperUnreachable
@@ -65,10 +65,10 @@ def validate_terminal_id(value: str) -> str:
 
 @dataclass(frozen=True)
 class WrapperTarget:
-    """One reachable wrapper pod and the bearer for its cluster."""
+    """One reachable wrapper pod and the bearer for its session."""
 
     agent_id: uuid.UUID
-    cluster_id: uuid.UUID
+    session_id: uuid.UUID
     pod_name: str
     url: str
     wrapper_session_id: str
@@ -89,54 +89,54 @@ async def resolve_agent(
     conn: psycopg.AsyncConnection,
     settings: Settings,
     *,
-    cluster_id: uuid.UUID | None = None,
+    session_id: uuid.UUID | None = None,
     agent_id: uuid.UUID | None = None,
 ) -> WrapperTarget:
     """The wrapper pod to call.
 
-    With `agent_id` that agent (404 `not_found` when unknown or when `cluster_id` is given and
-    differs); with only `cluster_id` the first agent by ordinal that is usable. Usable is the
+    With `agent_id` that agent (404 `not_found` when unknown or when `session_id` is given and
+    differs); with only `session_id` the first agent by ordinal that is usable. Usable is the
     dispatcher's notion (db/queue.py `_PICK`) minus idleness, since files and terminals work
     on a busy pod: the pod is ready, the agent is not gone, it has a url and a wrapper
-    session, its stored state is not `dead`, and its cluster is `desired = 'active'` (a
-    discarding cluster is being torn down). None usable, or the named agent not usable, is 409
-    `agent_not_ready`; an unknown cluster is 404; an unset master key is 503 `unavailable`.
+    session, its stored state is not `dead`, and its orchestrator session is `desired = 'active'` (a
+    discarding session is being torn down). None usable, or the named agent not usable, is 409
+    `agent_not_ready`; an unknown session is 404; an unset master key is 503 `unavailable`.
     """
-    if agent_id is None and cluster_id is None:
-        raise ApiError(422, "invalid_request", "an agent or a cluster is required")
+    if agent_id is None and session_id is None:
+        raise ApiError(422, "invalid_request", "an agent or a session is required")
     if agent_id is not None:
         agent = await agents_repo.get_agent(conn, agent_id)
-        if agent is None or (cluster_id is not None and agent.cluster_id != cluster_id):
+        if agent is None or (session_id is not None and agent.session_id != session_id):
             raise not_found("agent")
-        cluster_id = agent.cluster_id
-    assert cluster_id is not None
-    cluster = await clusters_repo.get(conn, cluster_id)
-    if cluster is None:
-        raise not_found("cluster")
-    states = await agents_repo.list_states(conn, cluster_id)
+        session_id = agent.session_id
+    assert session_id is not None
+    session = await sessions_repo.get(conn, session_id)
+    if session is None:
+        raise not_found("session")
+    states = await agents_repo.list_states(conn, session_id)
     if agent_id is not None:
         pool = [agent]
     else:
-        pool = await agents_repo.list_agents(conn, cluster_id)
+        pool = await agents_repo.list_agents(conn, session_id)
     candidates = [a for a in pool if _usable(a, states.get(a.id))]
-    if cluster.desired != "active" or not candidates:
-        raise ApiError(409, "agent_not_ready", "no agent of the cluster is ready")
+    if session.desired != "active" or not candidates:
+        raise ApiError(409, "agent_not_ready", "no agent of the session is ready")
     chosen = candidates[0]
-    return _target(chosen, cluster_id, _cluster_token(settings, cluster_id))
+    return _target(chosen, session_id, _session_token(settings, session_id))
 
 
-def _cluster_token(settings: Settings, cluster_id: uuid.UUID) -> str:
+def _session_token(settings: Settings, session_id: uuid.UUID) -> str:
     try:
-        return tokens_for(settings, cluster_id).auth
+        return tokens_for(settings, session_id).auth
     except SettingsError:
         raise ApiError(503, "unavailable", "wrapper access is not configured") from None
 
 
-def _target(agent: agents_repo.Agent, cluster_id: uuid.UUID, token: str) -> WrapperTarget:
+def _target(agent: agents_repo.Agent, session_id: uuid.UUID, token: str) -> WrapperTarget:
     assert agent.url is not None and agent.wrapper_session_id is not None
     return WrapperTarget(
         agent_id=agent.id,
-        cluster_id=cluster_id,
+        session_id=session_id,
         pod_name=agent.pod_name,
         url=agent.url,
         wrapper_session_id=agent.wrapper_session_id,
@@ -145,27 +145,27 @@ def _target(agent: agents_repo.Agent, cluster_id: uuid.UUID, token: str) -> Wrap
 
 
 async def resolve_agents(
-    conn: psycopg.AsyncConnection, settings: Settings, cluster_id: uuid.UUID
+    conn: psycopg.AsyncConnection, settings: Settings, session_id: uuid.UUID
 ) -> list[WrapperTarget]:
-    """Every usable agent of the cluster by ordinal (the fan-out of `resolve_agent`'s rule).
+    """Every usable agent of the session by ordinal (the fan-out of `resolve_agent`'s rule).
 
-    An unknown cluster is 404. A discarding cluster or one with no usable agent yields an empty
+    An unknown session is 404. A discarding session or one with no usable agent yields an empty
     list, so a fan-out answers with nothing to report; the master key is only needed (503
     `unavailable` when unset) once there is an agent to call.
     """
-    cluster = await clusters_repo.get(conn, cluster_id)
-    if cluster is None:
-        raise not_found("cluster")
-    if cluster.desired != "active":
+    session = await sessions_repo.get(conn, session_id)
+    if session is None:
+        raise not_found("session")
+    if session.desired != "active":
         return []
-    states = await agents_repo.list_states(conn, cluster_id)
+    states = await agents_repo.list_states(conn, session_id)
     usable = [
-        a for a in await agents_repo.list_agents(conn, cluster_id) if _usable(a, states.get(a.id))
+        a for a in await agents_repo.list_agents(conn, session_id) if _usable(a, states.get(a.id))
     ]
     if not usable:
         return []
-    token = _cluster_token(settings, cluster_id)
-    return [_target(a, cluster_id, token) for a in usable]
+    token = _session_token(settings, session_id)
+    return [_target(a, session_id, token) for a in usable]
 
 
 # -------------------------------------------------------------------------- shared client
@@ -253,7 +253,7 @@ async def _file_call[M: BaseModel](
     request: Request,
     pool: Pool,
     settings: Cfg,
-    cluster_id: uuid.UUID,
+    session_id: uuid.UUID,
     agent_id: uuid.UUID | None,
     tail: str,
     params: dict[str, Any],
@@ -261,12 +261,12 @@ async def _file_call[M: BaseModel](
 ) -> M:
     """Forward one file read to the agent chosen by `resolve_agent` and add the ids."""
     async with pool.connection() as conn:
-        target = await resolve_agent(conn, settings, cluster_id=cluster_id, agent_id=agent_id)
+        target = await resolve_agent(conn, settings, session_id=session_id, agent_id=agent_id)
     sid = quote(target.wrapper_session_id, safe="")
     body = await forward(request.app, target, "GET", f"/sessions/{sid}/{tail}", params=params)
     try:
         return model.model_validate(
-            {**body, "cluster_id": target.cluster_id, "agent_id": target.agent_id}
+            {**body, "session_id": target.session_id, "agent_id": target.agent_id}
         )
     except (ValidationError, TypeError):
         raise ApiError(
@@ -274,22 +274,22 @@ async def _file_call[M: BaseModel](
         ) from None
 
 
-@router.get("/clusters/{cluster_id}/files", response_model=schemas.FileListing)
+@router.get("/sessions/{session_id}/files", response_model=schemas.FileListing)
 async def list_files(
     request: Request,
     pool: Pool,
     settings: Cfg,
-    cluster_id: uuid.UUID,
+    session_id: uuid.UUID,
     path: str = "",
     offset: Annotated[int, Query(ge=0)] = 0,
     agent_id: uuid.UUID | None = None,
 ) -> schemas.FileListing:
-    """One directory of the cluster workdir, read by the first ready agent (or `agent_id`)."""
+    """One directory of the session workdir, read by the first ready agent (or `agent_id`)."""
     return await _file_call(
         request,
         pool,
         settings,
-        cluster_id,
+        session_id,
         agent_id,
         "files",
         {"path": path, "offset": offset},
@@ -297,21 +297,21 @@ async def list_files(
     )
 
 
-@router.get("/clusters/{cluster_id}/files/content", response_model=schemas.FileContent)
+@router.get("/sessions/{session_id}/files/content", response_model=schemas.FileContent)
 async def file_content(
     request: Request,
     pool: Pool,
     settings: Cfg,
-    cluster_id: uuid.UUID,
+    session_id: uuid.UUID,
     path: str = "",
     agent_id: uuid.UUID | None = None,
 ) -> schemas.FileContent:
-    """One file of the cluster workdir: text, or kind binary / too_large without content."""
+    """One file of the session workdir: text, or kind binary / too_large without content."""
     return await _file_call(
         request,
         pool,
         settings,
-        cluster_id,
+        session_id,
         agent_id,
         "files/content",
         {"path": path},
@@ -331,7 +331,7 @@ def _terminal_view(target: WrapperTarget, body: Any) -> schemas.TerminalView:
             {
                 **body,
                 "agent_id": target.agent_id,
-                "cluster_id": target.cluster_id,
+                "session_id": target.session_id,
                 "pod_name": target.pod_name,
             }
         )
@@ -378,13 +378,13 @@ async def _agent_terminals(
         return None
 
 
-@router.get("/clusters/{cluster_id}/terminals", response_model=schemas.TerminalList)
+@router.get("/sessions/{session_id}/terminals", response_model=schemas.TerminalList)
 async def list_terminals(
-    request: Request, pool: Pool, settings: Cfg, cluster_id: uuid.UUID
+    request: Request, pool: Pool, settings: Cfg, session_id: uuid.UUID
 ) -> schemas.TerminalList:
     """Every ready agent's shells, queried concurrently; failing agents are reported, not fatal."""
     async with pool.connection() as conn:
-        targets = await resolve_agents(conn, settings, cluster_id)
+        targets = await resolve_agents(conn, settings, session_id)
     answers = await asyncio.gather(*(_agent_terminals(request.app, t) for t in targets))
     terminals = [view for found in answers if found for view in found]
     down = [t.agent_id for t, found in zip(targets, answers, strict=True) if found is None]

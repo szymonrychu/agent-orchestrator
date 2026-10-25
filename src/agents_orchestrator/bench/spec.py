@@ -8,7 +8,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from agents_orchestrator.spec import ClusterSpec
+from agents_orchestrator.spec import SessionSpec
 
 _NAME = r"^[A-Za-z0-9][A-Za-z0-9_-]*$"
 
@@ -49,7 +49,7 @@ class BenchSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     arms: list[Arm] = Field(min_length=1)
-    cluster: ClusterSpec = ClusterSpec()
+    session: SessionSpec = SessionSpec()
     tasks: list[Task] = Field(min_length=1)
     repeats: int = Field(default=1, ge=1, le=1000)
     timeout_seconds: float = Field(default=1800, gt=0)

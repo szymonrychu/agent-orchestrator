@@ -14,7 +14,7 @@ from agents_orchestrator.db.pool import notify
 
 MAX_LIMIT = 500
 CHANNEL = "events"
-_COLUMNS = "id, cluster_id, agent_id, wrapper_session_id, seq, ts, type, turn_id, data"
+_COLUMNS = "id, session_id, agent_id, wrapper_session_id, seq, ts, type, turn_id, data"
 
 
 @dataclass
@@ -24,14 +24,14 @@ class Page:
     next_after_id: int | None = None
 
 
-async def _notify_new(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID, max_id: int) -> None:
+async def _notify_new(conn: psycopg.AsyncConnection, session_id: uuid.UUID, max_id: int) -> None:
     # ids only, never content: consumers re-read from the table
-    await notify(conn, CHANNEL, {"cluster_id": str(cluster_id), "max_id": max_id})
+    await notify(conn, CHANNEL, {"session_id": str(session_id), "max_id": max_id})
 
 
 async def insert_events(
     conn: psycopg.AsyncConnection,
-    cluster_id: uuid.UUID,
+    session_id: uuid.UUID,
     agent_id: uuid.UUID,
     wrapper_session_id: str,
     envelopes: Sequence[dict[str, Any]],
@@ -39,7 +39,7 @@ async def insert_events(
     """Insert wrapper envelopes {seq, ts, type, data}; duplicates are ignored.
 
     Returns the max id of the rows that were new, or None when nothing was new.
-    NOTIFYs `events {cluster_id, max_id}` only in the former case.
+    NOTIFYs `events {session_id, max_id}` only in the former case.
     """
     max_id: int | None = None
     for e in envelopes:
@@ -47,11 +47,11 @@ async def insert_events(
         turn_id = data.get("turn_id") if isinstance(data, dict) else None
         cur = await conn.execute(
             "INSERT INTO events"
-            " (cluster_id, agent_id, wrapper_session_id, seq, ts, type, turn_id, data)"
+            " (session_id, agent_id, wrapper_session_id, seq, ts, type, turn_id, data)"
             " VALUES (%s,%s,%s,%s,COALESCE(%s::timestamptz, now()),%s,%s,%s)"
             " ON CONFLICT (agent_id, wrapper_session_id, seq) DO NOTHING RETURNING id",
             (
-                cluster_id,
+                session_id,
                 agent_id,
                 wrapper_session_id,
                 e["seq"],
@@ -65,13 +65,13 @@ async def insert_events(
         if row is not None:
             max_id = row[0] if max_id is None else max(max_id, row[0])
     if max_id is not None:
-        await _notify_new(conn, cluster_id, max_id)
+        await _notify_new(conn, session_id, max_id)
     return max_id
 
 
 async def insert_gap(
     conn: psycopg.AsyncConnection,
-    cluster_id: uuid.UUID,
+    session_id: uuid.UUID,
     agent_id: uuid.UUID,
     wrapper_session_id: str,
     after_seq: int,
@@ -83,11 +83,11 @@ async def insert_gap(
     and is ignored by last_seq. Returns the new id (None if the gap already exists).
     """
     cur = await conn.execute(
-        "INSERT INTO events (cluster_id, agent_id, wrapper_session_id, seq, type, data)"
+        "INSERT INTO events (session_id, agent_id, wrapper_session_id, seq, type, data)"
         " VALUES (%s,%s,%s,%s,'gap',%s)"
         " ON CONFLICT (agent_id, wrapper_session_id, seq) DO NOTHING RETURNING id",
         (
-            cluster_id,
+            session_id,
             agent_id,
             wrapper_session_id,
             -before_seq,
@@ -97,7 +97,7 @@ async def insert_gap(
     row = await cur.fetchone()
     if row is None:
         return None
-    await _notify_new(conn, cluster_id, row[0])
+    await _notify_new(conn, session_id, row[0])
     return row[0]
 
 
@@ -115,7 +115,7 @@ async def last_seq(
 def _row(row: tuple) -> dict[str, Any]:
     keys = (
         "id",
-        "cluster_id",
+        "session_id",
         "agent_id",
         "wrapper_session_id",
         "seq",
@@ -129,14 +129,14 @@ def _row(row: tuple) -> dict[str, Any]:
 
 async def page(
     conn: psycopg.AsyncConnection,
-    cluster_id: uuid.UUID,
+    session_id: uuid.UUID,
     before_id: int | None = None,
     after_id: int | None = None,
     limit: int = 200,
     agent_id: uuid.UUID | None = None,
     types: Sequence[str] | None = None,
 ) -> Page:
-    """One page of a cluster's merged timeline, always in ascending id order.
+    """One page of a session's merged timeline, always in ascending id order.
 
     No cursor: the newest `limit` rows. before_id: the `limit` rows just older.
     after_id: the `limit` rows just newer. limit is capped at 500.
@@ -145,8 +145,8 @@ async def page(
         raise ValueError("before_id and after_id are mutually exclusive")
     limit = max(1, min(limit, MAX_LIMIT))
 
-    where = ["cluster_id = %s"]
-    params: list[Any] = [cluster_id]
+    where = ["session_id = %s"]
+    params: list[Any] = [session_id]
     if agent_id is not None:
         where.append("agent_id = %s")
         params.append(agent_id)

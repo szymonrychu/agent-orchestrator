@@ -17,7 +17,7 @@ from psycopg_pool import AsyncConnectionPool
 from agents_orchestrator.db import leadership, queue
 from agents_orchestrator.db.pool import listen
 from agents_orchestrator.dispatcher import hive
-from agents_orchestrator.dispatcher.verify import Verifier, cluster_max_attempts
+from agents_orchestrator.dispatcher.verify import Verifier, session_max_attempts
 from agents_orchestrator.settings import Settings
 from agents_orchestrator.tokens import tokens_for
 from agents_orchestrator.wrapper.client import WrapperClient
@@ -65,8 +65,8 @@ class Dispatcher:
             send_timeout=self.settings.wrapper_send_timeout_seconds,
         )
 
-    def _client(self, cluster_id: Any, url: str) -> WrapperClient:
-        return self._wrapper(url, tokens_for(self.settings, cluster_id).auth)
+    def _client(self, session_id: Any, url: str) -> WrapperClient:
+        return self._wrapper(url, tokens_for(self.settings, session_id).auth)
 
     async def run(self, stop: asyncio.Event) -> None:
         wake = asyncio.Event()
@@ -111,7 +111,7 @@ class Dispatcher:
         """Hive state and feed pushes: their own task, so a slow wrapper never delays drain.
 
         Wakes on `leader_changed` (from any dispatcher), after a local leader change and every
-        PUSH_INTERVAL_SECONDS; `push_once` throttles each cluster itself.
+        PUSH_INTERVAL_SECONDS; `push_once` throttles each session itself.
         """
         while not stop.is_set():
             self._push_wake.clear()
@@ -135,23 +135,23 @@ class Dispatcher:
         await self.verify_pending()
 
     async def _drain_leadership(self) -> None:
-        """Run the leadership pass for every hive cluster that needs one (D7).
+        """Run the leadership pass for every hive session that needs one (D7).
 
         Before the claims, so a message claimed on this wake already sees the new leader. One
-        failing cluster is logged and never holds up the others or the message drain.
+        failing session is logged and never holds up the others or the message drain.
         """
         async with self.pool.connection() as conn:
-            for cluster_id in await leadership.leadership_candidates(conn):
+            for session_id in await leadership.leadership_candidates(conn):
                 try:
-                    change = await leadership.leadership_pass(conn, cluster_id)
+                    change = await leadership.leadership_pass(conn, session_id)
                 except Exception:
-                    log.exception("leadership pass for cluster %s failed", cluster_id)
+                    log.exception("leadership pass for session %s failed", session_id)
                     continue
                 if change is not None:
                     self._push_wake.set()
                     log.info(
-                        "cluster %s leader %s epoch %s (%s)",
-                        cluster_id,
+                        "session %s leader %s epoch %s (%s)",
+                        session_id,
                         change.agent_id,
                         change.epoch,
                         change.reason,
@@ -205,7 +205,7 @@ class Dispatcher:
         if not claim.agent_url:
             outcome: Any = Unavailable("agent has no url")
         else:
-            client = self._client(claim.cluster_id, claim.agent_url)
+            client = self._client(claim.session_id, claim.agent_url)
             heartbeat = asyncio.create_task(self._heartbeat(claim.message_id))
             try:
                 outcome = await client.submit_turn(
@@ -237,7 +237,7 @@ class Dispatcher:
             elif isinstance(outcome, Rejected):
                 await queue.fail_message(conn, mid, "rejected")
             elif isinstance(outcome, Unavailable | Gone):
-                max_attempts = await cluster_max_attempts(conn, claim.cluster_id)
+                max_attempts = await session_max_attempts(conn, claim.session_id)
                 error = "session_gone" if isinstance(outcome, Gone) else "unavailable"
                 await queue.record_failure(
                     conn,
@@ -267,7 +267,7 @@ class Dispatcher:
     async def _run_command(self, cmd: queue.Command) -> tuple[str, dict[str, Any]]:
         if not cmd.agent_url or not cmd.wrapper_session_id:
             return "failed", {"error": "agent has no session"}
-        client = self._client(cmd.cluster_id, cmd.agent_url)
+        client = self._client(cmd.session_id, cmd.agent_url)
         try:
             if cmd.kind == "interrupt":
                 response = await client.interrupt(cmd.wrapper_session_id)

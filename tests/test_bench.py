@@ -16,7 +16,7 @@ SPEC = {
         {"name": "one", "replicas": 1, "peers": False},
         {"name": "three", "replicas": 3, "peers": True},
     ],
-    "cluster": {"model": "sonnet"},
+    "session": {"model": "sonnet"},
     "tasks": [{"name": "t1", "prompt": "do it", "verify": "true"}],
     "repeats": 2,
     "timeout_seconds": 5,
@@ -32,7 +32,7 @@ class FakeApi:
         self.view_ok = view_ok
         self.calls: list[tuple[str, str]] = []
         self.bodies: dict[str, dict] = {}
-        self.clusters: dict[str, int] = {}
+        self.sessions: dict[str, int] = {}
         self.next_msg = 0
         self.verify_status = verify_status
         self.stream_ok = stream_ok
@@ -42,17 +42,17 @@ class FakeApi:
         m, path = request.method, request.url.path
         self.calls.append((m, path))
         body = json.loads(request.content) if request.content else None
-        if (m, path) == ("POST", "/api/v1/clusters"):
-            cid = f"c{len(self.clusters)}"
-            self.clusters[cid] = body["spec"]["replicas"]
+        if (m, path) == ("POST", "/api/v1/sessions"):
+            cid = f"c{len(self.sessions)}"
+            self.sessions[cid] = body["spec"]["replicas"]
             self.bodies[cid] = body
             return httpx.Response(201, json={"id": cid, "slug": body["slug"]})
-        if m == "GET" and path.startswith("/api/v1/clusters/") and path.count("/") == 4:
+        if m == "GET" and path.startswith("/api/v1/sessions/") and path.count("/") == 4:
             if not self.view_ok:
                 return httpx.Response(500, text="boom")
             return httpx.Response(200, json={"id": path.rsplit("/", 1)[1], "leader_epoch": 4})
         if path.endswith("/agents"):
-            n = self.clusters[path.split("/")[4]]
+            n = self.sessions[path.split("/")[4]]
             return httpx.Response(
                 200,
                 json=[
@@ -82,7 +82,7 @@ class FakeApi:
         if m == "GET" and path == "/api/v1/stream":
             if not self.stream_ok:
                 return httpx.Response(503)
-            return httpx.Response(200, text='event: snapshot\ndata: {"clusters": []}\n\n')
+            return httpx.Response(200, text='event: snapshot\ndata: {"sessions": []}\n\n')
         if m == "POST" and path.endswith("/checks"):
             return httpx.Response(202, json={"check_id": 9})
         if m == "GET" and path == "/api/v1/checks/9":
@@ -108,7 +108,7 @@ def run(api, spec_data=SPEC, **kw):
 def test_spec_parsing_and_validation(tmp_path, capsys):
     spec = parse_spec(SPEC)
     assert [a.name for a in spec.arms] == ["one", "three"]
-    assert spec.cluster.model == "sonnet"
+    assert spec.session.model == "sonnet"
     bad = [
         ({**SPEC, "arms": []}, "arms"),
         ({**SPEC, "tasks": [{"name": "t", "prompt": "", "verify": "x"}]}, "tasks.0.prompt"),
@@ -138,7 +138,7 @@ def test_runs_each_arm_and_repeat():
         ("three", 1),
         ("three", 2),
     ]
-    assert api.calls.count(("POST", "/api/v1/clusters")) == 2
+    assert api.calls.count(("POST", "/api/v1/sessions")) == 2
     assert api.bodies["c1"]["spec"]["replicas"] == 3 and api.bodies["c1"]["spec"]["peers"] is True
     assert api.bodies["c0"]["spec"]["model"] == "sonnet"
     assert api.bodies["c0"]["slug"] == "bench-one-abc123"
@@ -197,12 +197,12 @@ def test_chaos_restart_called():
     assert not [c for c in quiet.calls if c[1].endswith("/restart")]
 
 
-def test_clusters_discarded_unless_keep():
+def test_sessions_discarded_unless_keep():
     api = FakeApi()
     run(api)
     assert sorted(p for m, p in api.calls if m == "DELETE") == [
-        "/api/v1/clusters/c0",
-        "/api/v1/clusters/c1",
+        "/api/v1/sessions/c0",
+        "/api/v1/sessions/c1",
     ]
     kept = FakeApi()
     run(kept, keep=True)
@@ -283,7 +283,7 @@ def test_example_has_hive_arm():
     assert "hive" in Path("examples/bench.yaml").read_text().split("arms:")[0]
 
 
-def test_leader_epoch_none_when_cluster_view_fails(caplog):
+def test_leader_epoch_none_when_session_view_fails(caplog):
     with caplog.at_level("WARNING", logger="agents_orchestrator.bench"):
         recs, _ = run(FakeApi(view_ok=False))
     assert recs and all(r["leader_epoch"] is None for r in recs)
@@ -292,15 +292,15 @@ def test_leader_epoch_none_when_cluster_view_fails(caplog):
 
 def test_example_bench_arms_pass_api_spec_validation():
     from agents_orchestrator.settings import Settings
-    from agents_orchestrator.spec import ClusterSpec, validate_spec
+    from agents_orchestrator.spec import SessionSpec, validate_spec
 
     settings = Settings(database_url="postgresql://x/x", master_key="k" * 32)
     spec = load_spec("examples/bench.yaml")
     for arm in spec.arms:
         body = {
-            **spec.cluster.model_dump(exclude_none=True, exclude={"max_replicas", "static"}),
+            **spec.session.model_dump(exclude_none=True, exclude={"max_replicas", "static"}),
             "replicas": arm.replicas,
             "peers": arm.peers,
             **arm.model_dump(include={"max_replicas", "static"}, exclude_none=True),
         }
-        validate_spec(ClusterSpec(**body), settings)
+        validate_spec(SessionSpec(**body), settings)

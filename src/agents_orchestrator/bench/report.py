@@ -21,7 +21,7 @@ _COLUMNS = (
 def summarize(records: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """One row per arm, in first-seen order.
 
-    leader_epoch is the last one recorded for the arm (the final cluster view).
+    leader_epoch is the last one recorded for the arm (the final session view).
     failures counts runs whose turn did not complete; wall figures cover completed runs only.
     """
     arms: dict[str, list[Mapping[str, Any]]] = {}

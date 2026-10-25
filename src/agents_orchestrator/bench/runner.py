@@ -25,7 +25,7 @@ _SESSION_STATES = ("idle", "busy")
 
 
 class BenchError(RuntimeError):
-    """The bench could not complete a step (API error, cluster never ready)."""
+    """The bench could not complete a step (API error, session never ready)."""
 
 
 def arm_slug(arm: str, run: str) -> str:
@@ -68,7 +68,7 @@ class Bench:
         self.records: list[dict[str, Any]] = []
         self._chaos_done = False
         self._arm_started = 0.0
-        self._cluster_id = ""
+        self._session_id = ""
 
     # ------------------------------------------------------------------ api helpers
     def _call(self, method: str, url: str, **kw: Any) -> Any:
@@ -94,18 +94,18 @@ class Bench:
                 self._discard(created)
         return self.records
 
-    def _discard(self, cluster_ids: list[str]) -> None:
-        for cid in cluster_ids:
+    def _discard(self, session_ids: list[str]) -> None:
+        for cid in session_ids:
             try:
-                self._call("DELETE", f"/api/v1/clusters/{cid}")
+                self._call("DELETE", f"/api/v1/sessions/{cid}")
             except BenchError as exc:
-                log.warning("discarding bench cluster %s failed: %s", cid, exc)
+                log.warning("discarding bench session %s failed: %s", cid, exc)
 
     def _run_arm(self, arm: Arm, created: list[str]) -> None:
         body = {
             "slug": arm_slug(arm.name, self.run_id),
             "spec": {
-                **self.spec.cluster.model_dump(
+                **self.spec.session.model_dump(
                     exclude_none=True, exclude={"max_replicas", "static"}
                 ),
                 "replicas": arm.replicas,
@@ -113,8 +113,8 @@ class Bench:
                 **arm.model_dump(include={"max_replicas", "static"}, exclude_none=True),
             },
         }
-        cluster = self._call("POST", "/api/v1/clusters", json=body)
-        cid = self._cluster_id = cluster["id"]
+        session = self._call("POST", "/api/v1/sessions", json=body)
+        cid = self._session_id = session["id"]
         created.append(cid)
         self._wait_ready(cid, arm.replicas)
         self._arm_started = time.monotonic()
@@ -127,7 +127,7 @@ class Bench:
         deadline = time.monotonic() + self.spec.timeout_seconds
         while True:
             agents = [
-                a for a in self._call("GET", f"/api/v1/clusters/{cid}/agents") if not a["gone"]
+                a for a in self._call("GET", f"/api/v1/sessions/{cid}/agents") if not a["gone"]
             ]
             if (
                 len(agents) == replicas
@@ -136,13 +136,15 @@ class Bench:
             ):
                 return
             if time.monotonic() > deadline:
-                raise BenchError(f"cluster {cid} not ready with {replicas} sessions in time")
+                raise BenchError(
+                    f"session {cid} not ready with {replicas} wrapper sessions in time"
+                )
             self.sleep(self.poll)
 
     def _run_one(self, arm: Arm, task: Task, repeat: int, cid: str) -> dict[str, Any]:
         t0 = time.monotonic()
         accepted = self._call(
-            "POST", f"/api/v1/clusters/{cid}/messages", json={"text": task.prompt}
+            "POST", f"/api/v1/sessions/{cid}/messages", json={"text": task.prompt}
         )
         mid = accepted["message_id"]
         msg = self._await_message(mid)
@@ -158,7 +160,7 @@ class Bench:
             "arm": arm.name,
             "task": task.name,
             "repeat": repeat,
-            "cluster_id": cid,
+            "session_id": cid,
             "message_id": mid,
             "wall_seconds": round(wall, 3),
             "turn_status": "completed" if completed else status,
@@ -172,7 +174,7 @@ class Bench:
 
     def _leader_epoch(self, cid: str) -> int | None:
         try:
-            return self._call("GET", f"/api/v1/clusters/{cid}").get("leader_epoch")
+            return self._call("GET", f"/api/v1/sessions/{cid}").get("leader_epoch")
         except BenchError as exc:
             log.warning("reading leader epoch of %s failed: %s", cid, exc)
             return None
@@ -250,7 +252,7 @@ class Bench:
             return
         if time.monotonic() - self._arm_started < chaos.after_seconds:
             return
-        agents = self._call("GET", f"/api/v1/clusters/{self._cluster_id}/agents")
+        agents = self._call("GET", f"/api/v1/sessions/{self._session_id}/agents")
         busy = [a for a in agents if not a["gone"] and a["state"] == "busy"]
         if busy:
             victim = self.rng.choice(busy)
@@ -259,7 +261,7 @@ class Bench:
             log.info("chaos: restarted agent %s", victim["id"])
 
     def _verify(self, cid: str, command: str) -> dict[str, Any]:
-        check_id = self._call("POST", f"/api/v1/clusters/{cid}/checks", json={"command": command})[
+        check_id = self._call("POST", f"/api/v1/sessions/{cid}/checks", json={"command": command})[
             "check_id"
         ]
         deadline = time.monotonic() + self.spec.timeout_seconds

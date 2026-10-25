@@ -1,6 +1,6 @@
 """Agent API (`/agent/v1`), served only on the agent port (see allowlist.PortGate).
 
-`require_agent()` is the identity contract of every agent route: a cluster token plus the
+`require_agent()` is the identity contract of every agent route: a session token plus the
 direct socket peer IP bound to a live agent pod. No forwarded header is read (D22).
 """
 
@@ -16,13 +16,13 @@ from xml.sax.saxutils import escape
 from fastapi import APIRouter, Depends, Header, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from agents_orchestrator.api import clusters as clusters_api
 from agents_orchestrator.api import schemas
-from agents_orchestrator.api.clusters import Cfg, Pool, edit_init_scripts, init_scripts_view
+from agents_orchestrator.api import sessions as sessions_api
 from agents_orchestrator.api.errors import ApiError
+from agents_orchestrator.api.sessions import Cfg, Pool, edit_init_scripts, init_scripts_view
 from agents_orchestrator.db import agents as agents_repo
-from agents_orchestrator.db import clusters as clusters_repo
 from agents_orchestrator.db import file_locks, leadership
+from agents_orchestrator.db import sessions as sessions_repo
 from agents_orchestrator.spec import WORKDIR_ROOT
 from agents_orchestrator.tokens import tokens_for
 
@@ -63,23 +63,23 @@ async def require_agent(
     x_orch_cluster: Annotated[str | None, Header()] = None,
 ) -> agents_repo.Agent:
     """The calling agent's row. 401 for any credential problem (one shared answer), 403 when
-    the socket peer is not the pod IP of a live agent of that cluster."""
+    the socket peer is not the pod IP of a live agent of that session."""
     scheme, _, presented = (authorization or "").partition(" ")
     try:
-        cluster_id = uuid.UUID(x_orch_cluster or "")
+        session_id = uuid.UUID(x_orch_cluster or "")
     except ValueError:
         raise _unauthorized() from None
     if scheme.lower() != "bearer" or not presented:
         raise _unauthorized()
     async with pool.connection() as conn:
-        cluster = await clusters_repo.get(conn, cluster_id)
-        expected = tokens_for(settings, cluster_id).agent
-        if cluster is None or not hmac.compare_digest(presented.encode(), expected.encode()):
+        session = await sessions_repo.get(conn, session_id)
+        expected = tokens_for(settings, session_id).agent
+        if session is None or not hmac.compare_digest(presented.encode(), expected.encode()):
             raise _unauthorized()
         client = request.scope.get("client")
-        agent = await agents_repo.by_pod_ip(conn, cluster_id, client[0]) if client else None
+        agent = await agents_repo.by_pod_ip(conn, session_id, client[0]) if client else None
     if agent is None:
-        raise ApiError(403, "forbidden", "caller is not a live agent pod of this cluster")
+        raise ApiError(403, "forbidden", "caller is not a live agent pod of this session")
     return agent
 
 
@@ -89,21 +89,21 @@ Caller = Annotated[agents_repo.Agent, Depends(require_agent)]
 @router.get("/me", response_model=Me, summary="Identity, leader and members of the caller")
 async def me(agent: Caller, pool: Pool) -> Me:
     async with pool.connection() as conn:
-        cluster = await clusters_repo.get(conn, agent.cluster_id)
-        leader = await agents_repo.leader_of(conn, agent.cluster_id)
-        members = await agents_repo.list_members(conn, agent.cluster_id)
-    assert cluster is not None
+        session = await sessions_repo.get(conn, agent.session_id)
+        leader = await agents_repo.leader_of(conn, agent.session_id)
+        members = await agents_repo.list_members(conn, agent.session_id)
+    assert session is not None
     leader_id = leader[0] if leader else None
     leader_pod = next((m["pod_name"] for m in members if m["id"] == leader_id), None)
     return Me(
-        cluster_id=agent.cluster_id,
+        cluster_id=agent.session_id,
         agent_id=agent.id,
         pod_name=agent.pod_name,
         ordinal=agent.ordinal,
         leader=leader_pod,
         epoch=leader[1] if leader else None,
-        max_replicas=cluster.spec.max_replicas or cluster.spec.replicas,
-        static=cluster.spec.static,
+        max_replicas=session.spec.max_replicas or session.spec.replicas,
+        static=session.spec.static,
         members=[
             Member(
                 pod_name=m["pod_name"],
@@ -117,25 +117,25 @@ async def me(agent: Caller, pool: Pool) -> Me:
     )
 
 
-_SCALE_STATUS = {**clusters_api.SCALE_STATUS, "not_leader": 403}
+_SCALE_STATUS = {**sessions_api.SCALE_STATUS, "not_leader": 403}
 
 
 @router.post(
     "/scale",
     status_code=202,
     response_model=schemas.ScaleResult,
-    summary="Scale the caller's cluster (leader only)",
+    summary="Scale the caller's session (leader only)",
 )
 async def scale(agent: Caller, body: schemas.ScaleRequest, pool: Pool) -> schemas.ScaleResult:
     async with pool.connection() as conn:
         try:
-            out = await clusters_repo.set_replicas(
-                conn, agent.cluster_id, body.replicas, caller_agent_id=agent.id
+            out = await sessions_repo.set_replicas(
+                conn, agent.session_id, body.replicas, caller_agent_id=agent.id
             )
-        except clusters_repo.ScaleRefused as exc:
+        except sessions_repo.ScaleRefused as exc:
             raise ApiError(_SCALE_STATUS.get(exc.code, 409), exc.code, str(exc)) from None
     return schemas.ScaleResult(
-        cluster_id=out.cluster_id,
+        session_id=out.session_id,
         replicas=out.replicas,
         previous_replicas=out.previous_replicas,
         max_replicas=out.max_replicas,
@@ -145,25 +145,25 @@ async def scale(agent: Caller, body: schemas.ScaleRequest, pool: Pool) -> schema
 @router.get(
     "/init-scripts",
     response_model=schemas.InitScriptsView,
-    summary="Init scripts and last init run of the caller's cluster",
+    summary="Init scripts and last init run of the caller's session",
 )
 async def init_scripts_get(agent: Caller, pool: Pool, settings: Cfg) -> schemas.InitScriptsView:
     async with pool.connection() as conn:
-        cluster = await clusters_repo.get(conn, agent.cluster_id)
-        assert cluster is not None
-        return init_scripts_view(conn, cluster, settings)
+        session = await sessions_repo.get(conn, agent.session_id)
+        assert session is not None
+        return init_scripts_view(conn, session, settings)
 
 
 @router.put(
     "/init-scripts",
     response_model=schemas.InitScriptsView,
-    summary="Replace the init scripts of the caller's cluster and its source preset",
+    summary="Replace the init scripts of the caller's session and its source preset",
 )
 async def init_scripts_put(
     body: schemas.InitScriptsIn, agent: Caller, pool: Pool, settings: Cfg
 ) -> schemas.InitScriptsView:
     async with pool.connection() as conn:
-        return await edit_init_scripts(conn, agent.cluster_id, body.scripts, settings)
+        return await edit_init_scripts(conn, agent.session_id, body.scripts, settings)
 
 
 @router.post(
@@ -177,11 +177,11 @@ async def handover(
 ) -> schemas.LeadershipRequested:
     """Queue a handover. The checks here fail fast; the dispatcher re-checks at apply time."""
     async with pool.connection() as conn:
-        cluster = await clusters_repo.get(conn, agent.cluster_id)
-        assert cluster is not None
-        if cluster.spec.alone:
-            raise ApiError(409, "alone", "a single-agent cluster has no leader to change")
-        leader = await leadership.current_leader(conn, agent.cluster_id)
+        session = await sessions_repo.get(conn, agent.session_id)
+        assert session is not None
+        if session.spec.alone:
+            raise ApiError(409, "alone", "a single-agent session has no leader to change")
+        leader = await leadership.current_leader(conn, agent.session_id)
         if leader is None or leader.agent_id != agent.id:
             raise ApiError(409, "not_leader", "only the current leader can hand leadership over")
         if body.epoch != leader.epoch:
@@ -193,16 +193,16 @@ async def handover(
             member = next(
                 (
                     m
-                    for m in await agents_repo.list_members(conn, agent.cluster_id)
+                    for m in await agents_repo.list_members(conn, agent.session_id)
                     if m["pod_name"] == body.to
                 ),
                 None,
             )
             if member is None:
-                raise ApiError(404, "not_found", f"agent {body.to} not found in this cluster")
+                raise ApiError(404, "not_found", f"agent {body.to} not found in this session")
             to_id = member["id"]
         request_id = await leadership.insert_request(
-            conn, agent.cluster_id, "handover", agent.id, to_id, body.reason, body.epoch
+            conn, agent.session_id, "handover", agent.id, to_id, body.reason, body.epoch
         )
     return schemas.LeadershipRequested(request_id=request_id)
 
@@ -255,7 +255,7 @@ class LockCheckOut(BaseModel):
 
 
 def _normalise(path: str, workdir: str) -> str | None:
-    """`path` relative to the cluster workdir, or None when it is empty, escapes or lies outside."""
+    """`path` relative to the session workdir, or None when it is empty, escapes or lies outside."""
     root = f"{WORKDIR_ROOT}/{workdir}"
     if path.startswith("/"):
         if not path.startswith(root + "/"):
@@ -268,13 +268,13 @@ def _normalise(path: str, workdir: str) -> str | None:
 
 
 async def _workdir(conn: Any, agent: agents_repo.Agent) -> str:
-    cluster = await clusters_repo.get(conn, agent.cluster_id)
-    assert cluster is not None
-    return cluster.spec.workdir
+    session = await sessions_repo.get(conn, agent.session_id)
+    assert session is not None
+    return session.spec.workdir
 
 
 def _invalid(path: str) -> ApiError:
-    return ApiError(400, "invalid_path", f"path {path!r} is empty or outside the cluster workdir")
+    return ApiError(400, "invalid_path", f"path {path!r} is empty or outside the session workdir")
 
 
 def _normalise_all(paths: list[str], workdir: str) -> list[str]:
@@ -292,7 +292,7 @@ def _normalise_all(paths: list[str], workdir: str) -> list[str]:
 async def locks_claim(body: LockPaths, agent: Caller, pool: Pool) -> LocksClaimed:
     async with pool.connection() as conn:
         paths = _normalise_all(body.paths, await _workdir(conn, agent))
-        claimed, held = await file_locks.claim(conn, agent.cluster_id, agent.id, paths)
+        claimed, held = await file_locks.claim(conn, agent.session_id, agent.id, paths)
     return LocksClaimed(claimed=claimed, held=[LockHeld(path=p, agent=a) for p, a in held])
 
 
@@ -300,14 +300,14 @@ async def locks_claim(body: LockPaths, agent: Caller, pool: Pool) -> LocksClaime
 async def locks_release(body: LockPaths, agent: Caller, pool: Pool) -> LocksReleased:
     async with pool.connection() as conn:
         paths = _normalise_all(body.paths, await _workdir(conn, agent))
-        released = await file_locks.release(conn, agent.cluster_id, agent.id, paths)
+        released = await file_locks.release(conn, agent.session_id, agent.id, paths)
     return LocksReleased(released=released)
 
 
 @router.get("/locks", response_model=LocksOut, summary="File locks held by live agents")
 async def locks_list(agent: Caller, pool: Pool) -> LocksOut:
     async with pool.connection() as conn:
-        locks = await file_locks.list_live(conn, agent.cluster_id)
+        locks = await file_locks.list_live(conn, agent.session_id)
     return LocksOut(
         locks=[LockOut(path=x.path, agent=x.agent, claimed_at=x.claimed_at) for x in locks]
     )
@@ -320,7 +320,7 @@ async def locks_list(agent: Caller, pool: Pool) -> LocksOut:
 )
 async def locks_reassign(body: LockReassignIn, agent: Caller, pool: Pool) -> LockReassigned:
     async with pool.connection() as conn:
-        leader = await leadership.current_leader(conn, agent.cluster_id)
+        leader = await leadership.current_leader(conn, agent.session_id)
         if leader is None or leader.agent_id != agent.id:
             raise ApiError(403, "not_leader", "only the current leader can reassign locks")
         (path,) = _normalise_all([body.path], await _workdir(conn, agent))
@@ -329,15 +329,15 @@ async def locks_reassign(body: LockReassignIn, agent: Caller, pool: Pool) -> Loc
             member = next(
                 (
                     m
-                    for m in await agents_repo.list_members(conn, agent.cluster_id)
+                    for m in await agents_repo.list_members(conn, agent.session_id)
                     if m["pod_name"] == body.to
                 ),
                 None,
             )
             if member is None:
-                raise ApiError(404, "not_found", f"agent {body.to} not found in this cluster")
+                raise ApiError(404, "not_found", f"agent {body.to} not found in this session")
             to_id = member["id"]
-        await file_locks.assign(conn, agent.cluster_id, path, to_id)
+        await file_locks.assign(conn, agent.session_id, path, to_id)
     return LockReassigned(path=path, agent=body.to)
 
 
@@ -379,7 +379,7 @@ async def locks_check(request: Request, agent: Caller, pool: Pool) -> LockCheckO
     async with pool.connection() as conn:
         path = _normalise(raw, await _workdir(conn, agent))
         lock = (
-            await file_locks.other_holder(conn, agent.cluster_id, agent.id, path)
+            await file_locks.other_holder(conn, agent.session_id, agent.id, path)
             if path is not None
             else None
         )

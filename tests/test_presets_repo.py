@@ -42,7 +42,7 @@ async def test_crud_round_trip_and_order(pool):
 
 
 def test_validate_preset_name():
-    for ok in ("a", "Big Cluster", "a.b-c_d 1", "x" * 40):
+    for ok in ("a", "Big Session", "a.b-c_d 1", "x" * 40):
         assert validate_preset_name(ok) == ok
     for bad in ("", "x" * 41, " lead", "trail ", " ", "bad/slash", "emoji!", "tab\tx", "a\n"):
         with pytest.raises(ValueError, match="name"):

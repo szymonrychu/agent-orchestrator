@@ -258,14 +258,14 @@ async def upsert_turn(
 
 
 async def notify_status(
-    conn: psycopg.AsyncConnection, cluster_id: uuid.UUID, agent_id: uuid.UUID
+    conn: psycopg.AsyncConnection, session_id: uuid.UUID, agent_id: uuid.UUID
 ) -> None:
-    await notify(conn, STATUS_CHANNEL, {"cluster_id": str(cluster_id), "agent_id": str(agent_id)})
+    await notify(conn, STATUS_CHANNEL, {"session_id": str(session_id), "agent_id": str(agent_id)})
 
 
 async def notify_agent_free(
-    conn: psycopg.AsyncConnection, cluster_id: uuid.UUID, agent_id: uuid.UUID
+    conn: psycopg.AsyncConnection, session_id: uuid.UUID, agent_id: uuid.UUID
 ) -> None:
     await notify(
-        conn, AGENT_FREE_CHANNEL, {"cluster_id": str(cluster_id), "agent_id": str(agent_id)}
+        conn, AGENT_FREE_CHANNEL, {"session_id": str(session_id), "agent_id": str(agent_id)}
     )

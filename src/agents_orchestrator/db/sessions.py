@@ -1,4 +1,4 @@
-"""clusters table repository. The api writes; the reconciler uses set_status and purge."""
+"""sessions table repository. The api writes; the reconciler uses set_status and purge."""
 
 from __future__ import annotations
 
@@ -12,26 +12,26 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from agents_orchestrator.db.pool import notify
-from agents_orchestrator.spec import ClusterSpec, validate_slug
+from agents_orchestrator.spec import SessionSpec, validate_slug
 
-CHANNEL = "cluster_changed"
-
-
-class ClusterExists(Exception):
-    """A cluster with this slug already has a row."""
+CHANNEL = "session_changed"
 
 
-class ClusterNotFound(Exception):
+class SessionExists(Exception):
+    """A session with this slug already has a row."""
+
+
+class SessionNotFound(Exception):
     pass
 
 
-class ClusterBeingDeleted(Exception):
-    """The cluster is being deleted and takes no more edits."""
+class SessionBeingDeleted(Exception):
+    """The session is being deleted and takes no more edits."""
 
 
 class ScaleRefused(Exception):
-    """A replica change was refused; `code` is one of cluster_deleting, not_leader,
-    static_cluster, out_of_range, leader_would_leave."""
+    """A replica change was refused; `code` is one of session_deleting, not_leader,
+    static_session, out_of_range, leader_would_leave."""
 
     def __init__(self, code: str, message: str = "") -> None:
         super().__init__(message or code)
@@ -40,17 +40,17 @@ class ScaleRefused(Exception):
 
 @dataclass(frozen=True)
 class ScaleOutcome:
-    cluster_id: uuid.UUID
+    session_id: uuid.UUID
     replicas: int
     previous_replicas: int
     max_replicas: int
 
 
 @dataclass(frozen=True)
-class Cluster:
+class Session:
     id: uuid.UUID
     slug: str
-    spec: ClusterSpec
+    spec: SessionSpec
     generation: int
     observed_generation: int
     desired: str
@@ -60,11 +60,11 @@ class Cluster:
     preset_name: str | None = None
 
 
-def _from_row(row: dict[str, Any]) -> Cluster:
-    return Cluster(
+def _from_row(row: dict[str, Any]) -> Session:
+    return Session(
         id=row["id"],
         slug=row["slug"],
-        spec=ClusterSpec.model_validate(row["spec"]),
+        spec=SessionSpec.model_validate(row["spec"]),
         generation=row["generation"],
         observed_generation=row["observed_generation"],
         desired=row["desired"],
@@ -75,118 +75,118 @@ def _from_row(row: dict[str, Any]) -> Cluster:
     )
 
 
-def _dump(spec: ClusterSpec) -> Jsonb:
+def _dump(spec: SessionSpec) -> Jsonb:
     return Jsonb(spec.model_dump(mode="json", exclude_none=True))
 
 
-async def _fetch(conn: psycopg.AsyncConnection, query: str, params: tuple) -> list[Cluster]:
+async def _fetch(conn: psycopg.AsyncConnection, query: str, params: tuple) -> list[Session]:
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(query, params)
         return [_from_row(r) for r in await cur.fetchall()]
 
 
-async def _notify(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID) -> None:
-    await notify(conn, CHANNEL, {"cluster_id": str(cluster_id)})
+async def _notify(conn: psycopg.AsyncConnection, session_id: uuid.UUID) -> None:
+    await notify(conn, CHANNEL, {"session_id": str(session_id)})
 
 
 async def create(
     conn: psycopg.AsyncConnection,
     slug: str,
-    spec: ClusterSpec,
+    spec: SessionSpec,
     preset_id: uuid.UUID | None = None,
     preset_name: str | None = None,
-) -> Cluster:
+) -> Session:
     validate_slug(slug)
     try:
         async with conn.transaction():
             rows = await _fetch(
                 conn,
-                "INSERT INTO clusters (id, slug, spec, preset_id, preset_name)"
+                "INSERT INTO sessions (id, slug, spec, preset_id, preset_name)"
                 " VALUES (%s, %s, %s, %s, %s) RETURNING *",
                 (uuid.uuid4(), slug, _dump(spec), preset_id, preset_name),
             )
             await _notify(conn, rows[0].id)
     except psycopg.errors.UniqueViolation:
-        raise ClusterExists(slug) from None
+        raise SessionExists(slug) from None
     return rows[0]
 
 
-async def get(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID) -> Cluster | None:
-    rows = await _fetch(conn, "SELECT * FROM clusters WHERE id = %s", (cluster_id,))
+async def get(conn: psycopg.AsyncConnection, session_id: uuid.UUID) -> Session | None:
+    rows = await _fetch(conn, "SELECT * FROM sessions WHERE id = %s", (session_id,))
     return rows[0] if rows else None
 
 
-async def get_by_slug(conn: psycopg.AsyncConnection, slug: str) -> Cluster | None:
-    rows = await _fetch(conn, "SELECT * FROM clusters WHERE slug = %s", (slug,))
+async def get_by_slug(conn: psycopg.AsyncConnection, slug: str) -> Session | None:
+    rows = await _fetch(conn, "SELECT * FROM sessions WHERE slug = %s", (slug,))
     return rows[0] if rows else None
 
 
-async def list_clusters(conn: psycopg.AsyncConnection) -> list[Cluster]:
-    return await _fetch(conn, "SELECT * FROM clusters ORDER BY created_at, slug", ())
+async def list_sessions(conn: psycopg.AsyncConnection) -> list[Session]:
+    return await _fetch(conn, "SELECT * FROM sessions ORDER BY created_at, slug", ())
 
 
 async def count_active(conn: psycopg.AsyncConnection) -> int:
-    cur = await conn.execute("SELECT count(*) FROM clusters")
+    cur = await conn.execute("SELECT count(*) FROM sessions")
     return (await cur.fetchone())[0]
 
 
-async def request_delete(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID) -> Cluster:
+async def request_delete(conn: psycopg.AsyncConnection, session_id: uuid.UUID) -> Session:
     async with conn.transaction():
         rows = await _fetch(
             conn,
-            "UPDATE clusters SET desired = 'deleting', generation = generation + 1"
+            "UPDATE sessions SET desired = 'deleting', generation = generation + 1"
             " WHERE id = %s AND desired = 'active' RETURNING *",
-            (cluster_id,),
+            (session_id,),
         )
         if rows:
-            await _notify(conn, cluster_id)
+            await _notify(conn, session_id)
             return rows[0]
-    existing = await get(conn, cluster_id)
+    existing = await get(conn, session_id)
     if existing is None:
-        raise ClusterNotFound(str(cluster_id))
+        raise SessionNotFound(str(session_id))
     return existing
 
 
 async def close_expired(conn: psycopg.AsyncConnection) -> list[uuid.UUID]:
-    """Flip active clusters past their autoclose time to deleting (the request_delete write)."""
+    """Flip active sessions past their autoclose time to deleting (the request_delete write)."""
     async with conn.transaction():
         cur = await conn.execute(
-            "UPDATE clusters SET desired = 'deleting', generation = generation + 1"
+            "UPDATE sessions SET desired = 'deleting', generation = generation + 1"
             " WHERE desired = 'active' AND spec ? 'autoclose_after_seconds'"
             " AND created_at + make_interval(secs => (spec->>'autoclose_after_seconds')::int)"
             " <= now() RETURNING id"
         )
         ids = [row[0] for row in await cur.fetchall()]
-        for cluster_id in ids:
-            await _notify(conn, cluster_id)
+        for session_id in ids:
+            await _notify(conn, session_id)
     return ids
 
 
 async def set_init_scripts(
-    conn: psycopg.AsyncConnection, cluster_id: uuid.UUID, scripts: list[str]
-) -> tuple[Cluster, bool]:
-    """Write the init scripts to the cluster spec and to its source preset, in one transaction.
+    conn: psycopg.AsyncConnection, session_id: uuid.UUID, scripts: list[str]
+) -> tuple[Session, bool]:
+    """Write the init scripts to the session spec and to its source preset, in one transaction.
 
-    No generation bump: the list is never rendered into pods. Lock order is clusters, then
-    presets. Returns the updated cluster and whether a preset row was written.
+    No generation bump: the list is never rendered into pods. Lock order is sessions, then
+    presets. Returns the updated session and whether a preset row was written.
     """
     async with conn.transaction():
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT desired, preset_id FROM clusters WHERE id = %s FOR UPDATE", (cluster_id,)
+                "SELECT desired, preset_id FROM sessions WHERE id = %s FOR UPDATE", (session_id,)
             )
             locked = await cur.fetchone()
         if locked is None:
-            raise ClusterNotFound(str(cluster_id))
+            raise SessionNotFound(str(session_id))
         desired, preset_id = locked
         if desired == "deleting":
-            raise ClusterBeingDeleted(str(cluster_id))
+            raise SessionBeingDeleted(str(session_id))
         listed = Jsonb(scripts)
         rows = await _fetch(
             conn,
-            "UPDATE clusters SET spec = jsonb_set(spec, '{init_scripts}', %s) WHERE id = %s"
+            "UPDATE sessions SET spec = jsonb_set(spec, '{init_scripts}', %s) WHERE id = %s"
             " RETURNING *",
-            (listed, cluster_id),
+            (listed, session_id),
         )
         preset_written = False
         if preset_id is not None:
@@ -198,13 +198,13 @@ async def set_init_scripts(
                     (listed, preset_id),
                 )
                 preset_written = True
-        await _notify(conn, cluster_id)
+        await _notify(conn, session_id)
     return rows[0], preset_written
 
 
 async def set_replicas(
     conn: psycopg.AsyncConnection,
-    cluster_id: uuid.UUID,
+    session_id: uuid.UUID,
     replicas: int,
     *,
     caller_agent_id: uuid.UUID | None = None,
@@ -212,67 +212,67 @@ async def set_replicas(
     """The one writer of the runtime replica count: spec.replicas, in place.
 
     No generation bump: a replica change never touches the pod template. Lock order is the
-    cluster row, then a read of cluster_leaders joined to agents (never written here).
-    Refusals, in order: cluster_deleting, not_leader, static_cluster, out_of_range,
+    session row, then a read of session_leaders joined to agents (never written here).
+    Refusals, in order: session_deleting, not_leader, static_session, out_of_range,
     leader_would_leave. An unchanged value writes and notifies nothing.
     """
     async with conn.transaction():
         locked = await _fetch(
-            conn, "SELECT * FROM clusters WHERE id = %s FOR UPDATE", (cluster_id,)
+            conn, "SELECT * FROM sessions WHERE id = %s FOR UPDATE", (session_id,)
         )
         if not locked:
-            raise ClusterNotFound(str(cluster_id))
-        cluster = locked[0]
-        spec = cluster.spec
-        if cluster.desired != "active":
-            raise ScaleRefused("cluster_deleting")
+            raise SessionNotFound(str(session_id))
+        session = locked[0]
+        spec = session.spec
+        if session.desired != "active":
+            raise ScaleRefused("session_deleting")
         cur = await conn.execute(
-            "SELECT l.agent_id, a.ordinal FROM cluster_leaders l"
-            " JOIN agents a ON a.id = l.agent_id WHERE l.cluster_id = %s",
-            (cluster_id,),
+            "SELECT l.agent_id, a.ordinal FROM session_leaders l"
+            " JOIN agents a ON a.id = l.agent_id WHERE l.session_id = %s",
+            (session_id,),
         )
         leader = await cur.fetchone()
         if caller_agent_id is not None and (leader is None or leader[0] != caller_agent_id):
             raise ScaleRefused("not_leader")
         if spec.static:
-            raise ScaleRefused("static_cluster")
+            raise ScaleRefused("static_session")
         max_replicas = spec.max_replicas or spec.replicas
         if not 1 <= replicas <= max_replicas:
             raise ScaleRefused("out_of_range", f"replicas must be 1..{max_replicas}")
         if leader is not None and leader[1] >= replicas:
             raise ScaleRefused("leader_would_leave")
-        outcome = ScaleOutcome(cluster_id, replicas, spec.replicas, max_replicas)
+        outcome = ScaleOutcome(session_id, replicas, spec.replicas, max_replicas)
         if replicas == spec.replicas:
             return outcome
         await conn.execute(
-            "UPDATE clusters SET spec = jsonb_set(spec, '{replicas}', to_jsonb(%s::int))"
+            "UPDATE sessions SET spec = jsonb_set(spec, '{replicas}', to_jsonb(%s::int))"
             " WHERE id = %s AND desired = 'active'",
-            (replicas, cluster_id),
+            (replicas, session_id),
         )
-        await _notify(conn, cluster_id)
+        await _notify(conn, session_id)
     return outcome
 
 
 async def set_status(
     conn: psycopg.AsyncConnection,
-    cluster_id: uuid.UUID,
+    session_id: uuid.UUID,
     status: dict[str, Any],
     observed_generation: int,
-) -> Cluster:
+) -> Session:
     async with conn.transaction():
         rows = await _fetch(
             conn,
-            "UPDATE clusters SET status = %s, observed_generation = %s WHERE id = %s RETURNING *",
-            (Jsonb(status), observed_generation, cluster_id),
+            "UPDATE sessions SET status = %s, observed_generation = %s WHERE id = %s RETURNING *",
+            (Jsonb(status), observed_generation, session_id),
         )
         if not rows:
-            raise ClusterNotFound(str(cluster_id))
-        await _notify(conn, cluster_id)
+            raise SessionNotFound(str(session_id))
+        await _notify(conn, session_id)
     return rows[0]
 
 
-async def purge(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID) -> None:
+async def purge(conn: psycopg.AsyncConnection, session_id: uuid.UUID) -> None:
     """Delete the row; foreign keys cascade agents, messages, events, turns, commands, checks."""
     async with conn.transaction():
-        await conn.execute("DELETE FROM clusters WHERE id = %s", (cluster_id,))
-        await _notify(conn, cluster_id)
+        await conn.execute("DELETE FROM sessions WHERE id = %s", (session_id,))
+        await _notify(conn, session_id)

@@ -10,7 +10,7 @@ import asyncio
 import uuid
 
 import pytest_asyncio
-from factories import insert_agent, insert_cluster, insert_message, set_agent_status
+from factories import insert_agent, insert_message, insert_session, set_agent_status
 from fakes.fake_wrapper import FakeWrapper
 from psycopg.rows import dict_row
 
@@ -113,7 +113,7 @@ async def env(pool, dsn):
     token = derive_tokens(KEY.encode(), cid).auth
     fake = FakeWrapper(token=token)
     await fake.start()
-    await insert_cluster(pool, id=cid, spec={})
+    await insert_session(pool, id=cid, spec={})
     e = Env(pool, dsn, cid, fake, token)
     yield e
     await e.client.aclose()

@@ -2,14 +2,14 @@
 
 Run by `scripts/e2e.sh` (`mise run test:e2e`), which creates the kind cluster, installs the
 chart with e2e/values-kind.yaml, runs `helm test`, port-forwards the api Service to
-ORCH_E2E_API_URL and then runs this module. The tests share one agent cluster and run in
-file order: the cluster is scheduled from a preset created through POST /presets, the
+ORCH_E2E_API_URL and then runs this module. The tests share one agent session and run in
+file order: the session is scheduled from a preset created through POST /presets, the
 round-robin fixture sends the messages the event-stream test reads, the preset tests run after
 them, and the discard fixture runs last, so the shared-namespace test compares against a
-baseline taken before the cluster existed. Every fixture is lazy, so a single test can also run
+baseline taken before the session existed. Every fixture is lazy, so a single test can also run
 alone:
 `uv run pytest tests/e2e/test_e2e_kind.py::<name>` brings the same environment up itself
-(tests/e2e/conftest.py runs scripts/e2e.sh in hold mode and deletes the cluster afterwards).
+(tests/e2e/conftest.py runs scripts/e2e.sh in hold mode and deletes the kind cluster afterwards).
 
 The test (never the orchestrator) uses kubectl exec to look inside agent pods.
 """
@@ -45,7 +45,7 @@ KUBE_CONTEXT = os.environ.get("ORCH_E2E_KUBE_CONTEXT", "kind-agents-orchestrator
 SLUG = "e2e-rr"
 PRESET_NAME = "E2E two replicas"
 GENERATED_SLUG = re.compile(r"^default-[a-z]{4}$")
-CLUSTER_LABEL = "agents.szymonrichert.pl/cluster"
+SESSION_LABEL = "agents.szymonrichert.pl/session"
 COMPONENTS = ("api", "dispatcher", "ingester", "reconciler")
 RECONCILER_SA = f"system:serviceaccount:{NAMESPACE}:{RELEASE}-reconciler"
 
@@ -120,7 +120,7 @@ def labelled_objects(slug: str) -> list[str]:
         "get",
         "statefulsets,services,configmaps,secrets,persistentvolumeclaims,pods",
         "-l",
-        f"{CLUSTER_LABEL}={slug}",
+        f"{SESSION_LABEL}={slug}",
         "-o",
         "name",
     ).stdout
@@ -157,18 +157,18 @@ def any_mcp_ref() -> str:
     return data.get("ORCH_ANY_MCP_REF") or Settings.model_fields["any_mcp_ref"].default
 
 
-def agents_of(api: httpx.Client, cluster_id: str) -> list[dict[str, Any]]:
-    resp = api.get(f"/clusters/{cluster_id}/agents")
+def agents_of(api: httpx.Client, session_id: str) -> list[dict[str, Any]]:
+    resp = api.get(f"/sessions/{session_id}/agents")
     resp.raise_for_status()
     return resp.json()
 
 
-def all_events(api: httpx.Client, cluster_id: str) -> list[list[dict[str, Any]]]:
+def all_events(api: httpx.Client, session_id: str) -> list[list[dict[str, Any]]]:
     """Every page of the merged timeline, newest page first, each page as returned."""
     pages: list[list[dict[str, Any]]] = []
     params: dict[str, Any] = {"limit": 500}
     while True:
-        resp = api.get(f"/clusters/{cluster_id}/events", params=params)
+        resp = api.get(f"/sessions/{session_id}/events", params=params)
         resp.raise_for_status()
         body = resp.json()
         pages.append(body["events"])
@@ -177,31 +177,31 @@ def all_events(api: httpx.Client, cluster_id: str) -> list[list[dict[str, Any]]]
         params = {"limit": 500, "before_id": body["events"][0]["id"]}
 
 
-def leader_view(api: httpx.Client, cluster_id: str) -> tuple[dict[str, Any] | None, int | None]:
-    """(the leader's agent view, the epoch) from the public cluster view; (None, None) before
+def leader_view(api: httpx.Client, session_id: str) -> tuple[dict[str, Any] | None, int | None]:
+    """(the leader's agent view, the epoch) from the public session view; (None, None) before
     the first election."""
-    view = api.get(f"/clusters/{cluster_id}").json()
+    view = api.get(f"/sessions/{session_id}").json()
     leader_id = view.get("leader_agent_id")
     if not leader_id:
         return None, None
-    leader = next((a for a in agents_of(api, cluster_id) if a["id"] == leader_id), None)
+    leader = next((a for a in agents_of(api, session_id) if a["id"] == leader_id), None)
     return leader, view["leader_epoch"]
 
 
 def wait_leader(
-    api: httpx.Client, cluster_id: str, epoch: int, agent_id: str | None = None
+    api: httpx.Client, session_id: str, epoch: int, agent_id: str | None = None
 ) -> dict[str, Any]:
-    """Wait (at most LEADER_TIMEOUT) until the cluster view shows `epoch` (and `agent_id`)."""
+    """Wait (at most LEADER_TIMEOUT) until the session view shows `epoch` (and `agent_id`)."""
 
     def probe() -> dict[str, Any] | None:
-        leader, current = leader_view(api, cluster_id)
+        leader, current = leader_view(api, session_id)
         ok = leader and current == epoch and (agent_id is None or leader["id"] == agent_id)
         return leader if ok else None
 
     return wait_for(f"leader at epoch {epoch}", probe, LEADER_TIMEOUT)
 
 
-# Run inside an agent pod: one agent-API call with the pod's own URL, token and cluster id.
+# Run inside an agent pod: one agent-API call with the pod's own URL, token and session id.
 # argv: method, path, JSON body or "", "token"/"notoken". Prints `RESULT [status, body]`.
 AGENT_CALL = (
     "import json, os, sys, urllib.request, urllib.error\n"
@@ -255,7 +255,7 @@ def pod_name_of(agent: dict[str, Any]) -> str:
 
 
 def on_start_any_mcp(configmap: dict[str, Any]) -> dict[str, Any]:
-    """The any-mcp JSON a cluster's on-start.sh writes (the heredoc body)."""
+    """The any-mcp JSON a session's on-start.sh writes (the heredoc body)."""
     script = configmap["data"]["on-start.sh"]
     match = re.search(r"<<'(\w+)'\n(.*?)\n\1\n", script, re.DOTALL)
     assert match, script
@@ -295,8 +295,8 @@ def read_until(ws: ClientConnection, pattern: str, timeout: float = SHELL_TIMEOU
     return seen
 
 
-def terminals_of(api: httpx.Client, cluster_id: str) -> list[dict[str, Any]]:
-    resp = api.get(f"/clusters/{cluster_id}/terminals")
+def terminals_of(api: httpx.Client, session_id: str) -> list[dict[str, Any]]:
+    resp = api.get(f"/sessions/{session_id}/terminals")
     assert resp.status_code == 200, resp.text
     return resp.json()["terminals"]
 
@@ -337,7 +337,7 @@ def api() -> Iterator[httpx.Client]:
 
 @pytest.fixture(scope="module")
 def baseline() -> dict[tuple[str, str], dict[str, Any]]:
-    """Fingerprints of the orchestrator's own objects before any agent cluster exists."""
+    """Fingerprints of the orchestrator's own objects before any agent session exists."""
     objs = orchestrator_objects()
     assert ("deployment", f"{RELEASE}-reconciler") in objs, objs
     return {o: fingerprint(*o) for o in objs}
@@ -345,7 +345,7 @@ def baseline() -> dict[tuple[str, str], dict[str, Any]]:
 
 @pytest.fixture(scope="module")
 def preset(api: httpx.Client) -> Iterator[dict[str, Any]]:
-    """The 2-replica, peers-on preset the shared cluster is scheduled from (POST /presets)."""
+    """The 2-replica, peers-on preset the shared session is scheduled from (POST /presets)."""
     resp = api.post(
         "/presets",
         json={
@@ -362,9 +362,9 @@ def preset(api: httpx.Client) -> Iterator[dict[str, Any]]:
 
 
 @pytest.fixture(scope="module")
-def cluster(api: httpx.Client, baseline: dict, preset: dict[str, Any]) -> Iterator[dict[str, Any]]:
-    """A 2-replica, peers-on cluster scheduled from a preset, with 2 idle agents."""
-    resp = api.post("/clusters", json={"preset_id": preset["id"], "slug": SLUG})
+def session(api: httpx.Client, baseline: dict, preset: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    """A 2-replica, peers-on session scheduled from a preset, with 2 idle agents."""
+    resp = api.post("/sessions", json={"preset_id": preset["id"], "slug": SLUG})
     assert resp.status_code == 201, resp.text
     created = resp.json()
     cid = created["id"]
@@ -373,9 +373,9 @@ def cluster(api: httpx.Client, baseline: dict, preset: dict[str, Any]) -> Iterat
     assert created["preset_name"] == PRESET_NAME, created
 
     def two_idle_agents() -> list[dict[str, Any]] | None:
-        view = api.get(f"/clusters/{cid}").json()
+        view = api.get(f"/sessions/{cid}").json()
         if view["status"].get("error"):
-            raise AssertionError(f"cluster reconcile error: {view['status']}")
+            raise AssertionError(f"session reconcile error: {view['status']}")
         agents = [a for a in agents_of(api, cid) if not a["gone"]]
         ready = [a for a in agents if a["ready"] and a["state"] == "idle" and a["free_since"]]
         return ready if len(ready) == 2 else None
@@ -383,14 +383,14 @@ def cluster(api: httpx.Client, baseline: dict, preset: dict[str, Any]) -> Iterat
     try:
         agents = wait_for("2 ready idle agents with sessions", two_idle_agents, READY_TIMEOUT)
     except AssertionError:
-        print(kubectl("get", "pods,pvc", "-l", f"{CLUSTER_LABEL}={SLUG}", check=False).stdout)
-        print(kubectl("describe", "pods", "-l", f"{CLUSTER_LABEL}={SLUG}", check=False).stdout)
-        print(kubectl("logs", "-l", f"{CLUSTER_LABEL}={SLUG}", "--tail=80", check=False).stdout)
+        print(kubectl("get", "pods,pvc", "-l", f"{SESSION_LABEL}={SLUG}", check=False).stdout)
+        print(kubectl("describe", "pods", "-l", f"{SESSION_LABEL}={SLUG}", check=False).stdout)
+        print(kubectl("logs", "-l", f"{SESSION_LABEL}={SLUG}", "--tail=80", check=False).stdout)
         raise
     try:
         yield {**created, "agents": agents}
     finally:  # the discard fixture normally removed it already (404 then); never leave it behind
-        api.delete(f"/clusters/{cid}")
+        api.delete(f"/sessions/{cid}")
 
 
 def message(api: httpx.Client, mid: int) -> dict[str, Any]:
@@ -413,16 +413,16 @@ def first_idle_after(events: list[dict[str, Any]], agent_id: str, after_id: int)
 
 
 @pytest.fixture(scope="module")
-def round_robin(api: httpx.Client, cluster: dict[str, Any]) -> dict[str, Any]:
+def round_robin(api: httpx.Client, session: dict[str, Any]) -> dict[str, Any]:
     """Three slow (4 s) messages; each awaited until its turn completed.
 
-    The cluster is a hive, so untargeted messages go to the leader: the first is untargeted
+    The session is a hive, so untargeted messages go to the leader: the first is untargeted
     (the leader), the second targets the other agent explicitly (an explicit target wins) and
     the third is untargeted again and waits for the leader. The second is sent DISPATCH_STAGGER
     seconds after the first was dispatched and the third right after the second was dispatched,
     so both agents are busy when the third arrives and the leader frees well before the other.
     """
-    cid = cluster["id"]
+    cid = session["id"]
     leader = wait_for("a leader", lambda: leader_view(api, cid)[0], LEADER_TIMEOUT)
     other = next(a for a in agents_of(api, cid) if a["id"] != leader["id"])
 
@@ -430,7 +430,7 @@ def round_robin(api: httpx.Client, cluster: dict[str, Any]) -> dict[str, Any]:
         body: dict[str, Any] = {"text": SLOW_PROMPT.format(n=n)}
         if target:
             body["target_agent_id"] = target
-        resp = api.post(f"/clusters/{cid}/messages", json=body)
+        resp = api.post(f"/sessions/{cid}/messages", json=body)
         assert resp.status_code == 202, resp.text
         return resp.json()["message_id"]
 
@@ -481,11 +481,11 @@ def round_robin(api: httpx.Client, cluster: dict[str, Any]) -> dict[str, Any]:
 
 @pytest.fixture(scope="module")
 def discarded(
-    api: httpx.Client, cluster: dict[str, Any], round_robin: dict[str, Any]
+    api: httpx.Client, session: dict[str, Any], round_robin: dict[str, Any]
 ) -> dict[str, Any]:
-    """DELETE the cluster and wait until no labelled object remains (at most 180 s)."""
-    cid = cluster["id"]
-    resp = api.delete(f"/clusters/{cid}")
+    """DELETE the session and wait until no labelled object remains (at most 180 s)."""
+    cid = session["id"]
+    resp = api.delete(f"/sessions/{cid}")
     assert resp.status_code == 202, resp.text
     started = time.monotonic()
     remaining: list[str] = []
@@ -493,10 +493,10 @@ def discarded(
     def gone() -> bool:
         nonlocal remaining
         remaining = labelled_objects(SLUG)
-        return not remaining and api.get(f"/clusters/{cid}").status_code == 404
+        return not remaining and api.get(f"/sessions/{cid}").status_code == 404
 
-    wait_for(f"cluster {SLUG} objects to be deleted ({remaining})", gone, DISCARD_TIMEOUT)
-    return {"cluster": cluster, "elapsed": time.monotonic() - started}
+    wait_for(f"session {SLUG} objects to be deleted ({remaining})", gone, DISCARD_TIMEOUT)
+    return {"session": session, "elapsed": time.monotonic() - started}
 
 
 # ------------------------------------------------------------------ tests
@@ -533,31 +533,31 @@ def test_round_robin_by_free_since(round_robin: dict[str, Any]) -> None:
 
 
 def test_merged_event_stream(
-    api: httpx.Client, cluster: dict[str, Any], round_robin: dict[str, Any]
+    api: httpx.Client, session: dict[str, Any], round_robin: dict[str, Any]
 ) -> None:
-    pages = all_events(api, cluster["id"])
+    pages = all_events(api, session["id"])
     for page in pages:
         ids = [e["id"] for e in page]
         assert ids == sorted(ids) and len(set(ids)) == len(ids), ids
     events = sorted((e for page in pages for e in page), key=lambda e: e["id"])
-    agent_ids = {a["id"] for a in cluster["agents"]}
+    agent_ids = {a["id"] for a in session["agents"]}
     assert {e["agent_id"] for e in events} == agent_ids
-    assert all(e["cluster_id"] == cluster["id"] for e in events)
+    assert all(e["session_id"] == session["id"] for e in events)
     # interleaved: the timeline switches between the agents more than once
     sequence = [e["agent_id"] for e in events]
     switches = sum(1 for a, b in zip(sequence, sequence[1:], strict=False) if a != b)
     assert switches >= 2, sequence
-    # each agent's own events keep their per-session order inside the merged timeline
+    # each agent's own events keep their per-wrapper-session order inside the merged timeline
     for agent in agent_ids:
         own = [(e["wrapper_session_id"], e["seq"]) for e in events if e["agent_id"] == agent]
-        for session in {s for s, _ in own}:
-            seqs = [q for s, q in own if s == session]
-            assert seqs == sorted(seqs), (agent, session, seqs)
+        for wrapper_session in {s for s, _ in own}:
+            seqs = [q for s, q in own if s == wrapper_session]
+            assert seqs == sorted(seqs), (agent, wrapper_session, seqs)
     turn_ids = {e["turn_id"] for e in events if e["turn_id"]}
     assert {m["turn_id"] for m in round_robin["messages"]} <= turn_ids
 
 
-def test_any_mcp_installed_by_on_start(cluster: dict[str, Any]) -> None:
+def test_any_mcp_installed_by_on_start(session: dict[str, Any]) -> None:
     ref = any_mcp_ref()
     cm = kube_json("get", "configmap", f"agent-{SLUG}-config")["data"]
     assert f"REF={ref}\n" in cm["on-start.sh"], cm["on-start.sh"]
@@ -572,7 +572,7 @@ def test_any_mcp_installed_by_on_start(cluster: dict[str, Any]) -> None:
     assert rendered["sessions"]["ask_user_question"] == "deny"
     assert rendered["hooks"]["onStart"][0]["run"] == "sh /etc/ccw/on-start.sh"
 
-    pods = [a["pod_name"] for a in cluster["agents"]]
+    pods = [a["pod_name"] for a in session["agents"]]
     assert len(pods) == 2
     for pod in pods:
         assert kubectl("exec", pod, "-c", "ccw", "--", "cat", "/opt/any-mcp/.ref").stdout == (
@@ -615,7 +615,7 @@ def test_reconciler_role_cannot_read_secrets() -> None:
     assert "pods/exec" not in resources, role["rules"]
 
 
-def test_in_cluster_pod_refused_by_allowlist(api: httpx.Client) -> None:
+def test_in_session_pod_refused_by_allowlist(api: httpx.Client) -> None:
     image = kube_json("get", "deployment", f"{RELEASE}-api")["spec"]["template"]["spec"][
         "containers"
     ][0]["image"]
@@ -624,7 +624,7 @@ def test_in_cluster_pod_refused_by_allowlist(api: httpx.Client) -> None:
     script = (
         "import json, urllib.request, urllib.error\n"
         "out = {}\n"
-        "for path in ('/api/v1/clusters', '/healthz'):\n"
+        "for path in ('/api/v1/sessions', '/healthz'):\n"
         "    try:\n"
         f"        r = urllib.request.urlopen('{service}' + path, timeout=10)\n"
         "        out[path] = [r.status, r.read().decode()]\n"
@@ -656,16 +656,16 @@ def test_in_cluster_pod_refused_by_allowlist(api: httpx.Client) -> None:
         kubectl("delete", "pod", pod, "--wait=false", check=False)
     line = next(ln for ln in logs.splitlines() if ln.startswith("RESULT "))
     result = json.loads(line.removeprefix("RESULT "))
-    code, body = result["/api/v1/clusters"]
+    code, body = result["/api/v1/sessions"]
     assert code == 403, result
     assert json.loads(body)["error"]["code"] == "forbidden", body
     assert result["/healthz"][0] == 200, result  # health routes are exempt
     # the port-forwarded caller arrives from loopback, inside ORCH_ALLOWED_CIDRS
-    resp = api.get("/clusters")
+    resp = api.get("/sessions")
     assert resp.status_code == 200, resp.text
 
 
-def test_in_cluster_service_token(api: httpx.Client) -> None:
+def test_in_session_service_token(api: httpx.Client) -> None:
     image = kube_json("get", "deployment", f"{RELEASE}-api")["spec"]["template"]["spec"][
         "containers"
     ][0]["image"]
@@ -686,7 +686,7 @@ def test_in_cluster_service_token(api: httpx.Client) -> None:
         "out = {\n"
         f"    'with': call('GET', '{services}/api/v1/presets', tok),\n"
         f"    'without': call('GET', '{services}/api/v1/presets', None),\n"
-        f"    'delete': call('DELETE', '{services}/api/v1/clusters/does-not-matter', tok),\n"
+        f"    'delete': call('DELETE', '{services}/api/v1/sessions/does-not-matter', tok),\n"
         f"    'main': call('GET', '{main}/api/v1/presets', tok),\n"
         "}\n"
         "print('RESULT ' + json.dumps(out))\n"
@@ -718,9 +718,9 @@ def test_in_cluster_service_token(api: httpx.Client) -> None:
     assert result == {"with": 200, "without": 401, "delete": 403, "main": 403}, result
 
 
-def test_files_list_and_read_through_api(api: httpx.Client, cluster: dict[str, Any]) -> None:
-    cid = cluster["id"]
-    agent_id = cluster["agents"][0]["id"]
+def test_files_list_and_read_through_api(api: httpx.Client, session: dict[str, Any]) -> None:
+    cid = session["id"]
+    agent_id = session["agents"][0]["id"]
     note = f"e2e-note-{uuid.uuid4().hex[:8]}.txt"
     text = f"hello-{uuid.uuid4().hex}"
     # the agent writes a file into the shared workdir through its own shell
@@ -729,15 +729,15 @@ def test_files_list_and_read_through_api(api: httpx.Client, cluster: dict[str, A
         ws.send(b"echo written-$((6*7))\n")
         read_until(ws, r"^written-42$")
 
-    listing = api.get(f"/clusters/{cid}/files")
+    listing = api.get(f"/sessions/{cid}/files")
     assert listing.status_code == 200, listing.text
     body = listing.json()
-    assert body["cluster_id"] == cid and body["path"] == "", body
+    assert body["session_id"] == cid and body["path"] == "", body
     assert body["root"].startswith("/workdir"), body["root"]
     entry = next(e for e in body["entries"] if e["name"] == note)
     assert entry["type"] == "file" and entry["size"] == len(text) + 1, entry
 
-    content = api.get(f"/clusters/{cid}/files/content", params={"path": note})
+    content = api.get(f"/sessions/{cid}/files/content", params={"path": note})
     assert content.status_code == 200, content.text
     got = content.json()
     assert got["path"] == note and got["kind"] == "text", got
@@ -746,21 +746,21 @@ def test_files_list_and_read_through_api(api: httpx.Client, cluster: dict[str, A
     # a path that leaves the workdir is refused, for the listing and for the content
     for route in ("files", "files/content"):
         for bad in ("..", "../etc/passwd", "/etc/passwd"):
-            resp = api.get(f"/clusters/{cid}/{route}", params={"path": bad})
+            resp = api.get(f"/sessions/{cid}/{route}", params={"path": bad})
             assert resp.status_code == 400, (route, bad, resp.text)
             assert resp.json()["error"]["code"] == "invalid_path", (route, bad, resp.text)
 
 
-def test_terminal_lifecycle_over_websocket(api: httpx.Client, cluster: dict[str, Any]) -> None:
-    cid = cluster["id"]
-    agent_id = cluster["agents"][0]["id"]
-    root = api.get(f"/clusters/{cid}/files").json()["root"]
+def test_terminal_lifecycle_over_websocket(api: httpx.Client, session: dict[str, Any]) -> None:
+    cid = session["id"]
+    agent_id = session["agents"][0]["id"]
+    root = api.get(f"/sessions/{cid}/files").json()["root"]
     made = api.post(f"/agents/{agent_id}/terminals", json={"rows": 24, "cols": 80})
     assert made.status_code == 201, made.text
     term = made.json()
     tid = term["terminal_id"]
     assert re.fullmatch(r"term_[0-9a-f]{12}", tid), term
-    assert term["agent_id"] == agent_id and term["cluster_id"] == cid, term
+    assert term["agent_id"] == agent_id and term["session_id"] == cid, term
     assert term["alive"] is True and (term["rows"], term["cols"]) == (24, 80), term
     try:
         with attach(api, agent_id, tid) as ws:
@@ -805,9 +805,9 @@ def test_terminal_lifecycle_over_websocket(api: httpx.Client, cluster: dict[str,
 
 
 def test_terminal_websocket_refuses_foreign_origin(
-    api: httpx.Client, cluster: dict[str, Any]
+    api: httpx.Client, session: dict[str, Any]
 ) -> None:
-    agent_id = cluster["agents"][0]["id"]
+    agent_id = session["agents"][0]["id"]
     with shell(api, agent_id) as term:
         with pytest.raises(InvalidStatus) as refused:
             attach(api, agent_id, term["terminal_id"], origin=EVIL_ORIGIN)
@@ -834,11 +834,11 @@ WRITE_PROMPT = (
 NOTE_FILE = "e2e-note.txt"
 
 
-def test_agent_api_identity(api: httpx.Client, cluster: dict[str, Any]) -> None:
+def test_agent_api_identity(api: httpx.Client, session: dict[str, Any]) -> None:
     pod0 = f"agent-{SLUG}-0"
     status, me = agent_call(pod0, "GET", "/agent/v1/me")
     assert status == 200, me
-    assert me["pod_name"] == pod0 and me["cluster_id"] == cluster["id"], me
+    assert me["pod_name"] == pod0 and me["session_id"] == session["id"], me
     assert {m["pod_name"] for m in me["members"]} == {pod0, f"agent-{SLUG}-1"}, me
     assert me["static"] is False and me["max_replicas"] == 2, me
 
@@ -846,10 +846,10 @@ def test_agent_api_identity(api: httpx.Client, cluster: dict[str, Any]) -> None:
     assert status == 401, body
 
     # the agents port serves nothing but /agent/v1, /healthz and /readyz
-    status, body = agent_call(pod0, "GET", "/api/v1/clusters")
+    status, body = agent_call(pod0, "GET", "/api/v1/sessions")
     assert status == 404, body
 
-    # a pod that is not an agent of the cluster is refused even with a valid token
+    # a pod that is not an agent of the session is refused even with a valid token
     token = pod_exec(pod0, "printenv", "ORCH_AGENT_TOKEN").strip()
     url = pod_exec(pod0, "printenv", "ORCH_AGENT_URL").strip()
     image = kube_json("get", "deployment", f"{RELEASE}-api")["spec"]["template"]["spec"][
@@ -858,7 +858,7 @@ def test_agent_api_identity(api: httpx.Client, cluster: dict[str, Any]) -> None:
     script = (
         "import json, urllib.request, urllib.error\n"
         f"req = urllib.request.Request('{url}/agent/v1/me', headers={{\n"
-        f"    'Authorization': 'Bearer {token}', 'X-Orch-Cluster': '{cluster['id']}'}})\n"
+        f"    'Authorization': 'Bearer {token}', 'X-Orch-Cluster': '{session['id']}'}})\n"
         "try:\n"
         "    r = urllib.request.urlopen(req, timeout=10)\n"
         "    out = [r.status, r.read().decode()]\n"
@@ -895,8 +895,8 @@ def test_agent_api_identity(api: httpx.Client, cluster: dict[str, Any]) -> None:
     assert json.loads(text)["error"]["code"] == "forbidden", text
 
 
-def test_leadership_handover_routes(api: httpx.Client, cluster: dict[str, Any]) -> None:
-    cid = cluster["id"]
+def test_leadership_handover_routes(api: httpx.Client, session: dict[str, Any]) -> None:
+    cid = session["id"]
     first = wait_leader(api, cid, 1)
     other = next(a for a in agents_of(api, cid) if a["id"] != first["id"])
     status, me = agent_call(first["pod_name"], "GET", "/agent/v1/me")
@@ -911,7 +911,7 @@ def test_leadership_handover_routes(api: httpx.Client, cluster: dict[str, Any]) 
     assert status == 202 and body["request_id"], body
     wait_leader(api, cid, 2, other["id"])
 
-    resp = api.post(f"/clusters/{cid}/messages", json={"text": "hello after the handover"})
+    resp = api.post(f"/sessions/{cid}/messages", json={"text": "hello after the handover"})
     assert resp.status_code == 202, resp.text
     mid = resp.json()["message_id"]
 
@@ -924,20 +924,20 @@ def test_leadership_handover_routes(api: httpx.Client, cluster: dict[str, Any]) 
     assert view["agent_id"] == other["id"], (view, other)
 
 
-def test_user_make_leader(api: httpx.Client, cluster: dict[str, Any]) -> None:
-    cid = cluster["id"]
+def test_user_make_leader(api: httpx.Client, session: dict[str, Any]) -> None:
+    cid = session["id"]
     leader, epoch = leader_view(api, cid)
     assert leader is not None and epoch is not None
     target = next(a for a in agents_of(api, cid) if a["id"] != leader["id"])
-    resp = api.post(f"/clusters/{cid}/leader", json={"agent_id": target["id"]})
+    resp = api.post(f"/sessions/{cid}/leader", json={"agent_id": target["id"]})
     assert resp.status_code == 202, resp.text
     assert resp.json()["request_id"], resp.text
     wait_leader(api, cid, epoch + 1, target["id"])
     assert next(a for a in agents_of(api, cid) if a["id"] == target["id"])["leader"] is True
 
 
-def test_advisory_locks(api: httpx.Client, cluster: dict[str, Any]) -> None:
-    cid = cluster["id"]
+def test_advisory_locks(api: httpx.Client, session: dict[str, Any]) -> None:
+    cid = session["id"]
     leader, _ = leader_view(api, cid)
     assert leader is not None
     agents = sorted(agents_of(api, cid), key=lambda a: a["ordinal"])
@@ -975,11 +975,11 @@ def test_advisory_locks(api: httpx.Client, cluster: dict[str, Any]) -> None:
     assert all(x["path"] != path for x in body["locks"]), body
 
 
-def test_hive_notes_delivered(api: httpx.Client, cluster: dict[str, Any]) -> None:
-    cid = cluster["id"]
+def test_hive_notes_delivered(api: httpx.Client, session: dict[str, Any]) -> None:
+    cid = session["id"]
     writer, reader = sorted(agents_of(api, cid), key=lambda a: a["ordinal"])
     resp = api.post(
-        f"/clusters/{cid}/messages",
+        f"/sessions/{cid}/messages",
         json={"text": WRITE_PROMPT, "target_agent_id": writer["id"]},
     )
     assert resp.status_code == 202, resp.text
@@ -1010,9 +1010,9 @@ def test_hive_notes_delivered(api: httpx.Client, cluster: dict[str, Any]) -> Non
         assert "hive-state" in keyed[-1]["data"]["text"], keyed[-1]
 
 
-def test_alone_cluster_has_no_hive_tools(api: httpx.Client, cluster: dict[str, Any]) -> None:
+def test_alone_session_has_no_hive_tools(api: httpx.Client, session: dict[str, Any]) -> None:
     resp = api.post(
-        "/clusters",
+        "/sessions",
         json={
             "slug": ALONE_SLUG,
             "spec": {"replicas": 1, "static": True, "env": FAKE_TURN_ENV},
@@ -1028,7 +1028,7 @@ def test_alone_cluster_has_no_hive_tools(api: httpx.Client, cluster: dict[str, A
             proc = kubectl("get", "configmap", name, "-o", "json", check=False)
             return json.loads(proc.stdout) if proc.returncode == 0 else None
 
-        configmap = wait_for("the alone cluster's ConfigMap", rendered, 120)
+        configmap = wait_for("the alone session's ConfigMap", rendered, 120)
         config = yaml.safe_load(configmap["data"]["config.yaml"])
         assert config["notes"] == {"enabled": False}, config
         assert "peers" not in config or not config["peers"].get("enabled"), config
@@ -1036,30 +1036,30 @@ def test_alone_cluster_has_no_hive_tools(api: httpx.Client, cluster: dict[str, A
         plugins = on_start_any_mcp(configmap).get("plugins", [])
         assert "orchestrator" not in {p.get("name") for p in plugins}, plugins
 
-        # the hive cluster of the same release renders the plugin entry, so the parse is sound
+        # the hive session of the same release renders the plugin entry, so the parse is sound
         hive_map = kube_json("get", "configmap", f"agent-{SLUG}-config")
         hive_plugins = on_start_any_mcp(hive_map).get("plugins", [])
         assert "orchestrator" in {p.get("name") for p in hive_plugins}, hive_plugins
         assert yaml.safe_load(hive_map["data"]["config.yaml"])["notes"] == {"enabled": True}
     finally:
-        api.delete(f"/clusters/{alone['id']}")
+        api.delete(f"/sessions/{alone['id']}")
 
         def gone() -> bool:
             return (
                 not labelled_objects(ALONE_SLUG)
-                and api.get(f"/clusters/{alone['id']}").status_code == 404
+                and api.get(f"/sessions/{alone['id']}").status_code == 404
             )
 
-        wait_for(f"cluster {ALONE_SLUG} objects to be deleted", gone, DISCARD_TIMEOUT)
+        wait_for(f"session {ALONE_SLUG} objects to be deleted", gone, DISCARD_TIMEOUT)
 
 
 def pods_of(slug: str) -> dict[str, str]:
-    """Pod name -> pod uid of a cluster, read with kubectl."""
+    """Pod name -> pod uid of a session, read with kubectl."""
     out = kubectl(
         "get",
         "pods",
         "-l",
-        f"{CLUSTER_LABEL}={slug}",
+        f"{SESSION_LABEL}={slug}",
         "-o",
         'jsonpath={range .items[*]}{.metadata.name}{" "}{.metadata.uid}{"\\n"}{end}',
     ).stdout
@@ -1087,24 +1087,24 @@ def test_default_preset_listed(api: httpx.Client) -> None:
     assert default_preset(api)["id"] == default["id"]
 
 
-def test_cluster_scheduled_from_preset_keeps_provenance(
-    api: httpx.Client, cluster: dict[str, Any], preset: dict[str, Any]
+def test_session_scheduled_from_preset_keeps_provenance(
+    api: httpx.Client, session: dict[str, Any], preset: dict[str, Any]
 ) -> None:
-    view = api.get(f"/clusters/{cluster['id']}").json()
+    view = api.get(f"/sessions/{session['id']}").json()
     assert view["slug"] == SLUG
     assert view["preset_id"] == preset["id"] and view["preset_name"] == PRESET_NAME, view
     assert view["spec"]["replicas"] == 2 and view["spec"]["peers"] is True, view["spec"]
     assert view["spec"]["env"] == FAKE_TURN_ENV, view["spec"]
 
 
-def test_preset_edit_and_delete_leave_cluster_unchanged(
+def test_preset_edit_and_delete_leave_session_unchanged(
     api: httpx.Client,
-    cluster: dict[str, Any],
+    session: dict[str, Any],
     preset: dict[str, Any],
     round_robin: dict[str, Any],
 ) -> None:
-    cid = cluster["id"]
-    before = api.get(f"/clusters/{cid}").json()
+    cid = session["id"]
+    before = api.get(f"/sessions/{cid}").json()
     pods_before = pods_of(SLUG)
     assert len(pods_before) == 2, pods_before
     copy_id: str | None = None
@@ -1112,7 +1112,7 @@ def test_preset_edit_and_delete_leave_cluster_unchanged(
     def assert_unchanged() -> None:
         # several reconcile polls (ORCH_RECONCILE_POLL_SECONDS=3) pass first
         time.sleep(10)
-        view = api.get(f"/clusters/{cid}").json()
+        view = api.get(f"/sessions/{cid}").json()
         assert view["spec"] == before["spec"], view["spec"]
         assert view["generation"] == before["generation"], view
         assert view["observed_generation"] == before["observed_generation"], view
@@ -1131,13 +1131,13 @@ def test_preset_edit_and_delete_leave_cluster_unchanged(
         assert copy["id"] != preset["id"] and copy["name"] != PRESET_NAME, copy
         assert copy["is_default"] is False and copy["spec"]["replicas"] == 1, copy
         assert_unchanged()
-        assert api.get(f"/clusters/{cid}").json()["preset_id"] == preset["id"]
+        assert api.get(f"/sessions/{cid}").json()["preset_id"] == preset["id"]
 
         deleted = api.delete(f"/presets/{preset['id']}")
         assert deleted.status_code == 204, deleted.text
         assert api.get(f"/presets/{preset['id']}").status_code == 404
         assert_unchanged()
-        after = api.get(f"/clusters/{cid}").json()
+        after = api.get(f"/sessions/{cid}").json()
         assert after["preset_id"] is None, after
         assert after["preset_name"] == PRESET_NAME, after
     finally:
@@ -1149,7 +1149,7 @@ def test_preset_edit_and_delete_leave_cluster_unchanged(
 
 def test_schedule_default_preset_generated_slug(api: httpx.Client) -> None:
     default = default_preset(api)
-    resp = api.post("/clusters", json={"preset_id": default["id"]})
+    resp = api.post("/sessions", json={"preset_id": default["id"]})
     assert resp.status_code == 201, resp.text
     created = resp.json()
     cid = created["id"]
@@ -1158,17 +1158,17 @@ def test_schedule_default_preset_generated_slug(api: httpx.Client) -> None:
         assert created["spec"]["replicas"] == 1, created["spec"]
         assert created["preset_id"] == default["id"], created
         assert created["preset_name"] == "Default", created
-    finally:  # the cluster costs a reconcile for nothing: discard it at once
-        api.delete(f"/clusters/{cid}")
+    finally:  # the session costs a reconcile for nothing: discard it at once
+        api.delete(f"/sessions/{cid}")
     wait_for(
-        f"cluster {created['slug']} row to be gone",
-        lambda: api.get(f"/clusters/{cid}").status_code == 404,
+        f"session {created['slug']} row to be gone",
+        lambda: api.get(f"/sessions/{cid}").status_code == 404,
         DISCARD_TIMEOUT,
     )
 
 
-def test_patch_cluster_retired(api: httpx.Client, cluster: dict[str, Any]) -> None:
-    resp = api.patch(f"/clusters/{cluster['id']}", json={"spec": {"replicas": 3}})
+def test_patch_session_retired(api: httpx.Client, session: dict[str, Any]) -> None:
+    resp = api.patch(f"/sessions/{session['id']}", json={"spec": {"replicas": 3}})
     assert resp.status_code == 405, resp.text
 
 
@@ -1187,27 +1187,27 @@ SCALE_SLUG_PREFIX = "e2e-scale"
 
 
 @contextlib.contextmanager
-def scale_cluster(api: httpx.Client, suffix: str, spec: dict[str, Any]) -> Iterator[dict[str, Any]]:
-    """Create a cluster of its own through POST /clusters; always delete it and wait for it."""
+def scale_session(api: httpx.Client, suffix: str, spec: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    """Create a session of its own through POST /sessions; always delete it and wait for it."""
     slug = f"{SCALE_SLUG_PREFIX}-{suffix}"
-    resp = api.post("/clusters", json={"slug": slug, "spec": {**spec, "env": FAKE_TURN_ENV}})
+    resp = api.post("/sessions", json={"slug": slug, "spec": {**spec, "env": FAKE_TURN_ENV}})
     assert resp.status_code == 201, resp.text
     created = resp.json()
     cid = created["id"]
     try:
         yield created
     finally:
-        api.delete(f"/clusters/{cid}")
+        api.delete(f"/sessions/{cid}")
 
         def gone() -> bool:
-            return not labelled_objects(slug) and api.get(f"/clusters/{cid}").status_code == 404
+            return not labelled_objects(slug) and api.get(f"/sessions/{cid}").status_code == 404
 
-        wait_for(f"cluster {slug} objects to be deleted", gone, DISCARD_TIMEOUT)
+        wait_for(f"session {slug} objects to be deleted", gone, DISCARD_TIMEOUT)
 
 
 def pod_identity(slug: str) -> dict[str, tuple[str, str | None]]:
-    """Pod name -> (uid, config-hash annotation) of a cluster, read with kubectl."""
-    items = kube_json("get", "pods", "-l", f"{CLUSTER_LABEL}={slug}")["items"]
+    """Pod name -> (uid, config-hash annotation) of a session, read with kubectl."""
+    items = kube_json("get", "pods", "-l", f"{SESSION_LABEL}={slug}")["items"]
     return {
         p["metadata"]["name"]: (
             p["metadata"]["uid"],
@@ -1243,7 +1243,7 @@ def wait_pod_gone(slug: str, pod: str, timeout: float = DISCARD_TIMEOUT) -> None
 
 
 def scale_to(api: httpx.Client, cid: str, replicas: int) -> httpx.Response:
-    return api.post(f"/clusters/{cid}/scale", json={"replicas": replicas})
+    return api.post(f"/sessions/{cid}/scale", json={"replicas": replicas})
 
 
 def error_code(resp: httpx.Response) -> str:
@@ -1251,7 +1251,7 @@ def error_code(resp: httpx.Response) -> str:
 
 
 def test_scale_up_and_down_keeps_surviving_pods(api: httpx.Client, baseline: dict) -> None:
-    with scale_cluster(api, "updown", {"replicas": 1, "max_replicas": 3}) as created:
+    with scale_session(api, "updown", {"replicas": 1, "max_replicas": 3}) as created:
         cid, slug = created["id"], created["slug"]
         pods = [f"agent-{slug}-{i}" for i in range(3)]
         wait_sessions(api, cid, 1)
@@ -1286,7 +1286,7 @@ def test_scale_up_and_down_keeps_surviving_pods(api: httpx.Client, baseline: dic
 
 
 def test_scale_refusals(api: httpx.Client, baseline: dict) -> None:
-    with scale_cluster(api, "refuse", {"replicas": 3, "max_replicas": 3}) as created:
+    with scale_session(api, "refuse", {"replicas": 3, "max_replicas": 3}) as created:
         cid = created["id"]
         wait_sessions(api, cid, 3)
         for bad in (0, 4):
@@ -1300,7 +1300,7 @@ def test_scale_refusals(api: httpx.Client, baseline: dict) -> None:
         # The highest ordinal is the pod a 3->2 scale removes; it must be the leader.
         top = max(live_agents(api, cid), key=lambda a: int(a["pod_name"].rsplit("-", 1)[1]))
         if top["id"] != current["id"]:
-            resp = api.post(f"/clusters/{cid}/leader", json={"agent_id": top["id"]})
+            resp = api.post(f"/sessions/{cid}/leader", json={"agent_id": top["id"]})
             assert resp.status_code == 202, resp.text
             wait_leader(api, cid, epoch + 1, top["id"])
         resp = scale_to(api, cid, 2)
@@ -1308,20 +1308,20 @@ def test_scale_refusals(api: httpx.Client, baseline: dict) -> None:
         assert error_code(resp) == "leader_would_leave", resp.text
         assert len(live_agents(api, cid)) == 3
 
-    with scale_cluster(api, "static", {"replicas": 2, "max_replicas": 2, "static": True}) as s:
+    with scale_session(api, "static", {"replicas": 2, "max_replicas": 2, "static": True}) as s:
         resp = scale_to(api, s["id"], 1)
         assert resp.status_code == 409, resp.text
-        assert error_code(resp) == "static_cluster", resp.text
-        view = api.get(f"/clusters/{s['id']}").json()
+        assert error_code(resp) == "static_session", resp.text
+        view = api.get(f"/sessions/{s['id']}").json()
         assert view["static"] is True and view["spec"]["replicas"] == 2, view
 
 
-def test_agent_scale_leader_only(api: httpx.Client, cluster: dict[str, Any]) -> None:
-    cid = cluster["id"]
+def test_agent_scale_leader_only(api: httpx.Client, session: dict[str, Any]) -> None:
+    cid = session["id"]
     leader, _ = leader_view(api, cid)
     assert leader is not None
     follower = next(a for a in live_agents(api, cid) if a["id"] != leader["id"])
-    replicas = api.get(f"/clusters/{cid}").json()["spec"]["replicas"]
+    replicas = api.get(f"/sessions/{cid}").json()["spec"]["replicas"]
     body = {"replicas": replicas}
 
     status, out = agent_call(leader["pod_name"], "POST", "/agent/v1/scale", body)
@@ -1334,7 +1334,7 @@ def test_agent_scale_leader_only(api: httpx.Client, cluster: dict[str, Any]) -> 
 
 
 def test_static_single_pod_is_alone(api: httpx.Client, baseline: dict) -> None:
-    with scale_cluster(api, "single", {"replicas": 1, "max_replicas": 1, "static": True}) as c:
+    with scale_session(api, "single", {"replicas": 1, "max_replicas": 1, "static": True}) as c:
         assert c["hive"] is False and c["static"] is True and c["leader_agent_id"] is None, c
         name = f"agent-{c['slug']}-config"
 
@@ -1357,7 +1357,7 @@ def test_static_single_pod_is_alone(api: httpx.Client, baseline: dict) -> None:
 def test_scale_down_waits_for_busy_agent(api: httpx.Client, baseline: dict) -> None:
     """The fake claude's "slow" turn lasts 4 s, so the window is short: the pod is checked
     right after the scale is posted, while the turn is still running."""
-    with scale_cluster(api, "drain", {"replicas": 2, "max_replicas": 2}) as created:
+    with scale_session(api, "drain", {"replicas": 2, "max_replicas": 2}) as created:
         cid, slug = created["id"], created["slug"]
         top_pod = f"agent-{slug}-1"
         wait_sessions(api, cid, 2)
@@ -1366,7 +1366,7 @@ def test_scale_down_waits_for_busy_agent(api: httpx.Client, baseline: dict) -> N
         uid = pod_identity(slug)[top_pod][0]
 
         body = {"text": SLOW_PROMPT.format(n=1), "target_agent_id": top["id"]}
-        resp = api.post(f"/clusters/{cid}/messages", json=body)
+        resp = api.post(f"/sessions/{cid}/messages", json=body)
         assert resp.status_code == 202, resp.text
         mid = resp.json()["message_id"]
 
@@ -1398,7 +1398,7 @@ def test_scale_down_waits_for_busy_agent(api: httpx.Client, baseline: dict) -> N
 def test_discard_removes_objects_and_history(
     api: httpx.Client, discarded: dict[str, Any], round_robin: dict[str, Any]
 ) -> None:
-    cid = discarded["cluster"]["id"]
+    cid = discarded["session"]["id"]
     assert discarded["elapsed"] <= DISCARD_TIMEOUT
     assert labelled_objects(SLUG) == []
     for kind in ("statefulset", "service", "configmap", "persistentvolumeclaim"):
@@ -1406,14 +1406,14 @@ def test_discard_removes_objects_and_history(
         assert f"agent-{SLUG}" not in names, (kind, names)
     # the Secret is checked by name: it is deleted by its deterministic name
     assert kubectl("get", "secret", f"agent-{SLUG}-ccw", check=False).returncode != 0
-    cluster_resp = api.get(f"/clusters/{cid}")
-    assert cluster_resp.status_code == 404, cluster_resp.text
-    assert cluster_resp.json()["error"]["code"] == "not_found"
-    events_resp = api.get(f"/clusters/{cid}/events")
+    session_resp = api.get(f"/sessions/{cid}")
+    assert session_resp.status_code == 404, session_resp.text
+    assert session_resp.json()["error"]["code"] == "not_found"
+    events_resp = api.get(f"/sessions/{cid}/events")
     assert events_resp.status_code == 404, events_resp.text
     for m in round_robin["messages"]:
         assert api.get(f"/messages/{m['id']}").status_code == 404, m
-    assert all(c["id"] != cid for c in api.get("/clusters").json())
+    assert all(c["id"] != cid for c in api.get("/sessions").json())
 
 
 def test_shared_namespace_leaves_orchestrator_objects(
@@ -1454,27 +1454,27 @@ def init_preset(api: httpx.Client, scripts: list[str], replicas: int) -> Iterato
 
 
 @contextlib.contextmanager
-def init_cluster(api: httpx.Client, body: dict[str, Any]) -> Iterator[dict[str, Any]]:
-    resp = api.post("/clusters", json=body)
+def init_session(api: httpx.Client, body: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    resp = api.post("/sessions", json=body)
     assert resp.status_code == 201, resp.text
     created = resp.json()
     cid = created["id"]
     try:
         yield created
     finally:
-        api.delete(f"/clusters/{cid}")
+        api.delete(f"/sessions/{cid}")
         wait_for(
-            f"cluster {created['slug']} row to be gone",
-            lambda: api.get(f"/clusters/{cid}").status_code == 404,
+            f"session {created['slug']} row to be gone",
+            lambda: api.get(f"/sessions/{cid}").status_code == 404,
             DISCARD_TIMEOUT,
         )
 
 
 def wait_init_state(api: httpx.Client, cid: str, states: tuple[str, ...]) -> dict[str, Any]:
     def probe() -> dict[str, Any] | None:
-        view = api.get(f"/clusters/{cid}").json()
+        view = api.get(f"/sessions/{cid}").json()
         if view["status"].get("error"):
-            raise AssertionError(f"cluster reconcile error: {view['status']}")
+            raise AssertionError(f"session reconcile error: {view['status']}")
         init = view["status"].get("init")
         return view if init and init.get("state") in states else None
 
@@ -1498,7 +1498,7 @@ def init_jobs(slug: str) -> list[str]:
 def test_init_scripts_run_once(api: httpx.Client, baseline: dict) -> None:
     with (
         init_preset(api, ["echo e2e-init > e2e-init.txt"], replicas=2) as preset,
-        init_cluster(api, {"preset_id": preset["id"]}) as created,
+        init_session(api, {"preset_id": preset["id"]}) as created,
     ):
         cid, slug = created["id"], created["slug"]
         view = wait_init_state(api, cid, ("succeeded", "failed"))
@@ -1512,18 +1512,18 @@ def test_init_scripts_run_once(api: httpx.Client, baseline: dict) -> None:
         # run once: the Job is gone after the outcome and the run is never started again
         started = view["status"]["init"]["started_at"]
         time.sleep(2 * RECONCILE_INTERVALS)
-        later = api.get(f"/clusters/{cid}").json()
+        later = api.get(f"/sessions/{cid}").json()
         assert later["status"]["init"]["started_at"] == started, later["status"]
         assert later["status"]["init"]["state"] == "succeeded", later["status"]
         assert init_jobs(slug) == []
 
 
-def test_init_scripts_edit_writes_cluster_and_preset_without_roll(
+def test_init_scripts_edit_writes_session_and_preset_without_roll(
     api: httpx.Client, baseline: dict
 ) -> None:
     with (
         init_preset(api, ["echo first > first.txt"], replicas=1) as preset,
-        init_cluster(api, {"preset_id": preset["id"]}) as created,
+        init_session(api, {"preset_id": preset["id"]}) as created,
     ):
         cid, slug = created["id"], created["slug"]
         view = wait_init_state(api, cid, ("succeeded",))
@@ -1535,16 +1535,16 @@ def test_init_scripts_edit_writes_cluster_and_preset_without_roll(
 
         def assert_no_roll() -> None:
             time.sleep(2 * RECONCILE_INTERVALS)
-            now = api.get(f"/clusters/{cid}").json()
+            now = api.get(f"/sessions/{cid}").json()
             assert now["status"]["init"]["started_at"] == started, now["status"]
             assert pods_of(slug) == pods_before
             assert init_jobs(slug) == []
 
         # public route
         public = ["echo second > second.txt"]
-        put = api.put(f"/clusters/{cid}/init-scripts", json={"scripts": public})
+        put = api.put(f"/sessions/{cid}/init-scripts", json={"scripts": public})
         assert put.status_code == 200, put.text
-        got = api.get(f"/clusters/{cid}/init-scripts").json()
+        got = api.get(f"/sessions/{cid}/init-scripts").json()
         assert got["scripts"] == public and got["edited_since_run"] is True, got
         assert api.get(f"/presets/{preset['id']}").json()["spec"]["init_scripts"] == public
         assert_no_roll()
@@ -1557,14 +1557,14 @@ def test_init_scripts_edit_writes_cluster_and_preset_without_roll(
         status, body = agent_call(pod, "GET", "/agent/v1/init-scripts")
         assert status == 200 and body["scripts"] == agent_scripts, body
         assert body["edited_since_run"] is True, body
-        assert api.get(f"/clusters/{cid}/init-scripts").json()["scripts"] == agent_scripts
+        assert api.get(f"/sessions/{cid}/init-scripts").json()["scripts"] == agent_scripts
         assert api.get(f"/presets/{preset['id']}").json()["spec"]["init_scripts"] == agent_scripts
         assert_no_roll()
 
 
 def test_init_scripts_failure_starts_sessions_degraded(api: httpx.Client, baseline: dict) -> None:
     spec = {"replicas": 1, "env": FAKE_TURN_ENV, "init_scripts": ["exit 3"]}
-    with init_cluster(
+    with init_session(
         api, {"spec": spec, "slug": f"e2e-initfail-{uuid.uuid4().hex[:6]}"}
     ) as created:
         cid = created["id"]
@@ -1573,7 +1573,7 @@ def test_init_scripts_failure_starts_sessions_degraded(api: httpx.Client, baseli
         assert init["state"] == "failed" and init["exit_code"] == 3, init
 
         def degraded() -> dict[str, Any] | None:
-            now = api.get(f"/clusters/{cid}").json()
+            now = api.get(f"/sessions/{cid}").json()
             st = now["status"]
             return now if st.get("phase") == "degraded" and "init failed" in st["message"] else None
 
@@ -1581,11 +1581,11 @@ def test_init_scripts_failure_starts_sessions_degraded(api: httpx.Client, baseli
         assert len(wait_sessions(api, cid, 1)) == 1
 
 
-def test_cluster_without_init_scripts_skipped(api: httpx.Client, baseline: dict) -> None:
-    # own cluster: the shared `cluster` fixture is discarded by the discard test before this runs
+def test_session_without_init_scripts_skipped(api: httpx.Client, baseline: dict) -> None:
+    # own session: the shared `session` fixture is discarded by the discard test before this runs
     with (
         init_preset(api, [], replicas=1) as preset,
-        init_cluster(api, {"preset_id": preset["id"]}) as created,
+        init_session(api, {"preset_id": preset["id"]}) as created,
     ):
         view = wait_init_state(api, created["id"], ("skipped",))
         assert view["status"]["init"]["state"] == "skipped", view["status"]
@@ -1601,31 +1601,31 @@ AUTOCLOSE_TIMEOUT = 240  # 30 s window plus the sweeper interval and the discard
 
 
 @contextlib.contextmanager
-def config_cluster(
+def config_session(
     api: httpx.Client, suffix: str, spec: dict[str, Any]
 ) -> Iterator[dict[str, Any]]:
-    """A cluster of its own through POST /clusters; always deleted and awaited in teardown."""
+    """A session of its own through POST /sessions; always deleted and awaited in teardown."""
     slug = f"e2e-cfg-{suffix}"
-    resp = api.post("/clusters", json={"slug": slug, "spec": {**spec, "env": FAKE_TURN_ENV}})
+    resp = api.post("/sessions", json={"slug": slug, "spec": {**spec, "env": FAKE_TURN_ENV}})
     assert resp.status_code == 201, resp.text
     created = resp.json()
     cid = created["id"]
     try:
         yield created
     finally:
-        api.delete(f"/clusters/{cid}")
+        api.delete(f"/sessions/{cid}")
         wait_for(
-            f"cluster {slug} row to be gone",
-            lambda: api.get(f"/clusters/{cid}").status_code == 404,
+            f"session {slug} row to be gone",
+            lambda: api.get(f"/sessions/{cid}").status_code == 404,
             DISCARD_TIMEOUT,
         )
 
 
 def ready_agents(api: httpx.Client, cid: str, count: int) -> list[dict[str, Any]]:
     def probe() -> list[dict[str, Any]] | None:
-        view = api.get(f"/clusters/{cid}").json()
+        view = api.get(f"/sessions/{cid}").json()
         if view["status"].get("error"):
-            raise AssertionError(f"cluster reconcile error: {view['status']}")
+            raise AssertionError(f"session reconcile error: {view['status']}")
         agents = [a for a in agents_of(api, cid) if not a["gone"]]
         ready = [a for a in agents if a["ready"] and a["free_since"]]
         return ready if len(ready) == count else None
@@ -1645,10 +1645,10 @@ def test_wrapper_hook_and_idle_compact(api: httpx.Client) -> None:
             "auto_compact": {"idle_seconds": 5},
         },
     }
-    with config_cluster(api, "hook", spec) as created:
+    with config_session(api, "hook", spec) as created:
         cid = created["id"]
         agent = ready_agents(api, cid, 1)[0]
-        resp = api.post(f"/clusters/{cid}/messages", json={"text": "say hello"})
+        resp = api.post(f"/sessions/{cid}/messages", json={"text": "say hello"})
         assert resp.status_code == 202, resp.text
         mid = resp.json()["message_id"]
 
@@ -1659,7 +1659,7 @@ def test_wrapper_hook_and_idle_compact(api: httpx.Client) -> None:
         wait_for(f"message {mid} turn to complete", turn_done, TURN_TIMEOUT, interval=1)
 
         def hook_output() -> str | None:
-            r = api.get(f"/clusters/{cid}/files/content", params={"path": HOOK_FILE})
+            r = api.get(f"/sessions/{cid}/files/content", params={"path": HOOK_FILE})
             return r.json()["content"] if r.status_code == 200 else None
 
         content = wait_for(
@@ -1668,7 +1668,7 @@ def test_wrapper_hook_and_idle_compact(api: httpx.Client) -> None:
         assert content.strip() == agent["pod_name"], (content, agent["pod_name"])
 
         def compacted() -> list[dict[str, Any]] | None:
-            r = api.get(f"/clusters/{cid}/events", params={"types": "compacted"})
+            r = api.get(f"/sessions/{cid}/events", params={"types": "compacted"})
             r.raise_for_status()
             return r.json()["events"] or None
 
@@ -1678,18 +1678,18 @@ def test_wrapper_hook_and_idle_compact(api: httpx.Client) -> None:
 
 def test_leader_lease_hands_over(api: httpx.Client) -> None:
     spec = {"replicas": 2, "leader_lease_seconds": 60}
-    with config_cluster(api, "lease", spec) as created:
+    with config_session(api, "lease", spec) as created:
         cid = created["id"]
         ready_agents(api, cid, 2)
 
         def first_leader() -> dict[str, Any] | None:
-            view = api.get(f"/clusters/{cid}").json()
+            view = api.get(f"/sessions/{cid}").json()
             return view if view["leader_agent_id"] and view["leader_epoch"] is not None else None
 
         first = wait_for("a first leader", first_leader, LEADER_TIMEOUT)
 
         def handed_over() -> dict[str, Any] | None:
-            view = api.get(f"/clusters/{cid}").json()
+            view = api.get(f"/sessions/{cid}").json()
             ok = (
                 view["leader_agent_id"] not in (None, first["leader_agent_id"])
                 and view["leader_epoch"] > first["leader_epoch"]
@@ -1705,22 +1705,22 @@ def test_leader_lease_hands_over(api: httpx.Client) -> None:
         )
 
 
-def test_autoclose_discards_cluster(api: httpx.Client) -> None:
+def test_autoclose_discards_session(api: httpx.Client) -> None:
     from datetime import datetime, timedelta
 
-    with config_cluster(api, "autoclose", {"replicas": 1, "autoclose_after_seconds": 30}) as c:
+    with config_session(api, "autoclose", {"replicas": 1, "autoclose_after_seconds": 30}) as c:
         cid = c["id"]
-        view = api.get(f"/clusters/{cid}").json()
+        view = api.get(f"/sessions/{cid}").json()
         created_at = datetime.fromisoformat(view["created_at"])
         assert datetime.fromisoformat(view["closes_at"]) == created_at + timedelta(seconds=30), view
 
         def closing() -> bool:
-            r = api.get(f"/clusters/{cid}")
+            r = api.get(f"/sessions/{cid}")
             return r.status_code == 404 or r.json()["desired"] == "deleting"
 
-        wait_for("the autoclose sweeper to mark the cluster deleting", closing, AUTOCLOSE_TIMEOUT)
+        wait_for("the autoclose sweeper to mark the session deleting", closing, AUTOCLOSE_TIMEOUT)
 
         def gone() -> bool:
-            return api.get(f"/clusters/{cid}").status_code == 404
+            return api.get(f"/sessions/{cid}").status_code == 404
 
-        wait_for("the closed cluster to answer 404", gone, DISCARD_TIMEOUT)
+        wait_for("the closed session to answer 404", gone, DISCARD_TIMEOUT)

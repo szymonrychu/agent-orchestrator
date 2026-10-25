@@ -1,4 +1,4 @@
-"""Render a cluster spec into the Kubernetes objects of design D6 (pure, stable order)."""
+"""Render a session spec into the Kubernetes objects of design D6 (pure, stable order)."""
 
 from __future__ import annotations
 
@@ -9,12 +9,12 @@ from typing import Any
 
 import yaml
 
-from agents_orchestrator.db.clusters import Cluster
-from agents_orchestrator.k8s.labels import cluster_labels, object_names, prefix, selector
+from agents_orchestrator.db.sessions import Session
+from agents_orchestrator.k8s.labels import object_names, prefix, selector, session_labels
 from agents_orchestrator.k8s.on_start import render_on_start
 from agents_orchestrator.settings import Settings
-from agents_orchestrator.spec import WORKDIR_ROOT, ClusterSpec, WrapperSettings
-from agents_orchestrator.tokens import ClusterTokens
+from agents_orchestrator.spec import WORKDIR_ROOT, SessionSpec, WrapperSettings
+from agents_orchestrator.tokens import SessionTokens
 
 HASH_ANNOTATION = "agents.szymonrichert.pl/config-hash"
 SESSIONS_ROOT = "/sessions"
@@ -35,11 +35,11 @@ ASK_IN_WRITING_PROMPT = (
 )
 
 
-def workdir_path(spec: ClusterSpec) -> str:
+def workdir_path(spec: SessionSpec) -> str:
     return f"{WORKDIR_ROOT}/{spec.workdir}"
 
 
-def workdir_mount(spec: ClusterSpec) -> dict[str, str]:
+def workdir_mount(spec: SessionSpec) -> dict[str, str]:
     """The shared workspace root mount; sessions and check Jobs work in workdir_path(spec)."""
     return {"name": WORKSPACE_VOLUME, "mountPath": WORKDIR_ROOT, "subPath": "workdir"}
 
@@ -114,8 +114,8 @@ def _apply_wrapper(cfg: dict[str, Any], wrapper: WrapperSettings) -> None:
         cfg["plugins"] = user["plugins"]
 
 
-def _ccw_config(cluster: Cluster, settings: Settings) -> dict[str, Any]:
-    spec, slug = cluster.spec, cluster.slug
+def _ccw_config(session: Session, settings: Settings) -> dict[str, Any]:
+    spec, slug = session.spec, session.slug
     claude: dict[str, Any] = {
         "passthrough_env": sorted([*spec.env, *AGENT_PASSTHROUGH_ENV]),
         "env": {
@@ -189,7 +189,7 @@ def _meta(slug: str, kind_name: str, settings: Settings) -> dict[str, Any]:
     return {
         "name": kind_name,
         "namespace": settings.namespace,
-        "labels": cluster_labels(slug),
+        "labels": session_labels(slug),
     }
 
 
@@ -197,8 +197,8 @@ def _secret_ref(name: str, key: str) -> dict[str, Any]:
     return {"valueFrom": {"secretKeyRef": {"name": name, "key": key}}}
 
 
-def _container(cluster: Cluster, settings: Settings, names: dict[str, str]) -> dict[str, Any]:
-    spec, slug = cluster.spec, cluster.slug
+def _container(session: Session, settings: Settings, names: dict[str, str]) -> dict[str, Any]:
+    spec, slug = session.spec, session.slug
     port = settings.wrapper_port
     env: list[dict[str, Any]] = [
         {"name": "POD_NAME", "valueFrom": {"fieldRef": {"fieldPath": "metadata.name"}}},
@@ -210,7 +210,7 @@ def _container(cluster: Cluster, settings: Settings, names: dict[str, str]) -> d
             **_secret_ref(settings.claude_secret_name, "CLAUDE_CODE_OAUTH_TOKEN"),
         },
         {"name": "ORCH_AGENT_TOKEN", **_secret_ref(names["secret"], "ORCH_AGENT_TOKEN")},
-        {"name": "ORCH_CLUSTER_ID", "value": str(cluster.id)},
+        {"name": "ORCH_CLUSTER_ID", "value": str(session.id)},
         *(
             [{"name": "ORCH_AGENT_URL", "value": settings.agent_api_url}]
             if settings.agent_api_url
@@ -250,15 +250,15 @@ def _container(cluster: Cluster, settings: Settings, names: dict[str, str]) -> d
     return container
 
 
-def render_cluster(
-    cluster: Cluster, settings: Settings, tokens: ClusterTokens
+def render_session(
+    session: Session, settings: Settings, tokens: SessionTokens
 ) -> list[dict[str, Any]]:
-    spec, slug = cluster.spec, cluster.slug
+    spec, slug = session.spec, session.slug
     names = object_names(slug)
-    labels = cluster_labels(slug)
+    labels = session_labels(slug)
 
     config_data = {
-        "config.yaml": yaml.safe_dump(_ccw_config(cluster, settings), sort_keys=False),
+        "config.yaml": yaml.safe_dump(_ccw_config(session, settings), sort_keys=False),
         "on-start.sh": render_on_start(spec, settings, slug),
     }
     config_hash = hashlib.sha256(json.dumps(config_data, sort_keys=True).encode()).hexdigest()
@@ -310,7 +310,7 @@ def render_cluster(
     pod_spec: dict[str, Any] = {
         "securityContext": {"runAsUser": 1000, "fsGroup": 1000},
         "terminationGracePeriodSeconds": settings.agent_termination_grace_seconds,
-        "containers": [_container(cluster, settings, names)],
+        "containers": [_container(session, settings, names)],
         "volumes": [
             {"name": WORKSPACE_VOLUME, "persistentVolumeClaim": {"claimName": names["pvc"]}},
             {"name": "config", "configMap": {"name": names["configmap"]}},

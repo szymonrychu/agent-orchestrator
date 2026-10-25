@@ -1,4 +1,4 @@
-"""ClusterSpec model and the validation that needs server settings."""
+"""SessionSpec model and the validation that needs server settings."""
 
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ class SpecInvalid(ValueError):
 
     def __init__(self, errors: list[str]):
         self.errors = errors
-        super().__init__("invalid cluster spec: " + "; ".join(errors))
+        super().__init__("invalid session spec: " + "; ".join(errors))
 
 
 def slugify(text: str, max_len: int = SLUG_MAX) -> str:
@@ -67,7 +67,7 @@ def _random_suffix() -> str:
 def generated_slug(name: str, rand: Callable[[], str] | None = None) -> str:
     """`<base>-<4 random letters>` from a display name, always valid and at most SLUG_MAX."""
     room = SLUG_MAX - 5
-    base = slugify(name, room) or "cluster"
+    base = slugify(name, room) or "session"
     if base == "orchestrator" or base.startswith("orchestrator-"):
         base = slugify(f"p-{base}", room)
     return f"{base}-{(rand or _random_suffix)()}"
@@ -119,7 +119,7 @@ class Resources(BaseModel):
         return v
 
 
-# Mount point of the shared workspace; a cluster works in WORKDIR_ROOT/<spec.workdir>.
+# Mount point of the shared workspace; a session works in WORKDIR_ROOT/<spec.workdir>.
 WORKDIR_ROOT = "/workdir"
 # Directory under the workdir where init scripts and their log are surfaced to the agent.
 INIT_DIR = ".agent-init"
@@ -299,7 +299,7 @@ class Plugins(_Strict):
 
 
 class WrapperSettings(_Strict):
-    """Typed claude-code-wrapper settings a cluster may carry (create-time only)."""
+    """Typed claude-code-wrapper settings a session may carry (create-time only)."""
 
     hooks: dict[str, list[HookAction]] | None = None
     auto_compact: AutoCompact | None = None
@@ -353,7 +353,7 @@ class WrapperSettings(_Strict):
         return v
 
 
-class ClusterSpec(BaseModel):
+class SessionSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     replicas: int = Field(default=1, ge=1, le=16)
@@ -376,12 +376,12 @@ class ClusterSpec(BaseModel):
     leader_lease_seconds: int | None = Field(default=None, ge=60, le=604800)
     autoclose_after_seconds: int | None = Field(default=None, ge=1, le=2592000)
     # Read only by trigger services (agents-webhook, agents-schedule): send a new event to
-    # the cluster still running for it. The orchestrator never acts on it, so a cluster a
+    # the session still running for it. The orchestrator never acts on it, so a session a
     # user creates ignores it. Sparse: unset is not stored or dumped in a preset.
     reuse_running_agent: bool | None = Field(default=None, strict=True)
 
     @model_validator(mode="after")
-    def _cap(self) -> ClusterSpec:
+    def _cap(self) -> SessionSpec:
         if self.max_replicas is None:
             # resolved without marking the field set, so presets stay sparse
             self.__dict__["max_replicas"] = self.replicas
@@ -392,14 +392,14 @@ class ClusterSpec(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _lease_needs_hive(self) -> ClusterSpec:
+    def _lease_needs_hive(self) -> SessionSpec:
         if self.leader_lease_seconds is not None and not self.hive:
-            raise ValueError("leader_lease_seconds requires a hive cluster (max_replicas > 1)")
+            raise ValueError("leader_lease_seconds requires a hive session (max_replicas > 1)")
         return self
 
     @property
     def hive(self) -> bool:
-        """Every cluster that may run more than one agent is a hive."""
+        """Every session that may run more than one agent is a hive."""
         return (self.max_replicas or self.replicas) > 1
 
     @property
@@ -467,7 +467,7 @@ class ClusterSpec(BaseModel):
         return v
 
 
-def fill_resource_defaults(spec: ClusterSpec, settings: Settings) -> ClusterSpec:
+def fill_resource_defaults(spec: SessionSpec, settings: Settings) -> SessionSpec:
     """Fill each empty resources key from the settings defaults; explicit values win per key.
 
     A default limit is skipped when below the explicit request of the same resource, and a
@@ -495,11 +495,11 @@ def _not_above(low: str, high: str) -> bool:
         return True
 
 
-def validate_spec(spec: ClusterSpec, settings: Settings, stored: ClusterSpec | None = None) -> None:
+def validate_spec(spec: SessionSpec, settings: Settings, stored: SessionSpec | None = None) -> None:
     """Validate a spec.
 
     `stored` stays for the preset PUT: a model, effort or image that has since left the settings
-    lists is accepted only when unchanged from the stored preset spec. Scheduling a cluster passes
+    lists is accepted only when unchanged from the stored preset spec. Scheduling a session passes
     no `stored` and validates fully.
     """
     from any_mcp.config import AnyMcpConfig

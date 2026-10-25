@@ -24,10 +24,10 @@ from typing import cast
 import pytest
 import pytest_asyncio
 import uvicorn
-from factories import insert_agent, insert_cluster, set_agent_status
+from factories import insert_agent, insert_session, set_agent_status
 from fakes.fake_wrapper import FakeWrapper
-from test_api_clusters import client_for, make_settings
 from test_api_files import KEY, Rig, token_of
+from test_api_sessions import client_for, make_settings
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed, InvalidStatus
@@ -88,14 +88,14 @@ class RelayRig(Rig):
         return r.json()["terminal_id"]
 
     async def scripted(self, ordinal: int) -> tuple[ScriptedUpstream, dict]:
-        """A scripted upstream registered as a ready agent of the cluster."""
+        """A scripted upstream registered as a ready agent of the session."""
         upstream = ScriptedUpstream()
         await upstream.start()
         self.scripts.append(upstream)
         sid = f"ses_{uuid.uuid4().hex[:12]}"
         row = await insert_agent(
             self.pool,
-            self.cluster["id"],
+            self.session["id"],
             ordinal=ordinal,
             url=upstream.base_url,
             wrapper_session_id=sid,
@@ -144,8 +144,8 @@ async def rig(pool, dsn) -> AsyncIterator[RelayRig]:
         dsn, master_key=KEY, allowed_origins=GOOD_ORIGIN, allowed_cidrs="127.0.0.0/8,10.1.2.0/24"
     )
     app = create_app(settings, pool)
-    cluster = await insert_cluster(pool)
-    state = RelayRig(None, pool, cluster, [], app)
+    session = await insert_session(pool)
+    state = RelayRig(None, pool, session, [], app)
     async with serve_api(app) as port, client_for(app) as http:
         state.port, state.http = port, http
         try:
@@ -239,7 +239,7 @@ async def test_control_frames_relayed(rig):
 
 
 async def test_bearer_sent_upstream(rig):
-    # the fake records an attach only when the bearer is the cluster's derived token
+    # the fake records an attach only when the bearer is the session's derived token
     fake, sid, row = await rig.agent(0)
     tid = await rig.terminal(row)
     async with rig.attach(row["id"], tid) as ws:
@@ -252,11 +252,11 @@ async def test_bearer_sent_upstream(rig):
     sid_tid = "term_0123456789ab"
     async with rig.attach(srow["id"], sid_tid):
         conn = await upstream.next_conn()
-        assert upstream.auth == [f"Bearer {token_of(rig.cluster['id'])}"]
+        assert upstream.auth == [f"Bearer {token_of(rig.session['id'])}"]
         assert upstream.paths == [
             f"/v1/sessions/{srow['wrapper_session_id']}/terminals/{sid_tid}/attach"
         ]
-        assert token_of(rig.cluster["id"]) not in conn.request.path
+        assert token_of(rig.session["id"]) not in conn.request.path
     await no_relay_tasks()
 
 
@@ -440,7 +440,7 @@ async def test_token_not_in_logs(rig, caplog):
     caplog.set_level(logging.DEBUG)
     caplog.set_level(logging.DEBUG, logger="websockets")
     fake, _, row = await rig.agent(0)
-    token = token_of(rig.cluster["id"])
+    token = token_of(rig.session["id"])
     tid = await rig.terminal(row)
     fake.terminal_output(b"replayed\r\n")
     frames: list[str | bytes] = []

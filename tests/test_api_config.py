@@ -1,16 +1,16 @@
-"""Cluster configuration through the public API: wrapper block, lease, autoclose, view fields."""
+"""Session configuration through the public API: wrapper block, lease, autoclose, view fields."""
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta
 
 import pytest
-from factories import insert_agent, insert_cluster
-from test_api_clusters import assert_error, client_for, make_settings
+from factories import insert_agent, insert_session
+from test_api_sessions import assert_error, client_for, make_settings
 
 from agents_orchestrator.api.app import create_app
 
-C = "/api/v1/clusters"
+C = "/api/v1/sessions"
 P = "/api/v1/presets"
 
 WRAPPER = {
@@ -53,7 +53,7 @@ def assert_config(spec: dict) -> None:
     assert spec["autoclose_after_seconds"] == 3600
 
 
-async def test_config_fields_round_trip_through_presets_and_clusters(pool, dsn):
+async def test_config_fields_round_trip_through_presets_and_sessions(pool, dsn):
     async with app_client(pool, dsn) as http:
         r = await http.post(C, json={"slug": "raw", "spec": CONFIG})
         assert r.status_code == 201, r.text
@@ -99,20 +99,20 @@ async def test_config_fields_refused_with_named_errors(pool, dsn, spec, field):
         assert field in r.json()["error"]["message"]
 
 
-async def test_cluster_view_lease_and_autoclose_fields(pool, dsn):
-    plain = await insert_cluster(pool, spec={"replicas": 1})
-    timed = await insert_cluster(
+async def test_session_view_lease_and_autoclose_fields(pool, dsn):
+    plain = await insert_session(pool, spec={"replicas": 1})
+    timed = await insert_session(
         pool, spec={"replicas": 2, "max_replicas": 2, "autoclose_after_seconds": 3600}
     )
     a0 = await insert_agent(pool, timed["id"], ordinal=0, ready=True)
     async with pool.connection() as conn:
         await conn.execute(
-            "INSERT INTO cluster_leaders (cluster_id, agent_id, epoch, since, reason)"
+            "INSERT INTO session_leaders (session_id, agent_id, epoch, since, reason)"
             " VALUES (%s, %s, 4, now() - interval '1 hour', 'lease_expired')",
             (timed["id"], a0["id"]),
         )
         cur = await conn.execute(
-            "SELECT since FROM cluster_leaders WHERE cluster_id = %s", (timed["id"],)
+            "SELECT since FROM session_leaders WHERE session_id = %s", (timed["id"],)
         )
         since = (await cur.fetchone())[0]
     async with app_client(pool, dsn) as http:

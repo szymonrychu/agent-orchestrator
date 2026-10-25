@@ -61,6 +61,6 @@ def test_generated_slug_reserved_prefix_is_recut() -> None:
 
 
 def test_generated_slug_fallback_base() -> None:
-    assert generated_slug("!!! ???", rand=lambda: "abcd") == "cluster-abcd"
-    assert generated_slug("", rand=lambda: "abcd") == "cluster-abcd"
+    assert generated_slug("!!! ???", rand=lambda: "abcd") == "session-abcd"
+    assert generated_slug("", rand=lambda: "abcd") == "session-abcd"
     validate_slug(generated_slug("   "))

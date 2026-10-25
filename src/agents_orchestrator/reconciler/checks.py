@@ -1,8 +1,8 @@
-"""Checks as Jobs (D10): a queued check runs as a Job on the cluster's shared workspace.
+"""Checks as Jobs (D10): a queued check runs as a Job on the session's shared workspace.
 
 The reconciler claims queued checks and creates Job `agent-<slug>-check-<id>`; each tick it reads
 the running ones and records the outcome. The Job lives in the one shared namespace and carries
-both cluster labels, so prune and discard find it by selector. It mounts the cluster PVC with the
+both session labels, so prune and discard find it by selector. It mounts the session PVC with the
 same mount as the agent pods and runs in the directory the agents' sessions work in (D27).
 """
 
@@ -14,10 +14,10 @@ from typing import Any
 
 from psycopg_pool import AsyncConnectionPool
 
-from agents_orchestrator.db import clusters, queue
-from agents_orchestrator.db.clusters import Cluster
+from agents_orchestrator.db import queue, sessions
+from agents_orchestrator.db.sessions import Session
 from agents_orchestrator.k8s.kube import KubeApi, Obj, is_owned
-from agents_orchestrator.k8s.labels import cluster_labels, object_names, prefix
+from agents_orchestrator.k8s.labels import object_names, prefix, session_labels
 from agents_orchestrator.k8s.render import WORKSPACE_VOLUME, workdir_mount, workdir_path
 from agents_orchestrator.settings import Settings
 
@@ -37,8 +37,8 @@ def job_name(slug: str, check_id: int) -> str:
     return f"{prefix(slug)}-check-{check_id}"
 
 
-def render_job(cluster: Cluster, check: queue.Check, settings: Settings) -> Obj:
-    labels = {**cluster_labels(cluster.slug), CHECK_LABEL: str(check.id)}
+def render_job(session: Session, check: queue.Check, settings: Settings) -> Obj:
+    labels = {**session_labels(session.slug), CHECK_LABEL: str(check.id)}
     pod_spec: dict[str, Any] = {
         "restartPolicy": "Never",
         "securityContext": {"runAsUser": 1000, "fsGroup": 1000},
@@ -47,14 +47,14 @@ def render_job(cluster: Cluster, check: queue.Check, settings: Settings) -> Obj:
                 "name": "check",
                 "image": settings.check_image,
                 "command": ["sh", "-c", check.command],
-                "workingDir": workdir_path(cluster.spec),
-                "volumeMounts": [workdir_mount(cluster.spec)],
+                "workingDir": workdir_path(session.spec),
+                "volumeMounts": [workdir_mount(session.spec)],
             }
         ],
         "volumes": [
             {
                 "name": WORKSPACE_VOLUME,
-                "persistentVolumeClaim": {"claimName": object_names(cluster.slug)["pvc"]},
+                "persistentVolumeClaim": {"claimName": object_names(session.slug)["pvc"]},
             }
         ],
     }
@@ -64,7 +64,7 @@ def render_job(cluster: Cluster, check: queue.Check, settings: Settings) -> Obj:
         "apiVersion": "batch/v1",
         "kind": "Job",
         "metadata": {
-            "name": job_name(cluster.slug, check.id),
+            "name": job_name(session.slug, check.id),
             "namespace": settings.namespace,
             "labels": dict(labels),
         },
@@ -120,18 +120,18 @@ class CheckRunner:
 
     async def _start(self, check: queue.Check) -> None:
         async with self.pool.connection() as conn:
-            cluster = await clusters.get(conn, check.cluster_id)
-        if cluster is None or cluster.desired == "deleting":
+            session = await sessions.get(conn, check.session_id)
+        if session is None or session.desired == "deleting":
             await self._complete(check, "cancelled", None, None)
             return
-        name = job_name(cluster.slug, check.id)
+        name = job_name(session.slug, check.id)
         existing = await self.kube.get_job(self.settings.namespace, name)
         if existing is not None:
-            if not is_owned(existing, cluster.slug):
+            if not is_owned(existing, session.slug):
                 await self._complete(check, "failed", None, "foreign_object")
                 return
         else:
-            await self.kube.create_job(render_job(cluster, check, self.settings))
+            await self.kube.create_job(render_job(session, check, self.settings))
         async with self.pool.connection() as conn:
             await queue.set_check_job(conn, check.id, name)
 
@@ -146,10 +146,10 @@ class CheckRunner:
 
     async def _observe(self, check: queue.Check) -> None:
         async with self.pool.connection() as conn:
-            cluster = await clusters.get(conn, check.cluster_id)
-        if cluster is None:
+            session = await sessions.get(conn, check.session_id)
+        if session is None:
             return
-        ns, name = self.settings.namespace, job_name(cluster.slug, check.id)
+        ns, name = self.settings.namespace, job_name(session.slug, check.id)
         job = await self.kube.get_job(ns, name)
         if job is None:
             if check.job_name is None:  # crashed between the claim and the create
@@ -157,7 +157,7 @@ class CheckRunner:
             else:
                 await self._complete(check, "failed", None, "job_missing")
             return
-        if not is_owned(job, cluster.slug):
+        if not is_owned(job, session.slug):
             await self._complete(check, "failed", None, "foreign_object")
             return
         failed = job_condition(job, "Failed")
@@ -166,16 +166,16 @@ class CheckRunner:
         elif job_condition(job, "Complete") is not None or (job.get("status") or {}).get(
             "succeeded"
         ):
-            await self._finish(check, cluster, name, "passed")
+            await self._finish(check, session, name, "passed")
         elif failed is not None or (job.get("status") or {}).get("failed"):
-            await self._finish(check, cluster, name, "failed")
+            await self._finish(check, session, name, "failed")
         elif time.time() - check.started_at.timestamp() > DEADLINE_SECONDS + DEADLINE_GRACE_SECONDS:
             await self._complete(check, "failed", None, "timeout")
 
-    async def _finish(self, check: queue.Check, cluster: Cluster, name: str, status: str) -> None:
+    async def _finish(self, check: queue.Check, session: Session, name: str, status: str) -> None:
         ns = self.settings.namespace
-        selector = {**cluster_labels(cluster.slug), CHECK_LABEL: str(check.id)}
-        pods = [p for p in await self.kube.list_pods(ns, selector) if is_owned(p, cluster.slug)]
+        selector = {**session_labels(session.slug), CHECK_LABEL: str(check.id)}
+        pods = [p for p in await self.kube.list_pods(ns, selector) if is_owned(p, session.slug)]
         pod = pods[-1] if pods else None
         exit_code = 0 if status == "passed" else None
         tail: str | None = None

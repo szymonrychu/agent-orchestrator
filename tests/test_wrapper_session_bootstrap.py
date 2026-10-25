@@ -11,12 +11,12 @@ from fakes.fake_wrapper import FakeWrapper
 from psycopg.rows import dict_row
 
 from agents_orchestrator.db import agents as agents_repo
-from agents_orchestrator.db import clusters, queue
+from agents_orchestrator.db import queue, sessions
 from agents_orchestrator.k8s.render import workdir_path
 from agents_orchestrator.reconciler import Reconciler
 from agents_orchestrator.reconciler import wrapper_sessions as sessions_mod
 from agents_orchestrator.settings import Settings
-from agents_orchestrator.spec import ClusterSpec
+from agents_orchestrator.spec import SessionSpec
 from agents_orchestrator.tokens import tokens_for
 from agents_orchestrator.wrapper.client import WrapperClient
 from agents_orchestrator.wrapper.models import WrapperError
@@ -41,24 +41,24 @@ class Env:
             return self.client_override
         return WrapperClient(self.fake.base_url, token)
 
-    async def cluster(self, slug: str = "alpha", **spec) -> clusters.Cluster:
+    async def session(self, slug: str = "alpha", **spec) -> sessions.Session:
         async with self.pool.connection() as conn:
-            c = await clusters.create(conn, slug, ClusterSpec(**spec))
+            c = await sessions.create(conn, slug, SessionSpec(**spec))
         self.fake.token = tokens_for(self.settings, c.id).auth
         return c
 
-    async def agents(self, cluster_id) -> list[agents_repo.Agent]:
+    async def agents(self, session_id) -> list[agents_repo.Agent]:
         async with self.pool.connection() as conn:
-            return await agents_repo.list_agents(conn, cluster_id)
+            return await agents_repo.list_agents(conn, session_id)
 
-    async def status(self, cluster_id) -> dict:
+    async def status(self, session_id) -> dict:
         async with self.pool.connection() as conn:
-            c = await clusters.get(conn, cluster_id)
+            c = await sessions.get(conn, session_id)
         return c.status
 
-    async def seed_session(self, cluster_id, state: str, transcript: bool = False) -> str:
-        """A session already on the wrapper, created with the cluster token."""
-        client = WrapperClient(self.fake.base_url, tokens_for(self.settings, cluster_id).auth)
+    async def seed_session(self, session_id, state: str, transcript: bool = False) -> str:
+        """A session already on the wrapper, created with the session token."""
+        client = WrapperClient(self.fake.base_url, tokens_for(self.settings, session_id).auth)
         snap = await client.create_session("seed", "seed")
         if state != "ready":
             self.fake.set_session_state(
@@ -81,7 +81,7 @@ async def env(pool, dsn, fake) -> Env:
 
 
 async def test_creates_session_for_ready_pod(env, fake):
-    c = await env.cluster("alpha", workdir="repo", model="opus", effort="high")
+    c = await env.session("alpha", workdir="repo", model="opus", effort="high")
     await env.rec.reconcile_once()
 
     (agent,) = await env.agents(c.id)
@@ -97,7 +97,7 @@ async def test_creates_session_for_ready_pod(env, fake):
 
 
 async def test_adopts_existing_session(env, fake):
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     sid = await env.seed_session(c.id, "busy")
     await env.rec.reconcile_once()
 
@@ -108,7 +108,7 @@ async def test_adopts_existing_session(env, fake):
 
 async def test_unready_pod_skipped(env, fake):
     env.kube.pods_ready = False
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     await env.rec.reconcile_once()
 
     (agent,) = await env.agents(c.id)
@@ -123,7 +123,7 @@ class Stub503:
 
 
 async def test_wrapper_unavailable_retries_next_tick(env, fake):
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     env.client_override = Stub503()
     await env.rec.reconcile_once()
 
@@ -140,7 +140,7 @@ async def test_wrapper_unavailable_retries_next_tick(env, fake):
 
 
 async def test_network_error_leaves_agent_without_session(env, fake):
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     await fake.set_unreachable(True)
     await env.rec.reconcile_once()
     (agent,) = await env.agents(c.id)
@@ -150,7 +150,7 @@ async def test_network_error_leaves_agent_without_session(env, fake):
 
 
 async def test_lost_session_rebootstrapped(env, fake):
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     await env.rec.reconcile_once()
     (agent,) = await env.agents(c.id)
     old = agent.wrapper_session_id
@@ -162,8 +162,8 @@ async def test_lost_session_rebootstrapped(env, fake):
     assert list(fake.sessions) == [agent.wrapper_session_id]
 
 
-async def test_uses_cluster_auth_token(env, fake):
-    c = await env.cluster("alpha")
+async def test_uses_session_auth_token(env, fake):
+    c = await env.session("alpha")
     await env.rec.reconcile_once()
     expected = tokens_for(env.settings, c.id).auth
     assert env.factory_calls
@@ -173,7 +173,7 @@ async def test_uses_cluster_auth_token(env, fake):
 
 
 async def test_adopts_only_live_sessions(env, fake):
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     stopped = await env.seed_session(c.id, "stopped")
     failed = await env.seed_session(c.id, "failed")
     await env.rec.reconcile_once()
@@ -190,7 +190,7 @@ async def test_adopts_only_live_sessions(env, fake):
 
 
 async def test_resumes_stopped_session_with_transcript(env, fake):
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     sid = await env.seed_session(c.id, "stopped", transcript=True)
     await env.rec.reconcile_once()
 
@@ -201,7 +201,7 @@ async def test_resumes_stopped_session_with_transcript(env, fake):
 
 
 async def test_failed_session_without_transcript_gets_new_session(env, fake):
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     sid = await env.seed_session(c.id, "failed", transcript=False)
     await env.rec.reconcile_once()
 
@@ -212,7 +212,7 @@ async def test_failed_session_without_transcript_gets_new_session(env, fake):
 
 
 async def test_rebootstrap_command_clears_and_bootstraps(env, fake):
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     await env.rec.reconcile_once()
     (agent,) = await env.agents(c.id)
     old = agent.wrapper_session_id
@@ -232,7 +232,7 @@ async def test_rebootstrap_command_clears_and_bootstraps(env, fake):
 
 
 async def test_rebootstrap_runs_inside_reconcile_tick(env, fake):
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     await env.rec.reconcile_once()
     (agent,) = await env.agents(c.id)
     old = agent.wrapper_session_id
@@ -245,7 +245,7 @@ async def test_rebootstrap_runs_inside_reconcile_tick(env, fake):
 
 
 async def test_session_workdir_matches_rendered_workdir_path(env, fake):
-    c = await env.cluster("alpha", workdir="my-repo")
+    c = await env.session("alpha", workdir="my-repo")
     await env.rec.reconcile_once()
     (agent,) = await env.agents(c.id)
     assert fake.sessions[agent.wrapper_session_id].workdir == workdir_path(c.spec)
@@ -266,14 +266,14 @@ async def test_bootstraps_run_concurrently_bounded_at_eight(env, fake):
             raise WrapperError(503, "booting", "later")
 
     env.client_override = Slow()
-    c = await env.cluster("alpha", replicas=12)
+    c = await env.session("alpha", replicas=12)
     await env.rec.reconcile_once()
     assert 2 <= peak <= 8
     assert len(await env.agents(c.id)) == 12
 
 
 async def _bootstrapped(env, state: str, transcript: bool):
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     await env.rec.reconcile_once()
     (agent,) = await env.agents(c.id)
     sid = agent.wrapper_session_id

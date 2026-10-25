@@ -1,4 +1,4 @@
-"""Preset routes: named ClusterSpec templates. The api is the only writer of the presets table."""
+"""Preset routes: named SessionSpec templates. The api is the only writer of the presets table."""
 
 from __future__ import annotations
 
@@ -9,11 +9,11 @@ from fastapi import APIRouter, Response
 from pydantic import ValidationError
 
 from agents_orchestrator.api import schemas
-from agents_orchestrator.api.clusters import Cfg, Pool, check_spec
 from agents_orchestrator.api.errors import ApiError, not_found
+from agents_orchestrator.api.sessions import Cfg, Pool, check_spec
 from agents_orchestrator.db import presets as repo
 from agents_orchestrator.settings import Settings
-from agents_orchestrator.spec import ClusterSpec
+from agents_orchestrator.spec import SessionSpec
 
 router = APIRouter(prefix="/api/v1")
 
@@ -47,7 +47,7 @@ def _validated(
     stored_spec = None
     if stored is not None:
         try:
-            stored_spec = ClusterSpec.model_validate(stored)
+            stored_spec = SessionSpec.model_validate(stored)
         except ValidationError:
             stored_spec = None
     check_spec(body.spec, settings, stored_spec)

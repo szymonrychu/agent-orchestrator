@@ -116,9 +116,12 @@ def test_multiple_postgres_sources_rejected():
     assert "postgres.url" in err and "postgres.host/user/database" in err and "cnpg.enabled" in err
 
 
+CNPG_KIND = "Cluster"  # the CloudNativePG database resource
+
+
 def test_cnpg_optional_with_backup_passthrough(env_chart):
     docs = render(values(postgres={"url": URL}))
-    assert "Cluster" not in {d["kind"] for d in docs}
+    assert CNPG_KIND not in {d["kind"] for d in docs}
 
     backup = {
         "retentionPolicy": "30d",
@@ -134,10 +137,10 @@ def test_cnpg_optional_with_backup_passthrough(env_chart):
         "backup": backup,
     }
     docs = render(values(cnpg=cnpg), chart=env_chart)
-    (cluster,) = [d for d in docs if d["kind"] == "Cluster"]
-    assert cluster["apiVersion"] == "postgresql.cnpg.io/v1"
-    assert cluster["metadata"]["name"] == f"{FULL}-db"
-    spec = cluster["spec"]
+    (database,) = [d for d in docs if d["kind"] == CNPG_KIND]
+    assert database["apiVersion"] == "postgresql.cnpg.io/v1"
+    assert database["metadata"]["name"] == f"{FULL}-db"
+    spec = database["spec"]
     assert spec["instances"] == 3
     assert spec["imageName"] == "ghcr.io/cloudnative-pg/postgresql:17"
     assert spec["storage"] == {"size": "20Gi", "storageClass": "fast"}
@@ -156,11 +159,11 @@ def test_cnpg_optional_with_backup_passthrough(env_chart):
     assert db["valueFrom"]["secretKeyRef"] == {"name": f"{FULL}-db-app", "key": "uri"}
 
     minimal = render(values(cnpg={"enabled": True}))
-    (cluster,) = [d for d in minimal if d["kind"] == "Cluster"]
-    assert "backup" not in cluster["spec"]
-    assert "walStorage" not in cluster["spec"]
-    assert "imageName" not in cluster["spec"]
-    assert "storageClass" not in cluster["spec"]["storage"]
+    (database,) = [d for d in minimal if d["kind"] == CNPG_KIND]
+    assert "backup" not in database["spec"]
+    assert "walStorage" not in database["spec"]
+    assert "imageName" not in database["spec"]
+    assert "storageClass" not in database["spec"]["storage"]
 
 
 def test_settings_configmap():

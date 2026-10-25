@@ -1,6 +1,6 @@
 """presets table repository. The api is the only caller and the only writer.
 
-A preset is a named ClusterSpec template. The spec is stored exactly as given: the repository
+A preset is a named SessionSpec template. The spec is stored exactly as given: the repository
 never fills defaults, and it does not NOTIFY because nothing listens for preset changes.
 """
 

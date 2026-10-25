@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 
 import httpx
-from factories import insert_agent, insert_cluster, set_agent_status
+from factories import insert_agent, insert_session, set_agent_status
 
 from agents_orchestrator.api.app import create_app
 from agents_orchestrator.settings import Settings
@@ -26,8 +26,8 @@ def make_settings(dsn: str) -> Settings:
     )
 
 
-def token(cluster_id) -> str:
-    return derive_tokens(KEY.encode(), cluster_id).agent
+def token(session_id) -> str:
+    return derive_tokens(KEY.encode(), session_id).agent
 
 
 def client_for(app, ip: str = IP0) -> httpx.AsyncClient:
@@ -35,9 +35,9 @@ def client_for(app, ip: str = IP0) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=transport, base_url=f"http://orch:{AGENT_PORT}")
 
 
-def headers(cluster_id, tok: str | None = None) -> dict[str, str]:
-    h = {"X-Orch-Cluster": str(cluster_id)}
-    h["Authorization"] = f"Bearer {tok if tok is not None else token(cluster_id)}"
+def headers(session_id, tok: str | None = None) -> dict[str, str]:
+    h = {"X-Orch-Cluster": str(session_id)}
+    h["Authorization"] = f"Bearer {tok if tok is not None else token(session_id)}"
     return h
 
 
@@ -47,7 +47,7 @@ async def set_ip(pool, agent_id, ip):
 
 
 async def hive(pool, replicas: int = 2):
-    c = await insert_cluster(pool, spec={"replicas": replicas, "max_replicas": 4})
+    c = await insert_session(pool, spec={"replicas": replicas, "max_replicas": 4})
     a0 = await insert_agent(pool, c["id"], ordinal=0, ready=True)
     a1 = await insert_agent(pool, c["id"], ordinal=1, ready=False)
     await set_ip(pool, a0["id"], IP0)
@@ -73,7 +73,7 @@ async def test_me_identity(pool, dsn):
 
 async def test_token_rejections(pool, dsn):
     c, _, _ = await hive(pool)
-    other = await insert_cluster(pool, spec={"replicas": 1})
+    other = await insert_session(pool, spec={"replicas": 1})
     app = create_app(make_settings(dsn), pool)
     cases = [
         {},
@@ -129,7 +129,7 @@ async def test_me_leader_and_members(pool, dsn):
         assert body["leader"] is None and body["epoch"] is None
         async with pool.connection() as conn:
             await conn.execute(
-                "INSERT INTO cluster_leaders (cluster_id, agent_id, epoch, since, reason)"
+                "INSERT INTO session_leaders (session_id, agent_id, epoch, since, reason)"
                 " VALUES (%s, %s, 3, now(), 'test')",
                 (c["id"], a0["id"]),
             )

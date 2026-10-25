@@ -1,4 +1,4 @@
-"""Request and response models for the clusters, agents and meta routes."""
+"""Request and response models for the sessions, agents and meta routes."""
 
 from __future__ import annotations
 
@@ -8,14 +8,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agents_orchestrator.spec import ClusterSpec
+from agents_orchestrator.spec import SessionSpec
 
 
-class CreateCluster(BaseModel):
+class CreateSession(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     slug: str | None = None
-    spec: ClusterSpec | None = None
+    spec: SessionSpec | None = None
     preset_id: uuid.UUID | None = None
 
 
@@ -23,7 +23,7 @@ class PresetIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
-    spec: ClusterSpec = ClusterSpec()
+    spec: SessionSpec = SessionSpec()
 
 
 class CopyPreset(BaseModel):
@@ -41,7 +41,7 @@ class PresetView(BaseModel):
     updated_at: datetime
 
 
-class ClusterSummary(BaseModel):
+class SessionSummary(BaseModel):
     state: Literal["working", "waiting", "booting", "error", "deleting"]
     ready: int
     replicas: int
@@ -51,10 +51,10 @@ class ClusterSummary(BaseModel):
     failed: int
 
 
-class ClusterView(BaseModel):
+class SessionView(BaseModel):
     id: uuid.UUID
     slug: str
-    spec: ClusterSpec
+    spec: SessionSpec
     desired: Literal["active", "deleting"]
     status: dict[str, Any]
     generation: int
@@ -62,7 +62,7 @@ class ClusterView(BaseModel):
     created_at: datetime
     preset_id: uuid.UUID | None
     preset_name: str | None
-    summary: ClusterSummary
+    summary: SessionSummary
     hive: bool
     max_replicas: int
     static: bool
@@ -89,7 +89,7 @@ class InitStatus(BaseModel):
 
 
 class InitScriptsView(BaseModel):
-    cluster_id: uuid.UUID
+    session_id: uuid.UUID
     scripts: list[str]
     preset_id: uuid.UUID | None
     preset_name: str | None
@@ -143,7 +143,7 @@ class MetaDefaults(BaseModel):
 class MetaCaps(BaseModel):
     max_replicas: int
     max_pvc_size: str
-    max_clusters: int
+    max_sessions: int
 
 
 class Meta(BaseModel):
@@ -181,7 +181,7 @@ class TurnView(BaseModel):
 
 class MessageView(BaseModel):
     id: int
-    cluster_id: uuid.UUID
+    session_id: uuid.UUID
     text: str
     status: MessageStatus
     target_agent_id: uuid.UUID | None
@@ -223,7 +223,7 @@ class CheckAccepted(BaseModel):
 
 class CheckView(BaseModel):
     id: int
-    cluster_id: uuid.UUID
+    session_id: uuid.UUID
     command: str
     status: str
     exit_code: int | None
@@ -241,7 +241,7 @@ class FileEntry(BaseModel):
 
 
 class FileListing(BaseModel):
-    cluster_id: uuid.UUID
+    session_id: uuid.UUID
     agent_id: uuid.UUID
     root: str
     path: str
@@ -250,7 +250,7 @@ class FileListing(BaseModel):
 
 
 class FileContent(BaseModel):
-    cluster_id: uuid.UUID
+    session_id: uuid.UUID
     agent_id: uuid.UUID
     path: str
     size: int
@@ -271,7 +271,7 @@ class CreateTerminal(BaseModel):
 
 class TerminalView(BaseModel):
     agent_id: uuid.UUID
-    cluster_id: uuid.UUID
+    session_id: uuid.UUID
     pod_name: str
     terminal_id: str
     created_at: datetime
@@ -308,7 +308,7 @@ class ScaleRequest(BaseModel):
 
 
 class ScaleResult(BaseModel):
-    cluster_id: uuid.UUID
+    session_id: uuid.UUID
     replicas: int
     previous_replicas: int
     max_replicas: int

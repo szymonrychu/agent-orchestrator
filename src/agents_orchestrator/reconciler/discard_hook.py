@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from agents_orchestrator.db.clusters import Cluster
+from agents_orchestrator.db.sessions import Session
 from agents_orchestrator.settings import DiscardHook, Settings
 
 STDERR_TAIL_BYTES = 1024
@@ -29,16 +29,16 @@ class HookResult:
     reason: str = ""
 
 
-def resolve_hook(cluster: Cluster, settings: Settings) -> DiscardHook | None:
-    """The cluster's own webhook URL wins over the settings hook."""
-    if cluster.spec.discard_hook_url:
-        return DiscardHook("url", cluster.spec.discard_hook_url)
+def resolve_hook(session: Session, settings: Settings) -> DiscardHook | None:
+    """The session's own webhook URL wins over the settings hook."""
+    if session.spec.discard_hook_url:
+        return DiscardHook("url", session.spec.discard_hook_url)
     return settings.discard_hook()
 
 
 async def run_discard_hook(
     hook: DiscardHook,
-    cluster: Cluster,
+    session: Session,
     lines: AsyncIterator[str],
     timeout: float,
     *,
@@ -47,14 +47,14 @@ async def run_discard_hook(
     try:
         async with asyncio.timeout(timeout):
             if hook.kind == "command":
-                return await _run_command(hook.target, cluster, lines)
-            return await _post_webhook(hook.target, cluster, lines, transport)
+                return await _run_command(hook.target, session, lines)
+            return await _post_webhook(hook.target, session, lines, transport)
     except TimeoutError:
         return HookResult(False, f"timed out after {timeout:g}s")
 
 
-async def _run_command(command: str, cluster: Cluster, lines: AsyncIterator[str]) -> HookResult:
-    env = {**os.environ, "ORCH_CLUSTER_ID": str(cluster.id), "ORCH_CLUSTER_SLUG": cluster.slug}
+async def _run_command(command: str, session: Session, lines: AsyncIterator[str]) -> HookResult:
+    env = {**os.environ, "ORCH_SESSION_ID": str(session.id), "ORCH_SESSION_SLUG": session.slug}
     proc = await asyncio.create_subprocess_exec(
         "sh",
         "-c",
@@ -107,7 +107,7 @@ async def _run_command(command: str, cluster: Cluster, lines: AsyncIterator[str]
 
 async def _post_webhook(
     url: str,
-    cluster: Cluster,
+    session: Session,
     lines: AsyncIterator[str],
     transport: httpx.AsyncBaseTransport | None,
 ) -> HookResult:
@@ -117,8 +117,8 @@ async def _post_webhook(
 
     headers = {
         "Content-Type": "application/x-ndjson",
-        "X-Orch-Cluster-Id": str(cluster.id),
-        "X-Orch-Cluster-Slug": cluster.slug,
+        "X-Orch-Session-Id": str(session.id),
+        "X-Orch-Session-Slug": session.slug,
     }
     try:
         async with (

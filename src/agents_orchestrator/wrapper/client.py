@@ -209,7 +209,7 @@ class WrapperClient:
     ) -> NoteOutcome:
         """Push a note into the session's inbox: keyed notes replace, the rest are appended.
 
-        "ok" when the wrapper accepted it, "disabled" for 409 notes_disabled (the cluster's
+        "ok" when the wrapper accepted it, "disabled" for 409 notes_disabled (the session's
         wrapper runs without a notes inbox: nothing to retry), "failed" for anything else
         (unreachable, unknown or stopped session, refusal). Never raises; every miss is logged.
         """

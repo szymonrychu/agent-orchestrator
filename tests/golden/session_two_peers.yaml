@@ -1,10 +1,10 @@
 - apiVersion: v1
   kind: PersistentVolumeClaim
   metadata:
-    name: agent-solo-workspace
+    name: agent-alpha-workspace
     namespace: agents
     labels:
-      agents.szymonrichert.pl/cluster: solo
+      agents.szymonrichert.pl/session: alpha
       app.kubernetes.io/managed-by: agents-orchestrator
   spec:
     accessModes:
@@ -12,14 +12,14 @@
     storageClassName: rook-ceph-rwx
     resources:
       requests:
-        storage: 20Gi
+        storage: 5Gi
 - apiVersion: v1
   kind: Secret
   metadata:
-    name: agent-solo-ccw
+    name: agent-alpha-ccw
     namespace: agents
     labels:
-      agents.szymonrichert.pl/cluster: solo
+      agents.szymonrichert.pl/session: alpha
       app.kubernetes.io/managed-by: agents-orchestrator
   type: Opaque
   stringData:
@@ -29,17 +29,18 @@
 - apiVersion: v1
   kind: ConfigMap
   metadata:
-    name: agent-solo-config
+    name: agent-alpha-config
     namespace: agents
     labels:
-      agents.szymonrichert.pl/cluster: solo
+      agents.szymonrichert.pl/session: alpha
       app.kubernetes.io/managed-by: agents-orchestrator
   data:
     config.yaml: "server:\n  auth_token: ${CCW_AUTH_TOKEN}\npaths:\n  workdir_root:\
-      \ /workdir\n  sessions_root: /sessions\nclaude:\n  passthrough_env:\n  - ORCH_AGENT_TOKEN\n\
-      \  - ORCH_AGENT_URL\n  - ORCH_CLUSTER_ID\n  - POD_NAME\n  env:\n    claude_code_oauth_token:\
-      \ ${CLAUDE_CODE_OAUTH_TOKEN}\n    disable_autoupdater: true\n    claude_autocompact_pct_override:\
-      \ 95\n  model: sonnet\n  main_agent_only_tools:\n  - mcp__any-mcp__orchestrator_*\n\
+      \ /workdir\n  sessions_root: /sessions\nclaude:\n  passthrough_env:\n  - AAA\n\
+      \  - GITHUB_TOKEN\n  - ORCH_AGENT_TOKEN\n  - ORCH_AGENT_URL\n  - ORCH_CLUSTER_ID\n\
+      \  - POD_NAME\n  env:\n    claude_code_oauth_token: ${CLAUDE_CODE_OAUTH_TOKEN}\n\
+      \    disable_autoupdater: true\n    claude_autocompact_pct_override: 95\n  model:\
+      \ opus\n  effort: high\n  main_agent_only_tools:\n  - mcp__any-mcp__orchestrator_*\n\
       \  permissions:\n    deny:\n    - EnterPlanMode\n    - ExitPlanMode\n    - AskUserQuestion\n\
       \  mcp_servers:\n    any-mcp:\n      type: stdio\n      command: /opt/any-mcp/bin/any-mcp\n\
       \      args:\n      - --config\n      - /opt/any-mcp/etc/any-mcp.yaml\nhooks:\n\
@@ -52,27 +53,29 @@
       \ questions, and after each question give\n    your recommended answer, worded\
       \ so that replying \"yes\" accepts it. Then stop and\n    wait for the reply.\
       \ Never wait on an interactive question tool.'\nlimits:\n  shutdown_timeout_seconds:\
-      \ 80\nnotes:\n  enabled: false\n"
+      \ 80\nnotes:\n  enabled: true\npeers:\n  enabled: true\n  name: ${POD_NAME}\n\
+      \  advertise_url: ${CCW_PEER_URL}\n  token: ${CCW_PEER_TOKEN}\n  static:\n \
+      \ - http://agent-alpha-0.agent-alpha.agents.svc.cluster.local:8080\n  - http://agent-alpha-1.agent-alpha.agents.svc.cluster.local:8080\n"
     on-start.sh: "#!/bin/sh\nset -eu\nREF=v0.2.0\nif ! grep -qxF -- \"$REF\" /opt/any-mcp/.ref\
       \ 2>/dev/null; then\n  rm -rf /opt/any-mcp/* /opt/any-mcp/.ref\n  python3 -m\
       \ venv /opt/any-mcp\n  /opt/any-mcp/bin/pip install --no-cache-dir 'any-mcp\
       \ @ git+https://github.com/szymonrychu/any-mcp@v0.2.0'\n  printf '%s\\n' \"\
       $REF\" > /opt/any-mcp/.ref\nfi\nmkdir -p /opt/any-mcp/etc\ncat > /opt/any-mcp/etc/any-mcp.yaml\
-      \ <<'ANY_MCP_CONFIG_EOF'\n{}\nANY_MCP_CONFIG_EOF\n/opt/any-mcp/bin/any-mcp --help\
-      \ >/dev/null\n"
+      \ <<'ANY_MCP_CONFIG_EOF'\n{\n  \"servers\": {}\n}\nANY_MCP_CONFIG_EOF\n/opt/any-mcp/bin/any-mcp\
+      \ --help >/dev/null\n"
 - apiVersion: v1
   kind: Service
   metadata:
-    name: agent-solo
+    name: agent-alpha
     namespace: agents
     labels:
-      agents.szymonrichert.pl/cluster: solo
+      agents.szymonrichert.pl/session: alpha
       app.kubernetes.io/managed-by: agents-orchestrator
   spec:
     clusterIP: None
     publishNotReadyAddresses: true
     selector:
-      agents.szymonrichert.pl/cluster: solo
+      agents.szymonrichert.pl/session: alpha
       app.kubernetes.io/managed-by: agents-orchestrator
     ports:
     - name: http
@@ -81,26 +84,26 @@
 - apiVersion: apps/v1
   kind: StatefulSet
   metadata:
-    name: agent-solo
+    name: agent-alpha
     namespace: agents
     labels:
-      agents.szymonrichert.pl/cluster: solo
+      agents.szymonrichert.pl/session: alpha
       app.kubernetes.io/managed-by: agents-orchestrator
   spec:
-    replicas: 1
+    replicas: 2
     podManagementPolicy: Parallel
-    serviceName: agent-solo
+    serviceName: agent-alpha
     selector:
       matchLabels:
-        agents.szymonrichert.pl/cluster: solo
+        agents.szymonrichert.pl/session: alpha
         app.kubernetes.io/managed-by: agents-orchestrator
     template:
       metadata:
         labels:
-          agents.szymonrichert.pl/cluster: solo
+          agents.szymonrichert.pl/session: alpha
           app.kubernetes.io/managed-by: agents-orchestrator
         annotations:
-          agents.szymonrichert.pl/config-hash: aa3a417b7cdd4bc24d4e1a3015f7f044c26be5665366f3a40e566a59da2406e3
+          agents.szymonrichert.pl/config-hash: 8771f9dcbe3ece08a03d5a45b901f084bbaaf11e9aa203b20e91dcbf5374729a
       spec:
         imagePullSecrets:
         - name: regcred
@@ -120,16 +123,16 @@
               fieldRef:
                 fieldPath: metadata.name
           - name: CCW_PEER_URL
-            value: http://$(POD_NAME).agent-solo.agents.svc.cluster.local:8080
+            value: http://$(POD_NAME).agent-alpha.agents.svc.cluster.local:8080
           - name: CCW_AUTH_TOKEN
             valueFrom:
               secretKeyRef:
-                name: agent-solo-ccw
+                name: agent-alpha-ccw
                 key: CCW_AUTH_TOKEN
           - name: CCW_PEER_TOKEN
             valueFrom:
               secretKeyRef:
-                name: agent-solo-ccw
+                name: agent-alpha-ccw
                 key: CCW_PEER_TOKEN
           - name: CLAUDE_CODE_OAUTH_TOKEN
             valueFrom:
@@ -139,10 +142,14 @@
           - name: ORCH_AGENT_TOKEN
             valueFrom:
               secretKeyRef:
-                name: agent-solo-ccw
+                name: agent-alpha-ccw
                 key: ORCH_AGENT_TOKEN
           - name: ORCH_CLUSTER_ID
             value: 11111111-1111-1111-1111-111111111111
+          - name: AAA
+            value: '1'
+          - name: GITHUB_TOKEN
+            value: x
           startupProbe:
             httpGet:
               path: /healthz
@@ -172,13 +179,18 @@
             mountPath: /opt/any-mcp
           - name: config
             mountPath: /etc/ccw
+          resources:
+            requests:
+              cpu: 500m
+            limits:
+              memory: 2Gi
         volumes:
         - name: workspace
           persistentVolumeClaim:
-            claimName: agent-solo-workspace
+            claimName: agent-alpha-workspace
         - name: config
           configMap:
-            name: agent-solo-config
+            name: agent-alpha-config
         - name: mise
           emptyDir: {}
         - name: any-mcp

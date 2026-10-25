@@ -19,12 +19,12 @@ from factories import (
 )
 from fakes.fake_kube import FakeKube
 
-from agents_orchestrator.db import clusters
-from agents_orchestrator.db.export import export_cluster_history
+from agents_orchestrator.db import sessions
+from agents_orchestrator.db.export import export_session_history
 from agents_orchestrator.reconciler import Reconciler
 from agents_orchestrator.reconciler.discard_hook import run_discard_hook
 from agents_orchestrator.settings import DiscardHook, Settings
-from agents_orchestrator.spec import ClusterSpec
+from agents_orchestrator.spec import SessionSpec
 
 IMAGE = "harbor.example/containers/claude-code-wrapper:ca2ddf3"
 
@@ -44,29 +44,29 @@ class Env:
         )
         self.rec = Reconciler(pool, self.kube, self.settings, wrapper_factory=None)
 
-    async def cluster(self, slug: str = "alpha", **spec) -> clusters.Cluster:
+    async def session(self, slug: str = "alpha", **spec) -> sessions.Session:
         async with self.pool.connection() as conn:
-            return await clusters.create(conn, slug, ClusterSpec(**spec))
+            return await sessions.create(conn, slug, SessionSpec(**spec))
 
-    async def get(self, cluster_id) -> clusters.Cluster | None:
+    async def get(self, session_id) -> sessions.Session | None:
         async with self.pool.connection() as conn:
-            return await clusters.get(conn, cluster_id)
+            return await sessions.get(conn, session_id)
 
-    async def discard(self, cluster_id) -> None:
+    async def discard(self, session_id) -> None:
         async with self.pool.connection() as conn:
-            await clusters.request_delete(conn, cluster_id)
+            await sessions.request_delete(conn, session_id)
 
-    async def export(self, cluster_id) -> list[dict]:
+    async def export(self, session_id) -> list[dict]:
         async with self.pool.connection() as conn:
-            return [json.loads(line) async for line in export_cluster_history(conn, cluster_id)]
+            return [json.loads(line) async for line in export_session_history(conn, session_id)]
 
-    async def history_rows(self, cluster_id) -> int:
+    async def history_rows(self, session_id) -> int:
         async with self.pool.connection() as conn:
             cur = await conn.execute(
-                "SELECT (SELECT count(*) FROM agents WHERE cluster_id = %(c)s)"
-                " + (SELECT count(*) FROM messages WHERE cluster_id = %(c)s)"
-                " + (SELECT count(*) FROM events WHERE cluster_id = %(c)s)",
-                {"c": cluster_id},
+                "SELECT (SELECT count(*) FROM agents WHERE session_id = %(c)s)"
+                " + (SELECT count(*) FROM messages WHERE session_id = %(c)s)"
+                " + (SELECT count(*) FROM events WHERE session_id = %(c)s)",
+                {"c": session_id},
             )
             return (await cur.fetchone())[0]
 
@@ -78,7 +78,7 @@ class Env:
         """A hook that saves stdin and the environment, then runs `script`."""
         out = self.tmp / "out"
         return (
-            f'cat >> "{out}.jsonl"; echo "$ORCH_CLUSTER_ID $ORCH_CLUSTER_SLUG" >> "{out}.env"; '
+            f'cat >> "{out}.jsonl"; echo "$ORCH_SESSION_ID $ORCH_SESSION_SLUG" >> "{out}.env"; '
             + script
         )
 
@@ -92,18 +92,18 @@ async def env(pool, dsn, tmp_path) -> Env:
     return Env(pool, dsn, tmp_path)
 
 
-async def populate(env: Env, cluster):
+async def populate(env: Env, session):
     """Two agents, with rows of every kind inserted out of id order where the kind allows."""
-    a1 = await insert_agent(env.pool, cluster.id, ordinal=10, pod_name="p10")
-    a2 = await insert_agent(env.pool, cluster.id, ordinal=11, pod_name="p11")
+    a1 = await insert_agent(env.pool, session.id, ordinal=10, pod_name="p10")
+    a2 = await insert_agent(env.pool, session.id, ordinal=11, pod_name="p11")
     for text in ("one", "two", "three"):
-        await insert_message(env.pool, cluster.id, text=text)
+        await insert_message(env.pool, session.id, text=text)
     for agent in (a2, a1):
-        await insert_event(env.pool, cluster.id, agent["id"], type="assistant_text")
+        await insert_event(env.pool, session.id, agent["id"], type="assistant_text")
         await insert_command(env.pool, agent["id"], kind="interrupt")
-    await insert_event(env.pool, cluster.id, a1["id"], type="tool_call")
-    await insert_check(env.pool, cluster.id, command="make a", status="passed")
-    await insert_check(env.pool, cluster.id, command="make b", status="failed")
+    await insert_event(env.pool, session.id, a1["id"], type="tool_call")
+    await insert_check(env.pool, session.id, command="make a", status="passed")
+    await insert_check(env.pool, session.id, command="make b", status="failed")
     await insert_turn(env.pool, a1["id"], turn_id="t-late")
     await insert_turn(env.pool, a1["id"], turn_id="t-early")
     await env.sql(
@@ -116,18 +116,18 @@ async def populate(env: Env, cluster):
 
 
 async def test_export_jsonl_kinds_and_order(env):
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     a1, a2 = await populate(env, c)
-    other = await env.cluster("bravo")
+    other = await env.session("bravo")
     await insert_message(env.pool, other.id, text="not mine")
 
     async with env.pool.connection() as conn:
-        lines = [line async for line in export_cluster_history(conn, c.id)]
+        lines = [line async for line in export_session_history(conn, c.id)]
     assert all(line.endswith("\n") and "\n" not in line[:-1] for line in lines)
     records = [json.loads(line) for line in lines]
 
     kinds = [r["kind"] for r in records]
-    assert kinds[0] == "cluster" and kinds.count("cluster") == 1
+    assert kinds[0] == "session" and kinds.count("session") == 1
     assert kinds[1:] == (
         ["agent"] * 2
         + ["message"] * 3
@@ -136,10 +136,10 @@ async def test_export_jsonl_kinds_and_order(env):
         + ["check"] * 2
         + ["event"] * 3
     )
-    cluster = records[0]
-    assert cluster["slug"] == "alpha" and cluster["id"] == str(c.id)
-    assert cluster["spec"] == c.spec.model_dump(mode="json", exclude_none=True)
-    created = datetime.fromisoformat(cluster["created_at"])
+    session = records[0]
+    assert session["slug"] == "alpha" and session["id"] == str(c.id)
+    assert session["spec"] == c.spec.model_dump(mode="json", exclude_none=True)
+    created = datetime.fromisoformat(session["created_at"])
     assert created.utcoffset() == timedelta(0) and created == c.created_at
 
     by_kind = {k: [r for r in records if r["kind"] == k] for k in set(kinds)}
@@ -149,7 +149,7 @@ async def test_export_jsonl_kinds_and_order(env):
         assert ids == sorted(ids), kind
     assert [r["text"] for r in by_kind["message"]] == ["one", "two", "three"]
     assert [r["turn_id"] for r in by_kind["turn"]] == ["t-early", "t-late"]
-    assert {r["cluster_id"] for r in by_kind["message"]} == {str(c.id)}
+    assert {r["session_id"] for r in by_kind["message"]} == {str(c.id)}
     for record in records:
         for key, value in record.items():
             if key.endswith("_at") and value is not None:
@@ -157,7 +157,7 @@ async def test_export_jsonl_kinds_and_order(env):
 
 
 async def test_export_streams_with_a_server_side_cursor(env):
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     await populate(env, c)
     seen: list[str] = []
     async with env.pool.connection() as conn:
@@ -168,7 +168,7 @@ async def test_export_streams_with_a_server_side_cursor(env):
             return original(*args, **kwargs)
 
         conn.cursor = spy  # type: ignore[method-assign]
-        n = sum([1 async for _ in export_cluster_history(conn, c.id)])
+        n = sum([1 async for _ in export_session_history(conn, c.id)])
     assert n > 10 and sorted(s for s in seen if s) == sorted(
         f"export_{k}" for k in ("agent", "message", "turn", "command", "check", "event")
     )
@@ -177,16 +177,16 @@ async def test_export_streams_with_a_server_side_cursor(env):
 # ---------------------------------------------------------------- the hook runner
 
 
-async def lines_of(env: Env, cluster):
+async def lines_of(env: Env, session):
     async with env.pool.connection() as conn:
-        async for line in export_cluster_history(conn, cluster.id):
+        async for line in export_session_history(conn, session.id):
             yield line
 
 
 async def test_command_hook_gets_export_then_discard_proceeds(pool, dsn, tmp_path):
     env = Env(pool, dsn, tmp_path)
     env.settings.discard_hook_command = env.command_hook()
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     await env.rec.reconcile_once()
     await populate(env, c)
     expected = await env.export(c.id)
@@ -202,7 +202,7 @@ async def test_command_hook_gets_export_then_discard_proceeds(pool, dsn, tmp_pat
 
 
 async def test_webhook_hook_and_spec_precedence(env):
-    c = await env.cluster("alpha", discard_hook_url="https://spec.example/hook")
+    c = await env.session("alpha", discard_hook_url="https://spec.example/hook")
     await populate(env, c)
     expected = await env.export(c.id)
     requests: list[httpx.Request] = []
@@ -222,13 +222,13 @@ async def test_webhook_hook_and_spec_precedence(env):
     req = requests[0]
     assert req.method == "POST"
     assert req.headers["content-type"] == "application/x-ndjson"
-    assert req.headers["x-orch-cluster-id"] == str(c.id)
-    assert req.headers["x-orch-cluster-slug"] == "alpha"
+    assert req.headers["x-orch-session-id"] == str(c.id)
+    assert req.headers["x-orch-session-slug"] == "alpha"
     assert [json.loads(x) for x in req.content.decode().splitlines()] == expected
     assert await env.get(c.id) is None
 
     # no spec URL: the settings webhook is used
-    d = await env.cluster("bravo")
+    d = await env.session("bravo")
     requests.clear()
     await env.discard(d.id)
     await env.rec.reconcile_once()
@@ -236,14 +236,14 @@ async def test_webhook_hook_and_spec_precedence(env):
 
 
 async def test_webhook_failures(env):
-    c = await env.cluster("alpha")
-    cluster = await env.get(c.id)
+    c = await env.session("alpha")
+    session = await env.get(c.id)
 
     async def run(handler) -> tuple[bool, str]:
         result = await run_discard_hook(
             DiscardHook("url", "http://hook.example/x"),
-            cluster,
-            lines_of(env, cluster),
+            session,
+            lines_of(env, session),
             5,
             transport=httpx.MockTransport(handler),
         )
@@ -260,12 +260,12 @@ async def test_webhook_failures(env):
 
 
 async def test_command_hook_failure_carries_exit_code_and_stderr_tail(env):
-    cluster = await env.get((await env.cluster("alpha")).id)
+    session = await env.get((await env.session("alpha")).id)
     noisy = (
         "i=0; while [ $i -lt 5000 ]; do echo xxxxxxxxxx >&2; i=$((i+1)); done; echo END >&2; exit 7"
     )
     result = await run_discard_hook(
-        DiscardHook("command", noisy), cluster, lines_of(env, cluster), 20
+        DiscardHook("command", noisy), session, lines_of(env, session), 20
     )
     assert not result.ok
     assert "exit 7" in result.reason and "END" in result.reason
@@ -273,11 +273,11 @@ async def test_command_hook_failure_carries_exit_code_and_stderr_tail(env):
 
 
 async def test_command_hook_timeout_kills_process_group(env, tmp_path):
-    cluster = await env.get((await env.cluster("alpha")).id)
+    session = await env.get((await env.session("alpha")).id)
     marker = tmp_path / "child-survived"
     script = f"(sleep 2; touch {marker}) & sleep 30"
     result = await run_discard_hook(
-        DiscardHook("command", script), cluster, lines_of(env, cluster), 0.5
+        DiscardHook("command", script), session, lines_of(env, session), 0.5
     )
     assert not result.ok and "timed out" in result.reason
     await asyncio.sleep(2.5)
@@ -290,7 +290,7 @@ async def test_command_hook_timeout_kills_process_group(env, tmp_path):
 async def test_failed_hook_blocks_deletion_and_retries(pool, dsn, tmp_path):
     env = Env(pool, dsn, tmp_path)
     env.settings.discard_hook_command = env.command_hook("echo boom >&2; exit 3")
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     await env.rec.reconcile_once()
     await populate(env, c)
     await env.discard(c.id)
@@ -315,7 +315,7 @@ async def test_failed_hook_blocks_deletion_and_retries(pool, dsn, tmp_path):
     assert env.calls() == 1
 
     await env.sql(
-        "UPDATE clusters SET status = jsonb_set(status, '{discard_hook_next_at}',"
+        "UPDATE sessions SET status = jsonb_set(status, '{discard_hook_next_at}',"
         " to_jsonb((now() - interval '1 second')::text)) WHERE id = %s",
         (c.id,),
     )
@@ -329,7 +329,7 @@ async def test_failed_hook_blocks_deletion_and_retries(pool, dsn, tmp_path):
     env.settings.discard_hook_command = "sleep 30"
     env.settings.discard_hook_timeout_seconds = 0.5
     await env.sql(
-        "UPDATE clusters SET status = jsonb_set(status, '{discard_hook_next_at}',"
+        "UPDATE sessions SET status = jsonb_set(status, '{discard_hook_next_at}',"
         " to_jsonb((now() - interval '1 second')::text)) WHERE id = %s",
         (c.id,),
     )
@@ -342,7 +342,7 @@ async def test_failed_hook_blocks_deletion_and_retries(pool, dsn, tmp_path):
     # the hook recovers: the discard completes
     env.settings.discard_hook_command = env.command_hook()
     await env.sql(
-        "UPDATE clusters SET status = jsonb_set(status, '{discard_hook_next_at}',"
+        "UPDATE sessions SET status = jsonb_set(status, '{discard_hook_next_at}',"
         " to_jsonb((now() - interval '1 second')::text)) WHERE id = %s",
         (c.id,),
     )
@@ -350,11 +350,11 @@ async def test_failed_hook_blocks_deletion_and_retries(pool, dsn, tmp_path):
     assert await env.get(c.id) is None
 
 
-async def test_failing_hook_of_one_cluster_does_not_stop_others(pool, dsn, tmp_path):
+async def test_failing_hook_of_one_session_does_not_stop_others(pool, dsn, tmp_path):
     env = Env(pool, dsn, tmp_path)
-    a = await env.cluster("alpha")
-    b = await env.cluster("bravo", discard_hook_url="http://hook.example/x")
-    c = await env.cluster("charlie")
+    a = await env.session("alpha")
+    b = await env.session("bravo", discard_hook_url="http://hook.example/x")
+    c = await env.session("charlie")
     await env.rec.reconcile_once()
     env.settings.discard_hook_command = ""
 
@@ -362,8 +362,8 @@ async def test_failing_hook_of_one_cluster_does_not_stop_others(pool, dsn, tmp_p
         raise httpx.ConnectError("refused")
 
     env.rec.hook_transport = httpx.MockTransport(handler)
-    for cluster in (a, b, c):
-        await env.discard(cluster.id)
+    for session in (a, b, c):
+        await env.discard(session.id)
     await env.rec.reconcile_once()
     assert await env.get(a.id) is None and await env.get(c.id) is None
     held = await env.get(b.id)
@@ -373,7 +373,7 @@ async def test_failing_hook_of_one_cluster_does_not_stop_others(pool, dsn, tmp_p
 async def test_delivered_hook_not_resent_and_history_deleted(pool, dsn, tmp_path):
     env = Env(pool, dsn, tmp_path)
     env.settings.discard_hook_command = env.command_hook()
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     await env.rec.reconcile_once()
     await populate(env, c)
     await env.discard(c.id)
@@ -402,7 +402,7 @@ async def test_delivered_hook_not_resent_and_history_deleted(pool, dsn, tmp_path
 
 async def test_no_hook_discards_directly(env):
     assert env.settings.discard_hook() is None
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     await env.rec.reconcile_once()
     await populate(env, c)
     env.rec.hook_transport = httpx.MockTransport(lambda r: pytest.fail("no export expected"))
@@ -416,7 +416,7 @@ async def test_no_hook_discards_directly(env):
 async def _quiescing_env(pool, dsn, tmp_path, **settings):
     env = Env(pool, dsn, tmp_path, **settings)
     env.settings.discard_hook_command = env.command_hook()
-    c = await env.cluster("alpha", replicas=2)
+    c = await env.session("alpha", replicas=2)
     await env.rec.reconcile_once()
     assert len(env.kube.names("Pod")) == 2
     a1 = await insert_agent(env.pool, c.id, ordinal=5, pod_name="p5")

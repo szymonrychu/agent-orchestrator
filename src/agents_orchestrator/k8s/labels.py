@@ -1,8 +1,8 @@
-"""Labels, selectors and the reserved object-name prefix of one cluster (D26)."""
+"""Labels, selectors and the reserved object-name prefix of one session (D26)."""
 
 from __future__ import annotations
 
-CLUSTER_LABEL = "agents.szymonrichert.pl/cluster"
+SESSION_LABEL = "agents.szymonrichert.pl/session"
 MANAGED_BY_LABEL = "app.kubernetes.io/managed-by"
 MANAGED_BY = "agents-orchestrator"
 
@@ -11,12 +11,12 @@ def prefix(slug: str) -> str:
     return f"agent-{slug}"
 
 
-def cluster_labels(slug: str) -> dict[str, str]:
-    return {CLUSTER_LABEL: slug, MANAGED_BY_LABEL: MANAGED_BY}
+def session_labels(slug: str) -> dict[str, str]:
+    return {SESSION_LABEL: slug, MANAGED_BY_LABEL: MANAGED_BY}
 
 
 def selector(slug: str) -> dict[str, dict[str, str]]:
-    return {"matchLabels": cluster_labels(slug)}
+    return {"matchLabels": session_labels(slug)}
 
 
 def object_names(slug: str) -> dict[str, str]:

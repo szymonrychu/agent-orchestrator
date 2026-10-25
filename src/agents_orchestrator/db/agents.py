@@ -1,8 +1,8 @@
 """agents table repository. The reconciler is the writer (D3).
 
 `last_dispatched_at` is written only by the dispatch claim (db/queue.py, D23). Every change
-that the cluster tabs and agents strip show (pod readiness, gone, session) NOTIFYs
-`status {cluster_id}`.
+that the session tabs and agents strip show (pod readiness, gone, wrapper session) NOTIFYs
+`status {session_id}`.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from psycopg.rows import dict_row
 from agents_orchestrator.db.pool import notify
 
 _COLUMNS = (
-    "id, cluster_id, ordinal, pod_name, url, pod_phase, ready, wrapper_session_id,"
+    "id, session_id, ordinal, pod_name, url, pod_phase, ready, wrapper_session_id,"
     " wrapper_session_created_at, gone_at, last_dispatched_at, pod_ip"
 )
 
@@ -26,7 +26,7 @@ _COLUMNS = (
 @dataclass(frozen=True)
 class Agent:
     id: uuid.UUID
-    cluster_id: uuid.UUID
+    session_id: uuid.UUID
     ordinal: int
     pod_name: str
     url: str | None
@@ -45,13 +45,13 @@ async def _one(conn: psycopg.AsyncConnection, query: str, params: Any) -> dict |
         return await cur.fetchone()
 
 
-async def _status(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID) -> None:
-    await notify(conn, "status", {"cluster_id": str(cluster_id)})
+async def _status(conn: psycopg.AsyncConnection, session_id: uuid.UUID) -> None:
+    await notify(conn, "status", {"session_id": str(session_id)})
 
 
 async def upsert_agent(
     conn: psycopg.AsyncConnection,
-    cluster_id: uuid.UUID,
+    session_id: uuid.UUID,
     ordinal: int,
     pod_name: str,
     url: str | None,
@@ -67,18 +67,18 @@ async def upsert_agent(
     async with conn.transaction():
         before = await _one(
             conn,
-            f"SELECT {_COLUMNS} FROM agents WHERE cluster_id = %s AND ordinal = %s FOR UPDATE",
-            (cluster_id, ordinal),
+            f"SELECT {_COLUMNS} FROM agents WHERE session_id = %s AND ordinal = %s FOR UPDATE",
+            (session_id, ordinal),
         )
         row = await _one(
             conn,
-            "INSERT INTO agents (id, cluster_id, ordinal, pod_name, url, pod_phase, ready, pod_ip)"
+            "INSERT INTO agents (id, session_id, ordinal, pod_name, url, pod_phase, ready, pod_ip)"
             " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
-            " ON CONFLICT (cluster_id, ordinal) DO UPDATE SET pod_name = EXCLUDED.pod_name,"
+            " ON CONFLICT (session_id, ordinal) DO UPDATE SET pod_name = EXCLUDED.pod_name,"
             " url = EXCLUDED.url, pod_phase = EXCLUDED.pod_phase, ready = EXCLUDED.ready,"
             " pod_ip = EXCLUDED.pod_ip,"
             f" gone_at = NULL RETURNING {_COLUMNS}",
-            (uuid.uuid4(), cluster_id, ordinal, pod_name, url, pod_phase, ready, pod_ip),
+            (uuid.uuid4(), session_id, ordinal, pod_name, url, pod_phase, ready, pod_ip),
         )
         assert row is not None
         await conn.execute(
@@ -86,7 +86,7 @@ async def upsert_agent(
             (row["id"],),
         )
         if before != row:
-            await _status(conn, cluster_id)
+            await _status(conn, session_id)
         return Agent(**row)
 
 
@@ -96,12 +96,12 @@ async def mark_gone(conn: psycopg.AsyncConnection, agent_id: uuid.UUID) -> bool:
         row = await _one(
             conn,
             "UPDATE agents SET gone_at = now(), ready = false, pod_ip = NULL"
-            " WHERE id = %s AND gone_at IS NULL RETURNING cluster_id",
+            " WHERE id = %s AND gone_at IS NULL RETURNING session_id",
             (agent_id,),
         )
         if row is None:
             return False
-        await _status(conn, row["cluster_id"])
+        await _status(conn, row["session_id"])
         return True
 
 
@@ -117,12 +117,12 @@ async def set_wrapper_session(
             conn,
             "UPDATE agents SET wrapper_session_id = %s,"
             " wrapper_session_created_at = coalesce(%s, now())"
-            " WHERE id = %s RETURNING cluster_id",
+            " WHERE id = %s RETURNING session_id",
             (wrapper_session_id, created_at, agent_id),
         )
         if row is None:
             return False
-        await _status(conn, row["cluster_id"])
+        await _status(conn, row["session_id"])
         return True
 
 
@@ -131,12 +131,12 @@ async def clear_wrapper_session(conn: psycopg.AsyncConnection, agent_id: uuid.UU
         row = await _one(
             conn,
             "UPDATE agents SET wrapper_session_id = NULL, wrapper_session_created_at = NULL"
-            " WHERE id = %s RETURNING cluster_id",
+            " WHERE id = %s RETURNING session_id",
             (agent_id,),
         )
         if row is None:
             return False
-        await _status(conn, row["cluster_id"])
+        await _status(conn, row["session_id"])
         return True
 
 
@@ -145,57 +145,57 @@ async def get_agent(conn: psycopg.AsyncConnection, agent_id: uuid.UUID) -> Agent
     return Agent(**row) if row is not None else None
 
 
-async def list_agents(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID) -> list[Agent]:
-    """Every agent of the cluster, gone ones included, by ordinal."""
+async def list_agents(conn: psycopg.AsyncConnection, session_id: uuid.UUID) -> list[Agent]:
+    """Every agent of the session, gone ones included, by ordinal."""
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            f"SELECT {_COLUMNS} FROM agents WHERE cluster_id = %s ORDER BY ordinal",
-            (cluster_id,),
+            f"SELECT {_COLUMNS} FROM agents WHERE session_id = %s ORDER BY ordinal",
+            (session_id,),
         )
         return [Agent(**r) for r in await cur.fetchall()]
 
 
-async def list_states(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID) -> dict[uuid.UUID, str]:
-    """The stored `agent_status.state` of each agent of the cluster that has a status row."""
+async def list_states(conn: psycopg.AsyncConnection, session_id: uuid.UUID) -> dict[uuid.UUID, str]:
+    """The stored `agent_status.state` of each agent of the session that has a status row."""
     cur = await conn.execute(
         "SELECT s.agent_id, s.state FROM agent_status s JOIN agents a ON a.id = s.agent_id"
-        " WHERE a.cluster_id = %s",
-        (cluster_id,),
+        " WHERE a.session_id = %s",
+        (session_id,),
     )
     return {agent_id: state for agent_id, state in await cur.fetchall()}
 
 
-async def by_pod_ip(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID, ip: str) -> Agent | None:
-    """The not-gone agent of the cluster whose pod has this IP, or None."""
+async def by_pod_ip(conn: psycopg.AsyncConnection, session_id: uuid.UUID, ip: str) -> Agent | None:
+    """The not-gone agent of the session whose pod has this IP, or None."""
     row = await _one(
         conn,
         f"SELECT {_COLUMNS} FROM agents"
-        " WHERE cluster_id = %s AND pod_ip = %s AND gone_at IS NULL"
+        " WHERE session_id = %s AND pod_ip = %s AND gone_at IS NULL"
         " ORDER BY ordinal LIMIT 1",
-        (cluster_id, ip),
+        (session_id, ip),
     )
     return Agent(**row) if row is not None else None
 
 
 async def leader_of(
-    conn: psycopg.AsyncConnection, cluster_id: uuid.UUID
+    conn: psycopg.AsyncConnection, session_id: uuid.UUID
 ) -> tuple[uuid.UUID, int] | None:
-    """(agent id, epoch) of the cluster's current leader row, or None."""
+    """(agent id, epoch) of the session's current leader row, or None."""
     row = await _one(
         conn,
-        "SELECT agent_id, epoch FROM cluster_leaders WHERE cluster_id = %s",
-        (cluster_id,),
+        "SELECT agent_id, epoch FROM session_leaders WHERE session_id = %s",
+        (session_id,),
     )
     return (row["agent_id"], row["epoch"]) if row is not None else None
 
 
-async def list_members(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID) -> list[dict]:
+async def list_members(conn: psycopg.AsyncConnection, session_id: uuid.UUID) -> list[dict]:
     """Not-gone agents by ordinal with their stored state and context percentage."""
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             "SELECT a.id, a.pod_name, a.ready, coalesce(s.state, 'unknown') AS state,"
             " s.context_pct FROM agents a LEFT JOIN agent_status s ON s.agent_id = a.id"
-            " WHERE a.cluster_id = %s AND a.gone_at IS NULL ORDER BY a.ordinal",
-            (cluster_id,),
+            " WHERE a.session_id = %s AND a.gone_at IS NULL ORDER BY a.ordinal",
+            (session_id,),
         )
         return list(await cur.fetchall())

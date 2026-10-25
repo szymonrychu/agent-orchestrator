@@ -26,7 +26,7 @@ COMMAND_KINDS = frozenset({"interrupt", "compact", "restart", "rebootstrap"})
 COMMAND_FINAL = frozenset({"done", "failed", "cancelled"})
 CHECK_FINAL = frozenset({"passed", "failed", "cancelled"})
 
-# First key of the two-int advisory lock, so the per-cluster claim lock cannot collide with
+# First key of the two-int advisory lock, so the per-session claim lock cannot collide with
 # other advisory locks (the singleton lock) taken with a different namespace.
 _CLAIM_LOCK_NAMESPACE = 0x6F726331  # "orc1"
 _SCAN_BATCH = 100
@@ -35,7 +35,7 @@ _SCAN_BATCH = 100
 @dataclass(frozen=True)
 class Claim:
     message_id: int
-    cluster_id: uuid.UUID
+    session_id: uuid.UUID
     text: str
     attempts: int
     target_agent_id: uuid.UUID | None
@@ -59,7 +59,7 @@ class Pick:
 @dataclass(frozen=True)
 class Verifying:
     message_id: int
-    cluster_id: uuid.UUID
+    session_id: uuid.UUID
     text: str
     attempts: int
     error: str | None
@@ -79,7 +79,7 @@ class Command:
     status: str
     created_at: datetime
     started_at: datetime
-    cluster_id: uuid.UUID
+    session_id: uuid.UUID
     agent_url: str | None
     wrapper_session_id: str | None
 
@@ -87,7 +87,7 @@ class Command:
 @dataclass(frozen=True)
 class Check:
     id: int
-    cluster_id: uuid.UUID
+    session_id: uuid.UUID
     command: str
     status: str
     job_name: str | None
@@ -107,18 +107,18 @@ async def _all(conn: psycopg.AsyncConnection, query: str, params: Any = ()) -> l
         return await cur.fetchall()
 
 
-async def _status(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID) -> None:
-    await notify(conn, "status", {"cluster_id": str(cluster_id)})
+async def _status(conn: psycopg.AsyncConnection, session_id: uuid.UUID) -> None:
+    await notify(conn, "status", {"session_id": str(session_id)})
 
 
 async def _transition(
     conn: psycopg.AsyncConnection, query: str, params: dict[str, Any]
 ) -> dict | None:
-    """Run one guarded UPDATE ... RETURNING cluster_id, NOTIFY status when it won."""
+    """Run one guarded UPDATE ... RETURNING session_id, NOTIFY status when it won."""
     async with conn.transaction():
         row = await _one(conn, query, params)
         if row is not None:
-            await _status(conn, row["cluster_id"])
+            await _status(conn, row["session_id"])
         return row
 
 
@@ -127,20 +127,20 @@ async def _transition(
 
 async def enqueue_message(
     conn: psycopg.AsyncConnection,
-    cluster_id: uuid.UUID,
+    session_id: uuid.UUID,
     text: str,
     target_agent_id: uuid.UUID | None = None,
 ) -> int:
     async with conn.transaction():
         row = await _one(
             conn,
-            "INSERT INTO messages (cluster_id, text, target_agent_id) VALUES (%s, %s, %s)"
+            "INSERT INTO messages (session_id, text, target_agent_id) VALUES (%s, %s, %s)"
             " RETURNING id",
-            (cluster_id, text, target_agent_id),
+            (session_id, text, target_agent_id),
         )
         assert row is not None
-        await notify(conn, "message_queued", {"cluster_id": str(cluster_id)})
-        await _status(conn, cluster_id)
+        await notify(conn, "message_queued", {"session_id": str(session_id)})
+        await _status(conn, session_id)
         return row["id"]
 
 
@@ -148,7 +148,7 @@ async def cancel_message(conn: psycopg.AsyncConnection, id: int) -> bool:
     row = await _transition(
         conn,
         "UPDATE messages SET status = 'cancelled' WHERE id = %(id)s AND status = 'queued'"
-        " RETURNING cluster_id",
+        " RETURNING session_id",
         {"id": id},
     )
     return row is not None
@@ -171,32 +171,32 @@ async def retry_message(conn: psycopg.AsyncConnection, id: int) -> bool:
             "UPDATE messages SET status = 'queued', attempts = 0, error = NULL,"
             " not_before = NULL, ambiguous_at = NULL, heartbeat_at = NULL"
             " WHERE id = %(id)s AND status = 'failed'"
-            " RETURNING cluster_id, agent_id, dispatched_at",
+            " RETURNING session_id, agent_id, dispatched_at",
             {"id": id},
         )
         if row is None:
             return False
         await _release_reservation(conn, row)
-        await notify(conn, "message_queued", {"cluster_id": str(row["cluster_id"])})
+        await notify(conn, "message_queued", {"session_id": str(row["session_id"])})
         return True
 
 
 # ---------------------------------------------------------------- messages: the claim
 
-# A deleting cluster is excluded: its history is being exported and its pods torn down (D15),
+# A deleting session is excluded: its history is being exported and its pods torn down (D15),
 # so a turn started now would miss the discard-hook export. Its messages stay queued.
 _CANDIDATES = """
-SELECT m.cluster_id, min(m.id) AS head
-FROM messages m JOIN clusters c ON c.id = m.cluster_id
+SELECT m.session_id, min(m.id) AS head
+FROM messages m JOIN sessions c ON c.id = m.session_id
 WHERE m.status = 'queued' AND c.desired = 'active'
-GROUP BY m.cluster_id
+GROUP BY m.session_id
 ORDER BY head
 """
 
 _PICK = """
 SELECT a.id AS agent_id, a.url, a.wrapper_session_id, s.free_since, a.last_dispatched_at
 FROM agents a JOIN agent_status s ON s.agent_id = a.id
-WHERE a.cluster_id = %(cluster_id)s
+WHERE a.session_id = %(session_id)s
   AND a.ready
   AND a.gone_at IS NULL
   AND a.wrapper_session_id IS NOT NULL
@@ -210,7 +210,7 @@ FOR UPDATE OF a SKIP LOCKED
 
 
 async def _pick_agent(
-    conn: psycopg.AsyncConnection, cluster_id: uuid.UUID, target_agent_id: uuid.UUID | None
+    conn: psycopg.AsyncConnection, session_id: uuid.UUID, target_agent_id: uuid.UUID | None
 ) -> Pick | None:
     """The agent free the longest whose free_since is newer than its last dispatch, locked.
 
@@ -218,7 +218,7 @@ async def _pick_agent(
     READ COMMITTED claim recheck the predicate on the new row version instead of trusting its
     snapshot (D23 c).
     """
-    row = await _one(conn, _PICK, {"cluster_id": cluster_id, "target": target_agent_id})
+    row = await _one(conn, _PICK, {"session_id": session_id, "target": target_agent_id})
     return Pick(**row) if row is not None else None
 
 
@@ -232,20 +232,20 @@ async def _lock_queued(conn: psycopg.AsyncConnection, message_id: int) -> bool:
 
 
 async def _target_gone(
-    conn: psycopg.AsyncConnection, cluster_id: uuid.UUID, target_agent_id: uuid.UUID
+    conn: psycopg.AsyncConnection, session_id: uuid.UUID, target_agent_id: uuid.UUID
 ) -> bool:
     row = await _one(
         conn,
-        "SELECT gone_at FROM agents WHERE id = %s AND cluster_id = %s",
-        (target_agent_id, cluster_id),
+        "SELECT gone_at FROM agents WHERE id = %s AND session_id = %s",
+        (target_agent_id, session_id),
     )
     return row is None or row["gone_at"] is not None
 
 
-async def _claim_in_cluster(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID) -> Claim | None:
-    """Scan one cluster's queued messages in id order; the caller holds the cluster lock."""
+async def _claim_in_session(conn: psycopg.AsyncConnection, session_id: uuid.UUID) -> Claim | None:
+    """Scan one session's queued messages in id order; the caller holds the session lock."""
     leader = await _one(
-        conn, "SELECT agent_id FROM cluster_leaders WHERE cluster_id = %s", (cluster_id,)
+        conn, "SELECT agent_id FROM session_leaders WHERE session_id = %s", (session_id,)
     )
     leader_id = leader["agent_id"] if leader is not None else None
     held = False  # an untargeted head waits on the leader: later untargeted messages wait too
@@ -255,9 +255,9 @@ async def _claim_in_cluster(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID
             conn,
             "SELECT id, target_agent_id,"
             " (not_before IS NOT NULL AND not_before > now()) AS waiting"
-            " FROM messages WHERE cluster_id = %s AND status = 'queued' AND id > %s"
+            " FROM messages WHERE session_id = %s AND status = 'queued' AND id > %s"
             " ORDER BY id LIMIT %s",
-            (cluster_id, after, _SCAN_BATCH),
+            (session_id, after, _SCAN_BATCH),
         )
         if not rows:
             return None
@@ -267,34 +267,34 @@ async def _claim_in_cluster(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID
             if target is None:
                 if row["waiting"]:
                     if leader_id is None:
-                        return None  # an untargeted head in backoff holds its cluster (FIFO, D4)
+                        return None  # an untargeted head in backoff holds its session (FIFO, D4)
                     held = True  # leader routing: hold untargeted, targeted messages still flow
                     continue
                 if leader_id is not None:
                     # Leader-only routing: an untargeted message is the leader's. A gone leader
                     # does not fail it; it waits for the leadership pass to elect a successor.
-                    if held or await _target_gone(conn, cluster_id, leader_id):
+                    if held or await _target_gone(conn, session_id, leader_id):
                         held = True
                         continue
                     target = leader_id
             else:
                 if row["waiting"]:
                     continue
-                if await _target_gone(conn, cluster_id, target):
+                if await _target_gone(conn, session_id, target):
                     await _transition(
                         conn,
                         "UPDATE messages SET status = 'failed', error = 'target_gone'"
-                        " WHERE id = %(id)s AND status = 'queued' RETURNING cluster_id",
+                        " WHERE id = %(id)s AND status = 'queued' RETURNING session_id",
                         {"id": row["id"]},
                     )
                     continue
             if not await _lock_queued(conn, row["id"]):
                 continue
-            pick = await _pick_agent(conn, cluster_id, target)
+            pick = await _pick_agent(conn, session_id, target)
             if pick is None:
                 if row["target_agent_id"] is None:
                     if leader_id is None:
-                        return None  # no free agent in this cluster: leave it queued
+                        return None  # no free agent in this session: leave it queued
                     held = True  # the leader is busy: the untargeted FIFO holds, targeted flow
                     continue
                 continue  # a busy or booting target does not block later messages (D23 d)
@@ -309,14 +309,14 @@ async def _dispatch(conn: psycopg.AsyncConnection, message_id: int, pick: Pick) 
         conn,
         "UPDATE messages SET status = 'dispatching', agent_id = %s, dispatched_at = now(),"
         " heartbeat_at = now() WHERE id = %s AND status = 'queued'"
-        " RETURNING id, cluster_id, text, attempts, target_agent_id, dispatched_at",
+        " RETURNING id, session_id, text, attempts, target_agent_id, dispatched_at",
         (pick.agent_id, message_id),
     )
     assert msg is not None  # the row is locked and was queued
-    await _status(conn, msg["cluster_id"])
+    await _status(conn, msg["session_id"])
     return Claim(
         message_id=msg["id"],
-        cluster_id=msg["cluster_id"],
+        session_id=msg["session_id"],
         text=msg["text"],
         attempts=msg["attempts"],
         target_agent_id=msg["target_agent_id"],
@@ -332,21 +332,21 @@ async def _dispatch(conn: psycopg.AsyncConnection, message_id: int, pick: Pick) 
 async def claim_and_pick(conn: psycopg.AsyncConnection) -> Claim | None:
     """Claim the next dispatchable message and reserve the agent free the longest for it.
 
-    One transaction, one clock. Clusters are tried in the order of their oldest queued
+    One transaction, one clock. Sessions are tried in the order of their oldest queued
     message, each under a transaction-level advisory lock that a concurrent dispatcher skips,
-    so per-cluster FIFO holds with several dispatchers (D23 e). A cluster with no free agent is
-    left queued and the next cluster is tried.
+    so per-session FIFO holds with several dispatchers (D23 e). A session with no free agent is
+    left queued and the next session is tried.
     """
     async with conn.transaction():
         for cand in await _all(conn, _CANDIDATES):
             lock = await _one(
                 conn,
                 "SELECT pg_try_advisory_xact_lock(%s, hashtext(%s::text)) AS got",
-                (_CLAIM_LOCK_NAMESPACE, cand["cluster_id"]),
+                (_CLAIM_LOCK_NAMESPACE, cand["session_id"]),
             )
             if not (lock and lock["got"]):
                 continue
-            claim = await _claim_in_cluster(conn, cand["cluster_id"])
+            claim = await _claim_in_session(conn, cand["session_id"])
             if claim is not None:
                 return claim
     return None
@@ -389,7 +389,7 @@ async def mark_sent(conn: psycopg.AsyncConnection, id: int, turn_id: str) -> boo
     row = await _transition(
         conn,
         "UPDATE messages SET status = 'sent', turn_id = %(turn_id)s, error = NULL"
-        " WHERE id = %(id)s AND status = 'dispatching' RETURNING cluster_id",
+        " WHERE id = %(id)s AND status = 'dispatching' RETURNING session_id",
         {"id": id, "turn_id": turn_id},
     )
     return row is not None
@@ -400,7 +400,7 @@ async def requeue(conn: psycopg.AsyncConnection, id: int) -> bool:
     row = await _transition(
         conn,
         "UPDATE messages SET status = 'queued', not_before = NULL, heartbeat_at = NULL"
-        " WHERE id = %(id)s AND status = 'dispatching' RETURNING cluster_id",
+        " WHERE id = %(id)s AND status = 'dispatching' RETURNING session_id",
         {"id": id},
     )
     return row is not None
@@ -411,7 +411,7 @@ async def fail_message(conn: psycopg.AsyncConnection, id: int, error: str) -> bo
     row = await _transition(
         conn,
         "UPDATE messages SET status = 'failed', error = %(error)s"
-        " WHERE id = %(id)s AND status = 'dispatching' RETURNING cluster_id",
+        " WHERE id = %(id)s AND status = 'dispatching' RETURNING session_id",
         {"id": id, "error": error},
     )
     return row is not None
@@ -428,7 +428,7 @@ UPDATE messages SET
             %(base)s::float8 * power(2::float8, attempts), %(cap)s::float8))
         END
 WHERE id = %(id)s AND status = %(expected)s
-RETURNING cluster_id, status, agent_id, dispatched_at
+RETURNING session_id, status, agent_id, dispatched_at
 """
 
 
@@ -482,7 +482,7 @@ async def mark_verifying(conn: psycopg.AsyncConnection, id: int, reason: str) ->
     row = await _transition(
         conn,
         "UPDATE messages SET status = 'verifying', ambiguous_at = now(), error = %(reason)s"
-        " WHERE id = %(id)s AND status = 'dispatching' RETURNING cluster_id",
+        " WHERE id = %(id)s AND status = 'dispatching' RETURNING session_id",
         {"id": id, "reason": reason},
     )
     return row is not None
@@ -491,7 +491,7 @@ async def mark_verifying(conn: psycopg.AsyncConnection, id: int, reason: str) ->
 async def list_verifying(conn: psycopg.AsyncConnection, limit: int) -> list[Verifying]:
     rows = await _all(
         conn,
-        "SELECT m.id AS message_id, m.cluster_id, m.text, m.attempts, m.error, m.agent_id,"
+        "SELECT m.id AS message_id, m.session_id, m.text, m.attempts, m.error, m.agent_id,"
         " a.url AS agent_url, a.wrapper_session_id, m.dispatched_at, m.ambiguous_at,"
         " extract(epoch from now() - m.ambiguous_at)::float8 AS age_seconds"
         " FROM messages m LEFT JOIN agents a ON a.id = m.agent_id"
@@ -505,7 +505,7 @@ async def resolve_started(conn: psycopg.AsyncConnection, id: int, turn_id: str) 
     row = await _transition(
         conn,
         "UPDATE messages SET status = 'sent', turn_id = %(turn_id)s, error = NULL"
-        " WHERE id = %(id)s AND status = 'verifying' RETURNING cluster_id",
+        " WHERE id = %(id)s AND status = 'verifying' RETURNING session_id",
         {"id": id, "turn_id": turn_id},
     )
     return row is not None
@@ -540,7 +540,7 @@ async def fail_ambiguous(conn: psycopg.AsyncConnection, id: int) -> bool:
             conn,
             "UPDATE messages SET status = 'failed', error = 'ambiguous'"
             " WHERE id = %(id)s AND status = 'verifying'"
-            " RETURNING cluster_id, agent_id, dispatched_at",
+            " RETURNING session_id, agent_id, dispatched_at",
             {"id": id},
         )
         if row is None:
@@ -559,11 +559,11 @@ async def verify_stale_dispatching(conn: psycopg.AsyncConnection, older_than_sec
             " WHERE status = 'dispatching'"
             " AND coalesce(heartbeat_at, dispatched_at)"
             " < now() - make_interval(secs => %s::float8)"
-            " RETURNING cluster_id",
+            " RETURNING session_id",
             (older_than_seconds,),
         )
-        for cluster_id in sorted({r["cluster_id"] for r in rows}):
-            await _status(conn, cluster_id)
+        for session_id in sorted({r["session_id"] for r in rows}):
+            await _status(conn, session_id)
         return len(rows)
 
 
@@ -593,7 +593,7 @@ async def claim_command(conn: psycopg.AsyncConnection, kinds: Sequence[str]) -> 
             "  ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)"
             " AND status = 'queued'"
             " RETURNING id, agent_id, kind, status, created_at, started_at)"
-            " SELECT c.*, a.cluster_id, a.url AS agent_url, a.wrapper_session_id"
+            " SELECT c.*, a.session_id, a.url AS agent_url, a.wrapper_session_id"
             " FROM c JOIN agents a ON a.id = c.agent_id",
             (list(kinds),),
         )
@@ -617,15 +617,15 @@ async def complete_command(
 # ---------------------------------------------------------------- checks
 
 
-async def enqueue_check(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID, command: str) -> int:
+async def enqueue_check(conn: psycopg.AsyncConnection, session_id: uuid.UUID, command: str) -> int:
     async with conn.transaction():
         row = await _one(
             conn,
-            "INSERT INTO checks (cluster_id, command) VALUES (%s, %s) RETURNING id",
-            (cluster_id, command),
+            "INSERT INTO checks (session_id, command) VALUES (%s, %s) RETURNING id",
+            (session_id, command),
         )
         assert row is not None
-        await _status(conn, cluster_id)
+        await _status(conn, session_id)
         return row["id"]
 
 
@@ -637,18 +637,18 @@ async def claim_check(conn: psycopg.AsyncConnection) -> Check | None:
             " WHERE id = (SELECT id FROM checks WHERE status = 'queued'"
             "  ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)"
             " AND status = 'queued'"
-            " RETURNING id, cluster_id, command, status, job_name, created_at, started_at",
+            " RETURNING id, session_id, command, status, job_name, created_at, started_at",
         )
         if row is None:
             return None
-        await _status(conn, row["cluster_id"])
+        await _status(conn, row["session_id"])
         return Check(**row)
 
 
 async def list_running_checks(conn: psycopg.AsyncConnection) -> list[Check]:
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            "SELECT id, cluster_id, command, status, job_name, created_at, started_at"
+            "SELECT id, session_id, command, status, job_name, created_at, started_at"
             " FROM checks WHERE status = 'running' ORDER BY id"
         )
         return [Check(**r) for r in await cur.fetchall()]
@@ -676,20 +676,20 @@ async def complete_check(
         conn,
         "UPDATE checks SET status = %(status)s, exit_code = %(exit_code)s,"
         " log_tail = %(log_tail)s, finished_at = now()"
-        " WHERE id = %(id)s AND status = 'running' RETURNING cluster_id",
+        " WHERE id = %(id)s AND status = 'running' RETURNING session_id",
         {"id": id, "status": status, "exit_code": exit_code, "log_tail": log_tail},
     )
     return row is not None
 
 
-async def cancel_checks(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID) -> int:
-    """Cancel a cluster's queued checks (a discard); running ones end with their Job."""
+async def cancel_checks(conn: psycopg.AsyncConnection, session_id: uuid.UUID) -> int:
+    """Cancel a session's queued checks (a discard); running ones end with their Job."""
     async with conn.transaction():
         cur = await conn.execute(
             "UPDATE checks SET status = 'cancelled', finished_at = now()"
-            " WHERE cluster_id = %s AND status = 'queued'",
-            (cluster_id,),
+            " WHERE session_id = %s AND status = 'queued'",
+            (session_id,),
         )
         if cur.rowcount:
-            await _status(conn, cluster_id)
+            await _status(conn, session_id)
         return cur.rowcount

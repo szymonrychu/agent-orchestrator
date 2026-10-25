@@ -17,7 +17,7 @@ from agents_orchestrator.db.pool import listen
 
 log = logging.getLogger(__name__)
 
-CHANNELS = ("events", "status", "cluster_changed", "leader_changed")
+CHANNELS = ("events", "status", "session_changed", "leader_changed")
 DEFAULT_QUEUE_SIZE = 256
 
 

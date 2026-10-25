@@ -1,4 +1,4 @@
-"""Autoclose sweeper: closes clusters whose autoclose time has come, through the discard path."""
+"""Autoclose sweeper: closes sessions whose autoclose time has come, through the discard path."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import logging
 
 from psycopg_pool import AsyncConnectionPool
 
-from agents_orchestrator.db import clusters
+from agents_orchestrator.db import sessions
 
 log = logging.getLogger(__name__)
 
@@ -19,8 +19,8 @@ async def sweep(pool: AsyncConnectionPool) -> None:
     while True:
         try:
             async with pool.connection() as conn:
-                for cluster_id in await clusters.close_expired(conn):
-                    log.info("autoclose: cluster %s is due, discarding", cluster_id)
+                for session_id in await sessions.close_expired(conn):
+                    log.info("autoclose: session %s is due, discarding", session_id)
         except asyncio.CancelledError:
             raise
         except Exception:

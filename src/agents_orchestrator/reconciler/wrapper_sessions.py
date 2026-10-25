@@ -9,7 +9,7 @@ can answer 429. The order is therefore adopt first:
 
 A stored session is kept only while adoptable, resumed when stopped or failed with a transcript,
 and otherwise cleared (also when the wrapper no longer lists it) so the agent bootstraps again.
-Errors never raise out of `bootstrap`: they come back as a message for the cluster status and
+Errors never raise out of `bootstrap`: they come back as a message for the session status and
 the next tick bootstraps it again.
 """
 
@@ -24,7 +24,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from agents_orchestrator.db import agents as agents_repo
 from agents_orchestrator.db.agents import Agent
-from agents_orchestrator.spec import ClusterSpec
+from agents_orchestrator.spec import SessionSpec
 from agents_orchestrator.wrapper.models import Snapshot, WrapperError, WrapperUnreachable
 
 log = logging.getLogger(__name__)
@@ -62,12 +62,12 @@ class WrapperSessionBootstrapper:
         self.wrapper_factory = wrapper_factory
         self._slots = asyncio.Semaphore(limit)
 
-    async def bootstrap_many(self, agents: list[Agent], spec: ClusterSpec, token: str) -> list[str]:
+    async def bootstrap_many(self, agents: list[Agent], spec: SessionSpec, token: str) -> list[str]:
         """Bootstrap the agents concurrently; returns one message per agent that failed."""
         results = await asyncio.gather(*(self.bootstrap(a, spec, token) for a in agents))
         return [m for m in results if m]
 
-    async def bootstrap(self, agent: Agent, spec: ClusterSpec, token: str) -> str | None:
+    async def bootstrap(self, agent: Agent, spec: SessionSpec, token: str) -> str | None:
         """Make `agent` hold a session. Returns None on success, else a status message."""
         if agent.url is None:
             return f"{agent.pod_name}: no url"
@@ -85,7 +85,7 @@ class WrapperSessionBootstrapper:
                 if aclose is not None:
                     await aclose()
 
-    async def _bootstrap(self, client: Any, agent: Agent, spec: ClusterSpec) -> str | None:
+    async def _bootstrap(self, client: Any, agent: Agent, spec: SessionSpec) -> str | None:
         listed = await client.list_sessions()
         if agent.wrapper_session_id is not None:
             stored = next(
@@ -125,7 +125,7 @@ class WrapperSessionBootstrapper:
             )
         return None
 
-    async def _pick(self, client: Any, listed: list[Snapshot], spec: ClusterSpec) -> Snapshot:
+    async def _pick(self, client: Any, listed: list[Snapshot], spec: SessionSpec) -> Snapshot:
         ordered = _newest_first(listed)
         for snap in ordered:
             if snap.state in ADOPTABLE:

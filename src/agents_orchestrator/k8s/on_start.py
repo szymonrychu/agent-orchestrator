@@ -1,4 +1,4 @@
-"""The per-cluster onStart script: installs any-mcp once per ref and writes its config (D16)."""
+"""The per-session onStart script: installs any-mcp once per ref and writes its config (D16)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import shlex
 from typing import Any
 
 from agents_orchestrator.settings import Settings
-from agents_orchestrator.spec import ClusterSpec
+from agents_orchestrator.spec import SessionSpec
 
 DELIMITER = "ANY_MCP_CONFIG_EOF"
 ROOT = "/opt/any-mcp"
@@ -27,15 +27,15 @@ HIVE_TOOLS = [
 ]
 
 
-def orchestrator_allow(spec: ClusterSpec) -> list[str]:
-    """The orchestrator tools this cluster's agents may call; empty means no plugin entry."""
+def orchestrator_allow(spec: SessionSpec) -> list[str]:
+    """The orchestrator tools this session's agents may call; empty means no plugin entry."""
     if not spec.hive:
         return []
     return [*HIVE_TOOLS, SCALE_TOOL] if spec.scalable else list(HIVE_TOOLS)
 
 
 def _orchestrator_entry(
-    spec: ClusterSpec, settings: Settings, slug: str | None
+    spec: SessionSpec, settings: Settings, slug: str | None
 ) -> dict[str, Any] | None:
     allow = orchestrator_allow(spec)
     if not allow or not settings.agent_api_url or not slug:
@@ -60,7 +60,7 @@ def _orchestrator_entry(
 
 
 def any_mcp_config(
-    spec: ClusterSpec, settings: Settings, slug: str | None = None
+    spec: SessionSpec, settings: Settings, slug: str | None = None
 ) -> dict[str, Any]:
     base = (
         spec.any_mcp_config
@@ -74,7 +74,7 @@ def any_mcp_config(
     return {**base, "plugins": [*kept, entry]}
 
 
-def render_on_start(spec: ClusterSpec, settings: Settings, slug: str | None = None) -> str:
+def render_on_start(spec: SessionSpec, settings: Settings, slug: str | None = None) -> str:
     body = json.dumps(any_mcp_config(spec, settings, slug), indent=2, sort_keys=True)
     if DELIMITER in body.splitlines():
         raise ValueError(f"any-mcp config contains the heredoc delimiter line {DELIMITER}")

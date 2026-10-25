@@ -13,7 +13,7 @@ from typing import Any
 import psycopg
 import pytest
 import pytest_asyncio
-from factories import insert_agent, insert_cluster, insert_event, set_agent_status
+from factories import insert_agent, insert_event, insert_session, set_agent_status
 from fakes.fake_wrapper import FakeWrapper
 from psycopg import sql
 
@@ -112,7 +112,7 @@ class RecordingClient(WrapperClient):
 
 
 class Harness:
-    """A cluster, a fake wrapper with one session, an agent row and a running Ingester."""
+    """A session, a fake wrapper with one session, an agent row and a running Ingester."""
 
     def __init__(self, pool, dsn: str) -> None:
         self.pool, self.dsn = pool, dsn
@@ -125,9 +125,9 @@ class Harness:
         self._stop: asyncio.Event | None = None
 
     async def setup(self, peers: dict[str, Any] | None = None) -> Harness:
-        self.cluster = await insert_cluster(self.pool)
-        self.cluster_id = self.cluster["id"]
-        token = derive_tokens(MASTER_KEY.encode(), self.cluster_id).auth
+        self.session = await insert_session(self.pool)
+        self.session_id = self.session["id"]
+        token = derive_tokens(MASTER_KEY.encode(), self.session_id).auth
         self.fake = FakeWrapper(token=token)
         if peers is not None:
             self.fake.peers = peers
@@ -137,7 +137,7 @@ class Harness:
         self.wrapper_session_id = snap.wrapper_session_id
         self.agent = await insert_agent(
             self.pool,
-            self.cluster_id,
+            self.session_id,
             url=self.fake.base_url,
             wrapper_session_id=self.wrapper_session_id,
             ready=True,
@@ -148,8 +148,8 @@ class Harness:
     def settings(self) -> Settings:
         return Settings(database_url=self.dsn, master_key=MASTER_KEY, ingest_refresh_seconds=0.05)
 
-    def factory(self, url: str, cluster_id: uuid.UUID) -> WrapperClient:
-        token = derive_tokens(MASTER_KEY.encode(), cluster_id).auth
+    def factory(self, url: str, session_id: uuid.UUID) -> WrapperClient:
+        token = derive_tokens(MASTER_KEY.encode(), session_id).auth
         return self.client_cls(url, token, opened=self.opened, replay_all=self.replay_all)
 
     async def fast_sleep(self, delay: float) -> None:
@@ -255,7 +255,7 @@ async def test_attach_maps_creating_to_booting(harness, pool) -> None:
     for env in h.fake.sessions[h.wrapper_session_id].events:
         await insert_event(
             pool,
-            h.cluster_id,
+            h.session_id,
             h.agent_id,
             wrapper_session_id=h.wrapper_session_id,
             seq=env["seq"],
@@ -292,12 +292,12 @@ async def test_events_stored_and_notified(harness, pool, listener) -> None:
     assert [r["type"] for r in rows] == [e["type"] for e in fake_events]
     assert rows[-1]["data"] == {"text": "hello there"}
     assert all(
-        r["cluster_id"] == h.cluster_id and r["wrapper_session_id"] == h.wrapper_session_id
+        r["session_id"] == h.session_id and r["wrapper_session_id"] == h.wrapper_session_id
         for r in rows
     )
 
     await wait_until(lambda: rows[-1]["id"] in [p["max_id"] for p in listener.on("events")])
-    assert all(p["cluster_id"] == str(h.cluster_id) for p in listener.on("events"))
+    assert all(p["session_id"] == str(h.session_id) for p in listener.on("events"))
 
 
 async def test_resume_uses_last_event_id_no_duplicates(harness, pool) -> None:
@@ -370,11 +370,11 @@ async def test_idle_sets_free_since_and_notifies_agent_free(harness, pool, liste
     assert row["free_since"] != datetime.fromisoformat(OLD_SINCE)
     assert row["wrapper_idle_since"] == datetime.fromisoformat(OLD_SINCE)
 
-    want = {"cluster_id": str(h.cluster_id), "agent_id": str(h.agent_id)}
+    want = {"session_id": str(h.session_id), "agent_id": str(h.agent_id)}
     await wait_until(lambda: listener.on("agent_free"))
     assert listener.on("agent_free") == [want]
     await wait_until(lambda: listener.on("status"))
-    assert all(p["cluster_id"] == str(h.cluster_id) for p in listener.on("status"))
+    assert all(p["session_id"] == str(h.session_id) for p in listener.on("status"))
 
 
 async def test_repeated_idle_does_not_move_free_since(harness, pool, listener) -> None:
@@ -588,7 +588,7 @@ async def test_cancel_retried_when_stream_absorbs_it(harness, pool) -> None:
     snap = await h.client.create_session("a1", "w")
     other = await insert_agent(
         pool,
-        h.cluster_id,
+        h.session_id,
         url=h.fake.base_url,
         wrapper_session_id=snap.wrapper_session_id,
         ready=True,

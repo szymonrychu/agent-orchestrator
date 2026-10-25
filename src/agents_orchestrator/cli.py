@@ -205,7 +205,7 @@ def _configure_bench(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("spec", help="bench spec YAML")
     parser.add_argument("--api", required=True, help="orchestrator base URL")
     parser.add_argument("--out", required=True, help="JSONL results file")
-    parser.add_argument("--keep", action="store_true", help="do not discard the bench clusters")
+    parser.add_argument("--keep", action="store_true", help="do not discard the bench sessions")
 
 
 def _cmd_bench(args: argparse.Namespace) -> int:
@@ -232,7 +232,7 @@ register("migrate", _cmd_migrate, "apply database migrations and exit")
 register("api", _cmd_api, "serve the HTTP API and UI")
 register("dispatcher", _cmd_dispatcher, "dispatch queued messages to agents")
 register("ingester", _cmd_ingester, "store every wrapper event (singleton)")
-register("reconciler", _cmd_reconciler, "reconcile cluster objects in Kubernetes (singleton)")
+register("reconciler", _cmd_reconciler, "reconcile session objects in Kubernetes (singleton)")
 register(
     "bench",
     _cmd_bench,

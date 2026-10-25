@@ -7,7 +7,7 @@ import uuid
 
 import httpx
 import pytest
-from factories import insert_agent, insert_cluster, set_agent_status
+from factories import insert_agent, insert_session, set_agent_status
 
 from agents_orchestrator.api import workspace
 from agents_orchestrator.api.app import create_app
@@ -33,14 +33,14 @@ def make_settings(dsn="postgresql://unused/unused", **kw) -> Settings:
     return Settings(database_url=dsn, **kw)
 
 
-def token_of(cluster_id) -> str:
-    return derive_tokens(KEY.encode(), cluster_id).auth
+def token_of(session_id) -> str:
+    return derive_tokens(KEY.encode(), session_id).auth
 
 
-async def ready_agent(pool, cluster_id, ordinal, *, state="idle", **kw):
+async def ready_agent(pool, session_id, ordinal, *, state="idle", **kw):
     row = await insert_agent(
         pool,
-        cluster_id,
+        session_id,
         ordinal=ordinal,
         url=kw.pop("url", f"http://10.0.0.{ordinal + 1}:8080"),
         wrapper_session_id=kw.pop("wrapper_session_id", f"ses_{ordinal}"),
@@ -65,7 +65,7 @@ async def expect(pool, settings, status, code, **kw):
 
 async def test_resolve_agent_rules(pool, dsn):
     settings = make_settings(dsn)
-    c = await insert_cluster(pool)
+    c = await insert_session(pool)
     cid = c["id"]
     # ordinal 0: not ready yet; 1: dead; 2: no session; 3: gone; 4: first usable; 5: also usable
     await ready_agent(pool, cid, 0, ready=False)
@@ -77,42 +77,42 @@ async def test_resolve_agent_rules(pool, dsn):
     a4 = await ready_agent(pool, cid, 4, state="busy")
     a5 = await ready_agent(pool, cid, 5)
 
-    target = await resolve(pool, settings, cluster_id=cid)
+    target = await resolve(pool, settings, session_id=cid)
     assert isinstance(target, WrapperTarget)
     assert target.agent_id == a4["id"]
-    assert target.cluster_id == cid
+    assert target.session_id == cid
     assert target.pod_name == a4["pod_name"]
     assert target.url == a4["url"]
     assert target.wrapper_session_id == "ses_4"
     assert target.token == token_of(cid)
 
-    # explicit agent wins over ordinal order; cluster_id optional but checked
+    # explicit agent wins over ordinal order; session_id optional but checked
     by_id = await resolve(pool, settings, agent_id=a5["id"])
-    assert by_id.agent_id == a5["id"] and by_id.cluster_id == cid
-    assert (await resolve(pool, settings, agent_id=a5["id"], cluster_id=cid)).agent_id == a5["id"]
+    assert by_id.agent_id == a5["id"] and by_id.session_id == cid
+    assert (await resolve(pool, settings, agent_id=a5["id"], session_id=cid)).agent_id == a5["id"]
 
-    # not_found: unknown agent, unknown cluster, agent of another cluster
-    other = await insert_cluster(pool)
+    # not_found: unknown agent, unknown session, agent of another session
+    other = await insert_session(pool)
     await expect(pool, settings, 404, "not_found", agent_id=uuid.uuid4())
-    await expect(pool, settings, 404, "not_found", cluster_id=uuid.uuid4())
-    await expect(pool, settings, 404, "not_found", agent_id=a5["id"], cluster_id=other["id"])
+    await expect(pool, settings, 404, "not_found", session_id=uuid.uuid4())
+    await expect(pool, settings, 404, "not_found", agent_id=a5["id"], session_id=other["id"])
 
     # agent_not_ready: no usable agent, or the named agent is not usable
-    await expect(pool, settings, 409, "agent_not_ready", cluster_id=other["id"])
+    await expect(pool, settings, 409, "agent_not_ready", session_id=other["id"])
     dead = await ready_agent(pool, other["id"], 0, state="dead")
-    await expect(pool, settings, 409, "agent_not_ready", cluster_id=other["id"])
+    await expect(pool, settings, 409, "agent_not_ready", session_id=other["id"])
     await expect(pool, settings, 409, "agent_not_ready", agent_id=dead["id"])
     nourl = await ready_agent(pool, other["id"], 1, url=None)
     await expect(pool, settings, 409, "agent_not_ready", agent_id=nourl["id"])
 
-    # a cluster being discarded is not usable either
-    gone = await insert_cluster(pool, desired="deleting")
+    # a session being discarded is not usable either
+    gone = await insert_session(pool, desired="deleting")
     await ready_agent(pool, gone["id"], 0)
-    await expect(pool, settings, 409, "agent_not_ready", cluster_id=gone["id"])
+    await expect(pool, settings, 409, "agent_not_ready", session_id=gone["id"])
 
     # no master key: 503 unavailable
     err = await expect(
-        pool, make_settings(dsn, master_key=None), 503, "unavailable", cluster_id=cid
+        pool, make_settings(dsn, master_key=None), 503, "unavailable", session_id=cid
     )
     assert KEY not in err.message
 
@@ -120,7 +120,7 @@ async def test_resolve_agent_rules(pool, dsn):
 def test_target_repr_hides_token():
     t = WrapperTarget(
         agent_id=uuid.uuid4(),
-        cluster_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
         pod_name="p",
         url="http://w:8080",
         wrapper_session_id="s",
@@ -132,7 +132,7 @@ def test_target_repr_hides_token():
 def target_for(token="tok-123", url="http://w:8080") -> WrapperTarget:
     return WrapperTarget(
         agent_id=uuid.uuid4(),
-        cluster_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
         pod_name="agent-0",
         url=url,
         wrapper_session_id="ses_0",

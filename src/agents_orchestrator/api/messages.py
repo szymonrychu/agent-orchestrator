@@ -8,15 +8,15 @@ from typing import Annotated
 from fastapi import APIRouter, Query, Response
 
 from agents_orchestrator.api import schemas
-from agents_orchestrator.api.clusters import Pool
 from agents_orchestrator.api.errors import ApiError, not_found
-from agents_orchestrator.db import clusters as repo
+from agents_orchestrator.api.sessions import Pool
 from agents_orchestrator.db import queue, views
-from agents_orchestrator.spec import ClusterSpec
+from agents_orchestrator.db import sessions as repo
+from agents_orchestrator.spec import SessionSpec
 
 router = APIRouter(prefix="/api/v1")
 
-_DEFAULT_ATTEMPTS: int = ClusterSpec.model_fields["max_attempts"].default
+_DEFAULT_ATTEMPTS: int = SessionSpec.model_fields["max_attempts"].default
 
 
 def _message_view(r: dict) -> schemas.MessageView:
@@ -33,7 +33,7 @@ def _message_view(r: dict) -> schemas.MessageView:
     )
     return schemas.MessageView(
         id=r["id"],
-        cluster_id=r["cluster_id"],
+        session_id=r["session_id"],
         text=r["text"],
         status=r["status"],
         target_agent_id=r["target_agent_id"],
@@ -49,36 +49,36 @@ def _message_view(r: dict) -> schemas.MessageView:
     )
 
 
-async def _require_open_cluster(conn, cluster_id: uuid.UUID) -> repo.Cluster:
-    cluster = await repo.get(conn, cluster_id)
-    if cluster is None:
-        raise not_found("cluster")
-    if cluster.desired == "deleting":
-        raise ApiError(409, "cluster_deleting", "cluster is being discarded")
-    return cluster
+async def _require_open_session(conn, session_id: uuid.UUID) -> repo.Session:
+    session = await repo.get(conn, session_id)
+    if session is None:
+        raise not_found("session")
+    if session.desired == "deleting":
+        raise ApiError(409, "session_deleting", "session is being discarded")
+    return session
 
 
 @router.post(
-    "/clusters/{cluster_id}/messages", status_code=202, response_model=schemas.MessageAccepted
+    "/sessions/{session_id}/messages", status_code=202, response_model=schemas.MessageAccepted
 )
 async def post_message(
-    cluster_id: uuid.UUID, body: schemas.PostMessage, pool: Pool
+    session_id: uuid.UUID, body: schemas.PostMessage, pool: Pool
 ) -> schemas.MessageAccepted:
     async with pool.connection() as conn:
-        await _require_open_cluster(conn, cluster_id)
+        await _require_open_session(conn, session_id)
         if body.target_agent_id is not None:
             agent = await views.get_agent_ref(conn, body.target_agent_id)
-            if agent is None or agent["cluster_id"] != cluster_id:
-                raise ApiError(422, "invalid_request", "target agent is not in this cluster")
+            if agent is None or agent["session_id"] != session_id:
+                raise ApiError(422, "invalid_request", "target agent is not in this session")
             if agent["gone_at"] is not None:
                 raise ApiError(422, "target_gone", "target agent is gone")
-        mid = await queue.enqueue_message(conn, cluster_id, body.text, body.target_agent_id)
+        mid = await queue.enqueue_message(conn, session_id, body.text, body.target_agent_id)
     return schemas.MessageAccepted(message_id=mid)
 
 
-@router.get("/clusters/{cluster_id}/messages", response_model=list[schemas.MessageView])
+@router.get("/sessions/{session_id}/messages", response_model=list[schemas.MessageView])
 async def list_messages(
-    cluster_id: uuid.UUID,
+    session_id: uuid.UUID,
     pool: Pool,
     status: str | None = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
@@ -90,9 +90,9 @@ async def list_messages(
         if bad or not statuses:
             raise ApiError(422, "invalid_request", f"unknown status {', '.join(bad) or status!r}")
     async with pool.connection() as conn:
-        if await repo.get(conn, cluster_id) is None:
-            raise not_found("cluster")
-        rows = await views.list_messages(conn, cluster_id, statuses, limit, _DEFAULT_ATTEMPTS)
+        if await repo.get(conn, session_id) is None:
+            raise not_found("session")
+        rows = await views.list_messages(conn, session_id, statuses, limit, _DEFAULT_ATTEMPTS)
     return [_message_view(r) for r in rows]
 
 
@@ -163,13 +163,13 @@ async def get_command(command_id: int, pool: Pool) -> schemas.CommandView:
     return schemas.CommandView(**row)
 
 
-@router.post("/clusters/{cluster_id}/checks", status_code=202, response_model=schemas.CheckAccepted)
+@router.post("/sessions/{session_id}/checks", status_code=202, response_model=schemas.CheckAccepted)
 async def post_check(
-    cluster_id: uuid.UUID, body: schemas.PostCheck, pool: Pool
+    session_id: uuid.UUID, body: schemas.PostCheck, pool: Pool
 ) -> schemas.CheckAccepted:
     async with pool.connection() as conn:
-        await _require_open_cluster(conn, cluster_id)
-        cid = await queue.enqueue_check(conn, cluster_id, body.command)
+        await _require_open_session(conn, session_id)
+        cid = await queue.enqueue_check(conn, session_id, body.command)
     return schemas.CheckAccepted(check_id=cid)
 
 

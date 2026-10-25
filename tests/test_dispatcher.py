@@ -9,9 +9,9 @@ import uuid
 import pytest_asyncio
 from factories import (
     insert_agent,
-    insert_cluster,
     insert_command,
     insert_message,
+    insert_session,
     set_agent_status,
 )
 from fakes.fake_wrapper import FakeWrapper
@@ -33,9 +33,9 @@ def make_settings(dsn: str, **kw) -> Settings:
 
 
 class Env:
-    def __init__(self, pool, dsn, cluster, fake, token):
-        self.pool, self.dsn, self.cluster, self.fake, self.token = pool, dsn, cluster, fake, token
-        self.cid = cluster["id"]
+    def __init__(self, pool, dsn, session, fake, token):
+        self.pool, self.dsn, self.session, self.fake, self.token = pool, dsn, session, fake, token
+        self.cid = session["id"]
 
     def dispatcher(self, **kw) -> Dispatcher:
         return Dispatcher(self.pool, make_settings(self.dsn, **kw))
@@ -99,8 +99,8 @@ async def make_env(pool, dsn, spec=None, token=None) -> Env:
     auth = derive_tokens(KEY.encode(), cid).auth
     fake = FakeWrapper(token=token or auth)
     await fake.start()
-    cluster = await insert_cluster(pool, id=cid, spec=spec or {})
-    return Env(pool, dsn, cluster, fake, auth)
+    session = await insert_session(pool, id=cid, spec=spec or {})
+    return Env(pool, dsn, session, fake, auth)
 
 
 @pytest_asyncio.fixture
@@ -348,7 +348,7 @@ async def test_agent_not_wedged_after_failed_send(env):
     assert (row["status"], row["agent_id"]) == ("sent", agent["id"])
 
 
-async def test_two_dispatchers_keep_fifo_per_cluster(env):
+async def test_two_dispatchers_keep_fifo_per_session(env):
     for _ in range(2):
         await env.agent()
     ms = [await env.msg(text=f"m{i}") for i in range(5)]

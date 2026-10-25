@@ -7,7 +7,7 @@ import json
 import httpx
 from any_mcp.orchestrator import OrchestratorPlugin
 from any_mcp.testing import PluginHarness
-from factories import insert_agent, insert_cluster
+from factories import insert_agent, insert_session
 from test_api_agent import (
     AGENT_PORT,
     IP0,
@@ -18,31 +18,31 @@ from test_api_agent import (
     set_ip,
     token,
 )
-from test_api_clusters import assert_error
+from test_api_sessions import assert_error
 
 from agents_orchestrator.api.app import create_app
 
 
 async def hive(pool, *, replicas: int = 3, max_replicas: int = 4, static: bool = False):
     spec = {"replicas": replicas, "max_replicas": max_replicas, "static": static}
-    c = await insert_cluster(pool, spec=spec)
+    c = await insert_session(pool, spec=spec)
     a0 = await insert_agent(pool, c["id"], ordinal=0, ready=True)
     a1 = await insert_agent(pool, c["id"], ordinal=1, ready=True)
     await set_ip(pool, a0["id"], IP0)
     await set_ip(pool, a1["id"], IP1)
     async with pool.connection() as conn:
         await conn.execute(
-            "INSERT INTO cluster_leaders (cluster_id, agent_id, epoch, since, reason)"
+            "INSERT INTO session_leaders (session_id, agent_id, epoch, since, reason)"
             " VALUES (%s, %s, 1, now(), 'start')",
             (c["id"], a0["id"]),
         )
     return c, a0, a1
 
 
-async def replicas_of(pool, cluster_id) -> int:
+async def replicas_of(pool, session_id) -> int:
     async with pool.connection() as conn:
         cur = await conn.execute(
-            "SELECT (spec->>'replicas')::int FROM clusters WHERE id = %s", (cluster_id,)
+            "SELECT (spec->>'replicas')::int FROM sessions WHERE id = %s", (session_id,)
         )
         return (await cur.fetchone())[0]
 
@@ -53,7 +53,7 @@ async def test_leader_scales_202(pool, dsn):
         r = await http.post("/agent/v1/scale", json={"replicas": 4}, headers=headers(c["id"]))
     assert r.status_code == 202, r.text
     assert r.json() == {
-        "cluster_id": str(c["id"]),
+        "session_id": str(c["id"]),
         "replicas": 4,
         "previous_replicas": 3,
         "max_replicas": 4,
@@ -72,12 +72,12 @@ async def test_non_leader_refused_403(pool, dsn):
 async def test_agent_scale_refusals(pool, dsn):
     c, _, _ = await hive(pool)
     s, _, _ = await hive(pool, replicas=2, max_replicas=2, static=True)
-    gone = await insert_cluster(pool, spec={"replicas": 2, "max_replicas": 3}, desired="deleting")
+    gone = await insert_session(pool, spec={"replicas": 2, "max_replicas": 3}, desired="deleting")
     g0 = await insert_agent(pool, gone["id"], ordinal=0, ready=True)
     await set_ip(pool, g0["id"], IP0)
     async with pool.connection() as conn:
         await conn.execute(
-            "INSERT INTO cluster_leaders (cluster_id, agent_id, epoch, since, reason)"
+            "INSERT INTO session_leaders (session_id, agent_id, epoch, since, reason)"
             " VALUES (%s, %s, 1, now(), 'start')",
             (gone["id"], g0["id"]),
         )
@@ -86,7 +86,7 @@ async def test_agent_scale_refusals(pool, dsn):
         assert_error(
             await post("/agent/v1/scale", json={"replicas": 1}, headers=headers(s["id"])),
             409,
-            "static_cluster",
+            "static_session",
         )
         assert_error(
             await post("/agent/v1/scale", json={"replicas": 5}, headers=headers(c["id"])),
@@ -101,8 +101,8 @@ async def test_agent_scale_refusals(pool, dsn):
         # the leader is ordinal 0 here, so make ordinal 1 lead to refuse shrinking to 1
         async with pool.connection() as conn:
             await conn.execute(
-                "UPDATE cluster_leaders SET agent_id = (SELECT id FROM agents"
-                " WHERE cluster_id = %s AND ordinal = 1) WHERE cluster_id = %s",
+                "UPDATE session_leaders SET agent_id = (SELECT id FROM agents"
+                " WHERE session_id = %s AND ordinal = 1) WHERE session_id = %s",
                 (c["id"], c["id"]),
             )
         await set_ip(pool, (await _agent(pool, c["id"], 0))["id"], "10.9.0.99")
@@ -115,7 +115,7 @@ async def test_agent_scale_refusals(pool, dsn):
         assert_error(
             await post("/agent/v1/scale", json={"replicas": 3}, headers=headers(gone["id"])),
             409,
-            "cluster_deleting",
+            "session_deleting",
         )
         assert_error(
             await post(
@@ -134,10 +134,10 @@ async def test_agent_scale_refusals(pool, dsn):
     assert_error(r, 403, "forbidden")
 
 
-async def _agent(pool, cluster_id, ordinal):
+async def _agent(pool, session_id, ordinal):
     async with pool.connection() as conn:
         cur = await conn.execute(
-            "SELECT id FROM agents WHERE cluster_id = %s AND ordinal = %s", (cluster_id, ordinal)
+            "SELECT id FROM agents WHERE session_id = %s AND ordinal = %s", (session_id, ordinal)
         )
         return {"id": (await cur.fetchone())[0]}
 
@@ -150,7 +150,7 @@ async def test_scale_ports_are_separate(pool, dsn):
         r = await pub.post("/agent/v1/scale", json={"replicas": 4}, headers=headers(c["id"]))
         assert r.status_code == 404, r.text
     async with client_for(app, IP0) as agent_port:
-        r = await agent_port.post(f"/api/v1/clusters/{c['id']}/scale", json={"replicas": 4})
+        r = await agent_port.post(f"/api/v1/sessions/{c['id']}/scale", json={"replicas": 4})
         assert r.status_code == 404, r.text
     assert await replicas_of(pool, c["id"]) == 3
 
@@ -175,7 +175,7 @@ async def test_plugin_scale_tool_contract(pool, dsn):
         res = await h.call("scale", {"replicas": 4})
     assert not res.is_error, res.text
     assert json.loads(res.text) == {
-        "cluster_id": str(c["id"]),
+        "session_id": str(c["id"]),
         "replicas": 4,
         "previous_replicas": 3,
         "max_replicas": 4,

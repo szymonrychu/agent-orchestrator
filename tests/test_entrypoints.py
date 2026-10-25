@@ -71,7 +71,7 @@ def test_migrate_command_applies_schema(empty_dsn):
     assert proc.returncode == 0, out
     with psycopg.connect(empty_dsn) as conn:
         assert conn.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] > 0
-        assert conn.execute("SELECT to_regclass('public.clusters')").fetchone()[0] is not None
+        assert conn.execute("SELECT to_regclass('public.sessions')").fetchone()[0] is not None
     json.loads(out.strip().splitlines()[-1])  # logs are JSON lines
 
 

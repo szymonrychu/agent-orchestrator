@@ -11,9 +11,9 @@ import psycopg
 import pytest
 from factories import (
     insert_agent,
-    insert_cluster,
     insert_event,
     insert_message,
+    insert_session,
     set_agent_status,
 )
 from fakes import fake_wrapper
@@ -55,7 +55,7 @@ class Env:
         self.clock = 1000.0
         self.http_clients: list[WrapperClient] = []
 
-    def factory(self, cluster_id, url) -> WrapperClient:
+    def factory(self, session_id, url) -> WrapperClient:
         client = WrapperClient(url, TOKEN)
         self.http_clients.append(client)
         return client
@@ -82,7 +82,7 @@ class Env:
 
     async def hive(self, n: int = 3, *, spec: dict | None = None, lead: bool = True) -> tuple:
         spec = {"replicas": n, "max_replicas": 4, **(spec or {})}
-        c = await insert_cluster(self.pool, spec=spec)
+        c = await insert_session(self.pool, spec=spec)
         agents = []
         for i in range(n):
             agents.append(await self.agent(c["id"], i))
@@ -90,11 +90,11 @@ class Env:
             await self.lpass(c["id"])
         return c, agents
 
-    async def agent(self, cluster_id, ordinal: int, *, ctx: float | None = None) -> dict:
+    async def agent(self, session_id, ordinal: int, *, ctx: float | None = None) -> dict:
         sid = await self.session()
         a = await insert_agent(
             self.pool,
-            cluster_id,
+            session_id,
             ordinal=ordinal,
             ready=True,
             wrapper_session_id=sid,
@@ -103,9 +103,9 @@ class Env:
         await set_agent_status(self.pool, a["id"], state="idle", context_pct=ctx)
         return a
 
-    async def lpass(self, cluster_id):
+    async def lpass(self, session_id):
         async with self.pool.connection() as conn:
-            return await leadership.leadership_pass(conn, cluster_id)
+            return await leadership.leadership_pass(conn, session_id)
 
     async def run(self, sql: str, params: tuple = ()) -> None:
         async with self.pool.connection() as conn:
@@ -116,9 +116,9 @@ class Env:
             await cur.execute(sql, params)
             return await cur.fetchall()
 
-    async def leader_row(self, cluster_id) -> dict:
+    async def leader_row(self, session_id) -> dict:
         return (
-            await self.rows("SELECT * FROM cluster_leaders WHERE cluster_id = %s", (cluster_id,))
+            await self.rows("SELECT * FROM session_leaders WHERE session_id = %s", (session_id,))
         )[0]
 
     def notes(self, agent: dict, key: str | None = "hive_state") -> list[str]:
@@ -127,14 +127,14 @@ class Env:
         return [n["text"] for n in pushed if n["key"] == key]
 
     async def write_event(
-        self, cluster_id, agent, path: str, *, age: float = 60.0, ts_age: float | None = None
+        self, session_id, agent, path: str, *, age: float = 60.0, ts_age: float | None = None
     ) -> dict:
         """A Write call stored `age` s ago; its wrapper ts defaults to the same moment."""
         data = {"tool_use_id": uuid.uuid4().hex, "tool_name": "Write", "tool_input": {}}
         data["tool_input"] = {"file_path": path}
         return await insert_event(
             self.pool,
-            cluster_id,
+            session_id,
             agent["id"],
             type="tool_call",
             data=data,
@@ -296,7 +296,7 @@ async def test_feed_push_and_cursor(env):
 
 
 async def test_feed_cursor_starts_at_max(env):
-    c = await insert_cluster(env.pool, spec={"replicas": 2, "max_replicas": 4})
+    c = await insert_session(env.pool, spec={"replicas": 2, "max_replicas": 4})
     a0, a1 = await env.agent(c["id"], 0), await env.agent(c["id"], 1)
     old = await env.write_event(c["id"], a1, "/old/history.py", age=3600)
     await env.lpass(c["id"])  # the leader row is created here
@@ -318,7 +318,7 @@ async def test_feed_cursor_settle_window(env):
             {"tool_use_id": "late", "tool_name": "Write", "tool_input": {"file_path": "/late.py"}}
         )
         cur = await slow.execute(
-            "INSERT INTO events (cluster_id, agent_id, wrapper_session_id, seq, ts, type, data)"
+            "INSERT INTO events (session_id, agent_id, wrapper_session_id, seq, ts, type, data)"
             " VALUES (%s, %s, 's', 1, now() - interval '1 hour', 'tool_call', %s::jsonb)"
             " RETURNING id",
             (c["id"], a1["id"], data),
@@ -394,11 +394,11 @@ async def test_throttle_and_lock(env):
     assert await tick() == 3
     await env.agent(c["id"], 3)
     now[0] += hive.PUSH_INTERVAL_SECONDS - 1
-    assert await tick() == 0  # throttled: one push per cluster per interval
+    assert await tick() == 0  # throttled: one push per session per interval
     now[0] += 2
     assert await tick() == 4
 
-    # another dispatcher holds the cluster's lock: skipped, and the skip is not a tick
+    # another dispatcher holds the session's lock: skipped, and the skip is not a tick
     await env.agent(c["id"], 4)
     now[0] += 100
     holder = await psycopg.AsyncConnection.connect(env.dsn)
@@ -414,13 +414,13 @@ async def test_throttle_and_lock(env):
 
 
 async def test_alone_and_disabled(env):
-    solo = await insert_cluster(env.pool, spec={"replicas": 1})
+    solo = await insert_session(env.pool, spec={"replicas": 1})
     s0 = await env.agent(solo["id"], 0)
     await env.write_event(solo["id"], s0, "/solo.py")
     assert await env.push() == 0
     assert env.fake.notes.get(s0["wrapper_session_id"]) is None
     assert (
-        await env.rows("SELECT 1 FROM cluster_leaders WHERE cluster_id = %s", (solo["id"],)) == []
+        await env.rows("SELECT 1 FROM session_leaders WHERE session_id = %s", (solo["id"],)) == []
     )
 
     c, (a0, a1, a2) = await env.hive()

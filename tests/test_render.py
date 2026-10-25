@@ -15,14 +15,14 @@ import pytest
 import yaml
 from claude_code_wrapper.config import load_config
 
-from agents_orchestrator.db.clusters import Cluster
+from agents_orchestrator.db.sessions import Session
 from agents_orchestrator.k8s import labels, on_start, render
 from agents_orchestrator.settings import Settings
-from agents_orchestrator.spec import ClusterSpec
-from agents_orchestrator.tokens import ClusterTokens
+from agents_orchestrator.spec import SessionSpec
+from agents_orchestrator.tokens import SessionTokens
 
 GOLDEN = Path(__file__).parent / "golden"
-TOKENS = ClusterTokens(auth="a" * 32, peer="p" * 32, agent="g" * 32)
+TOKENS = SessionTokens(auth="a" * 32, peer="p" * 32, agent="g" * 32)
 AGENT_ENV = ["ORCH_AGENT_TOKEN", "ORCH_AGENT_URL", "ORCH_CLUSTER_ID", "POD_NAME"]
 AGENT_URL = "http://orchestrator-agents.agents.svc:8081"
 IMAGE = "harbor.example/containers/claude-code-wrapper:ca2ddf3"
@@ -40,11 +40,11 @@ def make_settings(**over) -> Settings:
     return Settings(**base)
 
 
-def make_cluster(slug="alpha", **spec) -> Cluster:
-    return Cluster(
+def make_session(slug="alpha", **spec) -> Session:
+    return Session(
         id=uuid.UUID("11111111-1111-1111-1111-111111111111"),
         slug=slug,
-        spec=ClusterSpec.model_validate(spec),
+        spec=SessionSpec.model_validate(spec),
         generation=1,
         observed_generation=0,
         desired="running",
@@ -77,7 +77,7 @@ def golden(name: str, objs: list[dict]) -> None:
 
 
 def test_golden_two_replicas_with_peers():
-    cluster = make_cluster(
+    session = make_session(
         replicas=2,
         env={"GITHUB_TOKEN": "x", "AAA": "1"},
         resources={"requests": {"cpu": "500m"}, "limits": {"memory": "2Gi"}},
@@ -86,20 +86,20 @@ def test_golden_two_replicas_with_peers():
         model="opus",
         effort="high",
     )
-    golden("cluster_two_peers.yaml", render.render_cluster(cluster, make_settings(), TOKENS))
+    golden("session_two_peers.yaml", render.render_session(session, make_settings(), TOKENS))
 
 
 def test_golden_single_without_peers():
-    cluster = make_cluster(slug="solo", replicas=1, peers=False)
-    objs = render.render_cluster(cluster, make_settings(), TOKENS)
+    session = make_session(slug="solo", replicas=1, peers=False)
+    objs = render.render_session(session, make_settings(), TOKENS)
     assert "peers" not in config_of(objs)
-    golden("cluster_single.yaml", objs)
+    golden("session_single.yaml", objs)
 
 
 def test_rendered_ccw_config_validates(tmp_path, monkeypatch):
     for peers in (True, False):
-        objs = render.render_cluster(
-            make_cluster(replicas=3, peers=peers, env={"FOO": "bar"}), make_settings(), TOKENS
+        objs = render.render_session(
+            make_session(replicas=3, peers=peers, env={"FOO": "bar"}), make_settings(), TOKENS
         )
         monkeypatch.setenv("CCW_AUTH_TOKEN", TOKENS.auth)
         monkeypatch.setenv("CCW_PEER_TOKEN", TOKENS.peer)
@@ -115,7 +115,7 @@ def test_rendered_ccw_config_validates(tmp_path, monkeypatch):
 
 
 def test_all_objects_labelled():
-    objs = render.render_cluster(make_cluster(), make_settings(), TOKENS)
+    objs = render.render_session(make_session(), make_settings(), TOKENS)
     assert [o["kind"] for o in objs] == [
         "PersistentVolumeClaim",
         "Secret",
@@ -124,7 +124,7 @@ def test_all_objects_labelled():
         "StatefulSet",
     ]
     for o in objs:
-        assert o["metadata"]["labels"]["agents.szymonrichert.pl/cluster"] == "alpha"
+        assert o["metadata"]["labels"]["agents.szymonrichert.pl/session"] == "alpha"
         assert o["metadata"]["labels"]["app.kubernetes.io/managed-by"] == "agents-orchestrator"
 
 
@@ -132,7 +132,7 @@ def test_sessions_subpathexpr_per_pod():
     mounts = {
         m["mountPath"]: m
         for m in container_of(
-            render.render_cluster(make_cluster(workdir="proj"), make_settings(), TOKENS)
+            render.render_session(make_session(workdir="proj"), make_settings(), TOKENS)
         )["volumeMounts"]
     }
     assert mounts["/sessions"]["subPathExpr"] == "sessions/$(POD_NAME)"
@@ -142,7 +142,7 @@ def test_sessions_subpathexpr_per_pod():
 
 
 def test_peer_static_urls_cover_every_ordinal():
-    cfg = config_of(render.render_cluster(make_cluster(replicas=3), make_settings(), TOKENS))
+    cfg = config_of(render.render_session(make_session(replicas=3), make_settings(), TOKENS))
     assert cfg["peers"]["enabled"] is True
     assert cfg["peers"]["name"] == "${POD_NAME}"
     assert cfg["peers"]["advertise_url"] == "${CCW_PEER_URL}"
@@ -153,7 +153,7 @@ def test_peer_static_urls_cover_every_ordinal():
 
 
 def test_pull_secret_and_oauth_secret_ref():
-    pod = sts_of(render.render_cluster(make_cluster(), make_settings(), TOKENS))["spec"][
+    pod = sts_of(render.render_session(make_session(), make_settings(), TOKENS))["spec"][
         "template"
     ]["spec"]
     assert pod["imagePullSecrets"] == [{"name": "regcred"}]
@@ -171,18 +171,18 @@ def test_pull_secret_and_oauth_secret_ref():
         "http://$(POD_NAME).agent-alpha.agents.svc.cluster.local:8080"
     )
     empty = sts_of(
-        render.render_cluster(make_cluster(), make_settings(image_pull_secret=""), TOKENS)
+        render.render_session(make_session(), make_settings(image_pull_secret=""), TOKENS)
     )
     assert "imagePullSecrets" not in empty["spec"]["template"]["spec"]
     custom = sts_of(
-        render.render_cluster(make_cluster(), make_settings(claude_secret_name="mine"), TOKENS)
+        render.render_session(make_session(), make_settings(claude_secret_name="mine"), TOKENS)
     )
     env = {e["name"]: e for e in custom["spec"]["template"]["spec"]["containers"][0]["env"]}
     assert env["CLAUDE_CODE_OAUTH_TOKEN"]["valueFrom"]["secretKeyRef"]["name"] == "mine"
 
 
 def test_any_mcp_server_entry():
-    objs = render.render_cluster(make_cluster(), make_settings(), TOKENS)
+    objs = render.render_session(make_session(), make_settings(), TOKENS)
     assert config_of(objs)["claude"]["mcp_servers"]["any-mcp"] == {
         "type": "stdio",
         "command": "/opt/any-mcp/bin/any-mcp",
@@ -199,22 +199,22 @@ def test_any_mcp_server_entry():
 
 
 def test_config_hash_rolls_pods():
-    def hash_of(cluster, **kw):
-        objs = render.render_cluster(cluster, make_settings(**kw), TOKENS)
+    def hash_of(session, **kw):
+        objs = render.render_session(session, make_settings(**kw), TOKENS)
         return sts_of(objs)["spec"]["template"]["metadata"]["annotations"][
             "agents.szymonrichert.pl/config-hash"
         ]
 
-    base = hash_of(make_cluster())
-    assert hash_of(make_cluster()) == base
-    assert hash_of(make_cluster(any_mcp_config={"a": 1})) != base
-    assert hash_of(make_cluster(model="opus")) != base
-    assert hash_of(make_cluster(), any_mcp_ref="v9.9.9") != base
+    base = hash_of(make_session())
+    assert hash_of(make_session()) == base
+    assert hash_of(make_session(any_mcp_config={"a": 1})) != base
+    assert hash_of(make_session(model="opus")) != base
+    assert hash_of(make_session(), any_mcp_ref="v9.9.9") != base
 
 
 def test_all_objects_in_namespace():
-    objs = render.render_cluster(
-        make_cluster(replicas=2), make_settings(namespace="ns1", cluster_domain="k.local"), TOKENS
+    objs = render.render_session(
+        make_session(replicas=2), make_settings(namespace="ns1", cluster_domain="k.local"), TOKENS
     )
     for o in objs:
         assert o["metadata"]["namespace"] == "ns1"
@@ -226,8 +226,8 @@ def test_all_objects_in_namespace():
 
 
 def test_passthrough_env_lists_spec_env_names(tmp_path, monkeypatch):
-    objs = render.render_cluster(
-        make_cluster(env={"ZED": "1", "ALPHA": "2"}), make_settings(), TOKENS
+    objs = render.render_session(
+        make_session(env={"ZED": "1", "ALPHA": "2"}), make_settings(), TOKENS
     )
     cfg = config_of(objs)
     assert cfg["claude"]["passthrough_env"] == sorted(["ALPHA", "ZED", *AGENT_ENV])
@@ -250,31 +250,31 @@ def test_passthrough_env_lists_spec_env_names(tmp_path, monkeypatch):
 
 
 def test_workdir_path_matches_mount_and_session_workdir():
-    spec = ClusterSpec(workdir="proj")
+    spec = SessionSpec(workdir="proj")
     assert render.workdir_path(spec) == "/workdir/proj"
     mount = render.workdir_mount(spec)
     assert render.workdir_path(spec).startswith(mount["mountPath"] + "/")
     assert render.workdir_path(spec).removeprefix(mount["mountPath"] + "/") == spec.workdir
-    objs = render.render_cluster(make_cluster(workdir="proj"), make_settings(), TOKENS)
+    objs = render.render_session(make_session(workdir="proj"), make_settings(), TOKENS)
     assert mount in container_of(objs)["volumeMounts"]
     assert mount["subPath"] == "workdir"
 
 
 def test_every_object_name_uses_reserved_prefix():
-    objs = render.render_cluster(make_cluster(slug="beta"), make_settings(), TOKENS)
+    objs = render.render_session(make_session(slug="beta"), make_settings(), TOKENS)
     assert all(o["metadata"]["name"].startswith("agent-beta") for o in objs)
     names = labels.object_names("beta")
     assert set(names.values()) == {o["metadata"]["name"] for o in objs}
-    assert labels.cluster_labels("beta") == {
-        "agents.szymonrichert.pl/cluster": "beta",
+    assert labels.session_labels("beta") == {
+        "agents.szymonrichert.pl/session": "beta",
         "app.kubernetes.io/managed-by": "agents-orchestrator",
     }
-    assert labels.selector("beta") == {"matchLabels": labels.cluster_labels("beta")}
+    assert labels.selector("beta") == {"matchLabels": labels.session_labels("beta")}
 
 
 def test_on_start_hook_and_startup_probe():
-    objs = render.render_cluster(
-        make_cluster(), make_settings(on_start_timeout_seconds=600), TOKENS
+    objs = render.render_session(
+        make_session(), make_settings(on_start_timeout_seconds=600), TOKENS
     )
     assert config_of(objs)["hooks"]["onStart"] == [
         {
@@ -293,7 +293,7 @@ def test_on_start_hook_and_startup_probe():
     assert c["livenessProbe"]["httpGet"]["path"] == "/healthz"
     assert c["readinessProbe"]["httpGet"]["path"] == "/readyz"
     odd = container_of(
-        render.render_cluster(make_cluster(), make_settings(on_start_timeout_seconds=601), TOKENS)
+        render.render_session(make_session(), make_settings(on_start_timeout_seconds=601), TOKENS)
     )
     assert odd["startupProbe"]["failureThreshold"] == 121 + 12
 
@@ -328,7 +328,7 @@ def _run(script: str, root: Path, tmp_path: Path) -> None:
 
 def test_on_start_script_installs_once_and_writes_json_config(tmp_path):
     settings = make_settings(any_mcp_ref="v0.1.0", any_mcp_repo="https://example.com/any-mcp")
-    spec = ClusterSpec(any_mcp_config={"name": "it's $HOME `x`", "n": [1, 2]})
+    spec = SessionSpec(any_mcp_config={"name": "it's $HOME `x`", "n": [1, 2]})
     script = on_start.render_on_start(spec, settings)
     assert script.startswith("#!/bin/sh\n")
     assert "set -eu" in script
@@ -342,7 +342,7 @@ def test_on_start_script_installs_once_and_writes_json_config(tmp_path):
     assert json.loads((root / "etc" / "any-mcp.yaml").read_text()) == spec.any_mcp_config
 
     log.write_text("")
-    spec2 = ClusterSpec(any_mcp_config={"changed": True})
+    spec2 = SessionSpec(any_mcp_config={"changed": True})
     _run(on_start.render_on_start(spec2, settings), root, tmp_path)
     calls = log.read_text()
     assert "pip install" not in calls and "-m venv" not in calls
@@ -359,20 +359,20 @@ def test_on_start_config_sources(tmp_path):
     f = tmp_path / "mcp.yaml"
     f.write_text("a: 1\n")
     settings = make_settings(any_mcp_config_file=str(f))
-    assert '"a": 1' in on_start.render_on_start(ClusterSpec(), settings)
-    spec = ClusterSpec(any_mcp_config={"b": 2})
+    assert '"a": 1' in on_start.render_on_start(SessionSpec(), settings)
+    spec = SessionSpec(any_mcp_config={"b": 2})
     assert '"b": 2' in on_start.render_on_start(spec, settings)
-    assert "\n{}\n" in on_start.render_on_start(ClusterSpec(), make_settings())
+    assert "\n{}\n" in on_start.render_on_start(SessionSpec(), make_settings())
 
 
 def test_on_start_refuses_delimiter_in_config(monkeypatch):
     monkeypatch.setattr(on_start, "DELIMITER", "}")
     with pytest.raises(ValueError, match="delimiter"):
-        on_start.render_on_start(ClusterSpec(any_mcp_config={"a": 1}), make_settings())
+        on_start.render_on_start(SessionSpec(any_mcp_config={"a": 1}), make_settings())
 
 
 def test_ask_user_question_disabled():
-    cfg = config_of(render.render_cluster(make_cluster(), make_settings(), TOKENS))
+    cfg = config_of(render.render_session(make_session(), make_settings(), TOKENS))
     assert cfg["sessions"]["ask_user_question"] == "deny"
     assert cfg["claude"]["permissions"]["deny"] == [
         "EnterPlanMode",
@@ -385,7 +385,7 @@ def test_ask_user_question_disabled():
 
 
 def test_system_append_asks_in_writing():
-    cfg = config_of(render.render_cluster(make_cluster(), make_settings(), TOKENS))
+    cfg = config_of(render.render_session(make_session(), make_settings(), TOKENS))
     text = cfg["prompts"]["system_append"]
     assert text == render.ASK_IN_WRITING_PROMPT
     low = text.lower()
@@ -396,8 +396,8 @@ def test_system_append_asks_in_writing():
 
 
 def test_shutdown_below_grace_and_resources():
-    objs = render.render_cluster(
-        make_cluster(resources={"limits": {"cpu": "1"}}),
+    objs = render.render_session(
+        make_session(resources={"limits": {"cpu": "1"}}),
         make_settings(agent_termination_grace_seconds=90),
         TOKENS,
     )
@@ -409,45 +409,45 @@ def test_shutdown_below_grace_and_resources():
 
 
 def test_render_is_pure():
-    cluster = make_cluster(replicas=2)
-    a = render.render_cluster(cluster, make_settings(), TOKENS)
-    assert render.render_cluster(cluster, make_settings(), TOKENS) == copy.deepcopy(a)
+    session = make_session(replicas=2)
+    a = render.render_session(session, make_settings(), TOKENS)
+    assert render.render_session(session, make_settings(), TOKENS) == copy.deepcopy(a)
 
 
 def test_render_keeps_spec_resources_unchanged():
-    c = container_of(render.render_cluster(make_cluster(), make_settings(), TOKENS))
+    c = container_of(render.render_session(make_session(), make_settings(), TOKENS))
     assert "resources" not in c
     spec = {"resources": {"requests": {"cpu": "2"}, "limits": {"memory": "2Gi"}}}
-    c = container_of(render.render_cluster(make_cluster(**spec), make_settings(), TOKENS))
+    c = container_of(render.render_session(make_session(**spec), make_settings(), TOKENS))
     assert c["resources"] == {"requests": {"cpu": "2"}, "limits": {"memory": "2Gi"}}
 
 
 def test_agent_credential_env():
-    cluster = make_cluster()
-    objs = render.render_cluster(cluster, make_settings(agent_api_url=AGENT_URL), TOKENS)
+    session = make_session()
+    objs = render.render_session(session, make_settings(agent_api_url=AGENT_URL), TOKENS)
     assert by_kind(objs)["Secret"]["stringData"]["ORCH_AGENT_TOKEN"] == TOKENS.agent
     env = {e["name"]: e for e in container_of(objs)["env"]}
     assert env["ORCH_AGENT_TOKEN"]["valueFrom"]["secretKeyRef"] == {
         "name": "agent-alpha-ccw",
         "key": "ORCH_AGENT_TOKEN",
     }
-    assert env["ORCH_CLUSTER_ID"]["value"] == str(cluster.id)
+    assert env["ORCH_CLUSTER_ID"]["value"] == str(session.id)
     assert env["ORCH_AGENT_URL"]["value"] == AGENT_URL
 
 
 def test_passthrough_includes_agent_env():
-    objs = render.render_cluster(
-        make_cluster(env={"ZED": "1"}), make_settings(agent_api_url=AGENT_URL), TOKENS
+    objs = render.render_session(
+        make_session(env={"ZED": "1"}), make_settings(agent_api_url=AGENT_URL), TOKENS
     )
     assert config_of(objs)["claude"]["passthrough_env"] == sorted(["ZED", *AGENT_ENV])
-    solo = render.render_cluster(
-        make_cluster(replicas=1), make_settings(agent_api_url=AGENT_URL), TOKENS
+    solo = render.render_session(
+        make_session(replicas=1), make_settings(agent_api_url=AGENT_URL), TOKENS
     )
     assert "ORCH_AGENT_TOKEN" in config_of(solo)["claude"]["passthrough_env"]
 
 
 def test_no_agent_url_omits_env():
-    objs = render.render_cluster(make_cluster(), make_settings(), TOKENS)
+    objs = render.render_session(make_session(), make_settings(), TOKENS)
     names = [e["name"] for e in container_of(objs)["env"]]
     assert "ORCH_AGENT_URL" not in names
     assert "ORCH_AGENT_TOKEN" in names and "ORCH_CLUSTER_ID" in names
@@ -456,7 +456,7 @@ def test_no_agent_url_omits_env():
 
 def test_agent_token_trust_domain_documented():
     """The token is plain pod env, readable by every process in the pod (Bash included)."""
-    objs = render.render_cluster(make_cluster(), make_settings(agent_api_url=AGENT_URL), TOKENS)
+    objs = render.render_session(make_session(), make_settings(agent_api_url=AGENT_URL), TOKENS)
     env = {e["name"]: e for e in container_of(objs)["env"]}
     assert "ORCH_AGENT_TOKEN" in env
     assert "ORCH_AGENT_TOKEN" in config_of(objs)["claude"]["passthrough_env"]
@@ -464,14 +464,14 @@ def test_agent_token_trust_domain_documented():
     assert "best-effort" in readme and "orch_agent_token" in readme
 
 
-def _render(cluster, **settings):
-    return render.render_cluster(
-        cluster, make_settings(agent_api_url=AGENT_URL, **settings), TOKENS
+def _render(session, **settings):
+    return render.render_session(
+        session, make_settings(agent_api_url=AGENT_URL, **settings), TOKENS
     )
 
 
 def test_peer_seeds_from_cap():
-    cfg = config_of(_render(make_cluster(replicas=1, max_replicas=3)))
+    cfg = config_of(_render(make_session(replicas=1, max_replicas=3)))
     assert cfg["peers"]["static"] == [
         f"http://agent-alpha-{i}.agent-alpha.agents.svc.cluster.local:8080" for i in range(3)
     ]
@@ -479,18 +479,18 @@ def test_peer_seeds_from_cap():
     assert cfg["peers"]["advertise_url"] == "${CCW_PEER_URL}"
 
 
-def test_alone_cluster_no_hive_config():
-    cfg = config_of(_render(make_cluster(replicas=1, static=True)))
+def test_alone_session_no_hive_config():
+    cfg = config_of(_render(make_session(replicas=1, static=True)))
     assert not cfg.get("peers", {}).get("enabled")
     assert cfg["notes"]["enabled"] is False
     assert "onAgentToolCall" not in cfg["hooks"]
-    cfg = config_of(_render(make_cluster(replicas=3, max_replicas=3, peers=False)))
+    cfg = config_of(_render(make_session(replicas=3, max_replicas=3, peers=False)))
     assert not cfg.get("peers", {}).get("enabled")
     assert cfg["notes"]["enabled"] is True
 
 
-def test_hive_cluster_config():
-    cfg = config_of(_render(make_cluster(replicas=2)))
+def test_hive_session_config():
+    cfg = config_of(_render(make_session(replicas=2)))
     assert cfg["peers"]["enabled"] is True
     assert cfg["notes"]["enabled"] is True
     assert cfg["hooks"]["onAgentToolCall"] == [
@@ -508,13 +508,13 @@ def test_hive_cluster_config():
             "retries": 0,
         }
     ]
-    no_url = render.render_cluster(make_cluster(replicas=2), make_settings(), TOKENS)
+    no_url = render.render_session(make_session(replicas=2), make_settings(), TOKENS)
     assert "onAgentToolCall" not in config_of(no_url)["hooks"]
 
 
 def test_main_agent_only_tools_rendered():
-    for cluster in (make_cluster(replicas=1, static=True), make_cluster(replicas=3)):
-        cfg = config_of(_render(cluster))
+    for session in (make_session(replicas=1, static=True), make_session(replicas=3)):
+        cfg = config_of(_render(session))
         assert cfg["claude"]["main_agent_only_tools"] == ["mcp__any-mcp__orchestrator_*"]
 
 
@@ -527,8 +527,8 @@ def test_main_agent_only_tools_rendered():
     ],
 )
 def test_runtime_fields_change_only_statefulset_replicas(low, high):
-    a = _render(make_cluster(max_replicas=4, **low))
-    b = _render(make_cluster(max_replicas=4, **high))
+    a = _render(make_session(max_replicas=4, **low))
+    b = _render(make_session(max_replicas=4, **high))
     assert sts_of(a)["spec"]["replicas"] == low["replicas"]
     assert sts_of(b)["spec"]["replicas"] == high["replicas"]
     for objs in (a, b):
@@ -537,33 +537,33 @@ def test_runtime_fields_change_only_statefulset_replicas(low, high):
 
 
 def test_init_scripts_never_rendered():
-    a = _render(make_cluster(init_scripts=["echo a"]))
-    b = _render(make_cluster(init_scripts=["echo b", "echo c"]))
-    c = _render(make_cluster())
+    a = _render(make_session(init_scripts=["echo a"]))
+    b = _render(make_session(init_scripts=["echo b", "echo c"]))
+    c = _render(make_session())
     assert a == b == c
 
 
-def _on_start_plugins(cluster) -> list[str]:
-    objs = render.render_cluster(cluster, make_settings(agent_api_url=AGENT_URL), TOKENS)
+def _on_start_plugins(session) -> list[str]:
+    objs = render.render_session(session, make_settings(agent_api_url=AGENT_URL), TOKENS)
     script = by_kind(objs)["ConfigMap"]["data"]["on-start.sh"]
     body = script.split("<<'ANY_MCP_CONFIG_EOF'\n")[1].split("\nANY_MCP_CONFIG_EOF")[0]
     return [p["name"] for p in json.loads(body).get("plugins", [])]
 
 
 def test_on_start_orchestrator_entry_only_for_hive():
-    assert _on_start_plugins(make_cluster(replicas=2)) == ["orchestrator"]
-    assert _on_start_plugins(make_cluster(replicas=1)) == []
+    assert _on_start_plugins(make_session(replicas=2)) == ["orchestrator"]
+    assert _on_start_plugins(make_session(replicas=1)) == []
 
 
-def _on_start_body(cluster) -> tuple[str, dict]:
-    objs = render.render_cluster(cluster, make_settings(agent_api_url=AGENT_URL), TOKENS)
+def _on_start_body(session) -> tuple[str, dict]:
+    objs = render.render_session(session, make_settings(agent_api_url=AGENT_URL), TOKENS)
     script = by_kind(objs)["ConfigMap"]["data"]["on-start.sh"]
     body = script.split("<<'ANY_MCP_CONFIG_EOF'\n")[1].split("\nANY_MCP_CONFIG_EOF")[0]
     return script, json.loads(body)
 
 
-def _allow(cluster) -> list[str]:
-    plugins = _on_start_body(cluster)[1].get("plugins", [])
+def _allow(session) -> list[str]:
+    plugins = _on_start_body(session)[1].get("plugins", [])
     return plugins[0]["allow"] if plugins else []
 
 
@@ -578,12 +578,12 @@ def _allow(cluster) -> list[str]:
     ],
 )
 def test_scale_tool_allowed_only_when_scalable(spec, scalable):
-    assert ("scale" in _allow(make_cluster(**spec))) is scalable
+    assert ("scale" in _allow(make_session(**spec))) is scalable
 
 
 def test_scale_allow_independent_of_replicas():
-    low = _on_start_body(make_cluster(replicas=1, max_replicas=4))
-    high = _on_start_body(make_cluster(replicas=4, max_replicas=4))
+    low = _on_start_body(make_session(replicas=1, max_replicas=4))
+    high = _on_start_body(make_session(replicas=4, max_replicas=4))
     assert low == high
     assert "scale" in low[1]["plugins"][0]["allow"]
 
@@ -615,8 +615,8 @@ FULL_WRAPPER = {
 
 
 def wrapper_cfg(wrapper, **spec) -> dict:
-    cluster = make_cluster(wrapper=wrapper, max_replicas=2, replicas=2, **spec)
-    return config_of(render.render_cluster(cluster, make_settings(agent_api_url=AGENT_URL), TOKENS))
+    session = make_session(wrapper=wrapper, max_replicas=2, replicas=2, **spec)
+    return config_of(render.render_session(session, make_settings(agent_api_url=AGENT_URL), TOKENS))
 
 
 def test_wrapper_settings_keep_reserved_entries():
@@ -691,8 +691,8 @@ def test_wrapper_settings_mapped():
 
 
 def test_rendered_wrapper_settings_validate(tmp_path, monkeypatch):
-    cluster = make_cluster(wrapper=FULL_WRAPPER, max_replicas=2, replicas=2)
-    objs = render.render_cluster(cluster, make_settings(agent_api_url=AGENT_URL), TOKENS)
+    session = make_session(wrapper=FULL_WRAPPER, max_replicas=2, replicas=2)
+    objs = render.render_session(session, make_settings(agent_api_url=AGENT_URL), TOKENS)
     for k, v in {
         "CCW_AUTH_TOKEN": TOKENS.auth,
         "CCW_PEER_TOKEN": TOKENS.peer,
@@ -712,7 +712,7 @@ def test_rendered_wrapper_settings_validate(tmp_path, monkeypatch):
 
 
 def test_no_wrapper_block_renders_unchanged():
-    cfg = config_of(render.render_cluster(make_cluster(), make_settings(), TOKENS))
+    cfg = config_of(render.render_session(make_session(), make_settings(), TOKENS))
     assert cfg["hooks"] == {"onStart": [cfg["hooks"]["onStart"][0]]}
     assert cfg["sessions"] == {
         "max_sessions": 1,
@@ -734,8 +734,8 @@ def test_hive_with_agent_commands_validates(tmp_path, monkeypatch):
         "agent_commands": ["compact"],
         "mcp_servers": {"docs": FULL_WRAPPER["mcp_servers"]["docs"]},
     }
-    cluster = make_cluster(wrapper=wrapper, max_replicas=2, replicas=2)
-    objs = render.render_cluster(cluster, make_settings(agent_api_url=AGENT_URL), TOKENS)
+    session = make_session(wrapper=wrapper, max_replicas=2, replicas=2)
+    objs = render.render_session(session, make_settings(agent_api_url=AGENT_URL), TOKENS)
     for k, v in {
         "CCW_AUTH_TOKEN": TOKENS.auth,
         "CCW_PEER_TOKEN": TOKENS.peer,

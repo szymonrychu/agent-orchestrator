@@ -7,7 +7,7 @@ from pathlib import Path
 import httpx
 import pytest
 from fastapi import Depends, FastAPI
-from test_api_clusters import make_settings
+from test_api_sessions import make_settings
 
 from agents_orchestrator.api import errors
 from agents_orchestrator.api.app import create_app

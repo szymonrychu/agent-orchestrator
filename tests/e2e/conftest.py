@@ -6,7 +6,7 @@ own (`uv run pytest tests/e2e/test_e2e_kind.py::<name>`) gets the same environme
 `-m 'not integration and not e2e'` from pyproject.toml is lifted for a run that names tests/e2e,
 and when ORCH_E2E_API_URL is unset the session fixture runs scripts/e2e.sh in hold mode
 (E2E_HOLD_FILE), points this process at the kind cluster it reports, and removes the hold file
-at the end so the script deletes the cluster.
+at the end so the script deletes the kind cluster.
 """
 
 from __future__ import annotations

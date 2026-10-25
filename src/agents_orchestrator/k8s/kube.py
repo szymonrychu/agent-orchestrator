@@ -1,6 +1,6 @@
 """The Kubernetes calls the reconciler makes, behind one protocol (D6, D9, D26).
 
-Objects travel as plain Kubernetes JSON dicts, the shape `render_cluster` produces. Every call
+Objects travel as plain Kubernetes JSON dicts, the shape `render_session` produces. Every call
 names its namespace explicitly. The production Role grants Secrets only create, patch and
 delete, so `get_object` and `list_objects` are never called for Secrets: a Secret is applied
 and deleted by its deterministic name.
@@ -29,7 +29,7 @@ from lightkube.resources.core_v1 import (
     Service,
 )
 
-from agents_orchestrator.k8s.labels import CLUSTER_LABEL, MANAGED_BY, MANAGED_BY_LABEL
+from agents_orchestrator.k8s.labels import MANAGED_BY, MANAGED_BY_LABEL, SESSION_LABEL
 
 FIELD_MANAGER = "agents-orchestrator"
 
@@ -92,9 +92,9 @@ class KubeApi(Protocol):
 
 
 def is_owned(obj: Mapping[str, Any], slug: str) -> bool:
-    """True only when the object carries both the managed-by and this cluster's label (D26)."""
+    """True only when the object carries both the managed-by and this session's label (D26)."""
     labels = (obj.get("metadata") or {}).get("labels") or {}
-    return labels.get(MANAGED_BY_LABEL) == MANAGED_BY and labels.get(CLUSTER_LABEL) == slug
+    return labels.get(MANAGED_BY_LABEL) == MANAGED_BY and labels.get(SESSION_LABEL) == slug
 
 
 def pod_ready(pod: Mapping[str, Any]) -> bool:

@@ -30,9 +30,9 @@ from typing import Any
 
 from psycopg_pool import AsyncConnectionPool
 
-from agents_orchestrator.db import clusters, queue
+from agents_orchestrator.db import queue, sessions
 from agents_orchestrator.settings import Settings
-from agents_orchestrator.spec import ClusterSpec
+from agents_orchestrator.spec import SessionSpec
 from agents_orchestrator.tokens import tokens_for
 from agents_orchestrator.wrapper.client import WrapperClient
 from agents_orchestrator.wrapper.models import TurnRecord, WrapperError, WrapperUnreachable
@@ -58,10 +58,10 @@ class Lookup:
     turn_id: str | None = None
 
 
-async def cluster_max_attempts(conn: Any, cluster_id: uuid.UUID) -> int:
-    """The cluster's `spec.max_attempts`, or the spec default for a vanished cluster."""
-    cluster = await clusters.get(conn, cluster_id)
-    return cluster.spec.max_attempts if cluster is not None else ClusterSpec().max_attempts
+async def session_max_attempts(conn: Any, session_id: uuid.UUID) -> int:
+    """The session's `spec.max_attempts`, or the spec default for a vanished session."""
+    session = await sessions.get(conn, session_id)
+    return session.spec.max_attempts if session is not None else SessionSpec().max_attempts
 
 
 def _carries(record: TurnRecord, message_id: int) -> bool:
@@ -106,7 +106,7 @@ class Verifier:
                 status = await queue.resolve_not_started(
                     conn,
                     msg.message_id,
-                    await cluster_max_attempts(conn, msg.cluster_id),
+                    await session_max_attempts(conn, msg.session_id),
                     s.retry_backoff_base_seconds,
                     s.retry_backoff_max_seconds,
                 )
@@ -124,7 +124,7 @@ class Verifier:
         """Ask the original agent's wrapper whether a turn carrying this message id exists."""
         if not msg.agent_url or not msg.wrapper_session_id:
             return Lookup(Answer.UNKNOWN)
-        token = tokens_for(self.settings, msg.cluster_id).auth
+        token = tokens_for(self.settings, msg.session_id).auth
         client = self.wrapper_factory(msg.agent_url, token)
         session = msg.wrapper_session_id
         try:

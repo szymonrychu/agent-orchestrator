@@ -15,10 +15,10 @@ from agents_orchestrator import __version__
 from agents_orchestrator.api import (
     agent,
     autoclose,
-    clusters,
     errors,
     messages,
     presets,
+    sessions,
     streams,
     workspace,
 )
@@ -71,7 +71,7 @@ def create_app(
     app.state.wrapper_http = None
     app.state.stream_poll_seconds = stream_poll_seconds
     errors.install(app)
-    app.include_router(clusters.router)
+    app.include_router(sessions.router)
     app.include_router(agent.router)
     app.include_router(presets.router)
     app.include_router(messages.router)

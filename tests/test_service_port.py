@@ -10,8 +10,8 @@ import uuid
 import httpx
 import pytest
 import pytest_asyncio
-from factories import insert_cluster
-from test_api_clusters import assert_error, make_settings
+from factories import insert_session
+from test_api_sessions import assert_error, make_settings
 
 from agents_orchestrator.api import service_auth
 from agents_orchestrator.api.app import create_app
@@ -64,17 +64,17 @@ async def test_allowed_routes_with_token(app, caplog):
         assert any(p["id"] == DEFAULT_ID for p in r.json())
         r = await c.get(f"/api/v1/presets/{DEFAULT_ID}")
         assert r.status_code == 200, r.text
-        r = await c.post("/api/v1/clusters", json={"preset_id": DEFAULT_ID, "slug": "wh-1"})
+        r = await c.post("/api/v1/sessions", json={"preset_id": DEFAULT_ID, "slug": "wh-1"})
         assert r.status_code == 201, r.text
-        cluster_id = r.json()["id"]
-        r = await c.get("/api/v1/clusters")
+        session_id = r.json()["id"]
+        r = await c.get("/api/v1/sessions")
         assert r.status_code == 200, r.text
-        r = await c.get(f"/api/v1/clusters/{cluster_id}")
+        r = await c.get(f"/api/v1/sessions/{session_id}")
         assert r.status_code == 200, r.text
-        r = await c.post(f"/api/v1/clusters/{cluster_id}/messages", json={"text": "hi"})
+        r = await c.post(f"/api/v1/sessions/{session_id}/messages", json={"text": "hi"})
         assert r.status_code == 202, r.text
         message_id = r.json()["message_id"]
-        r = await c.get(f"/api/v1/clusters/{cluster_id}/messages")
+        r = await c.get(f"/api/v1/sessions/{session_id}/messages")
         assert r.status_code == 200, r.text
         r = await c.get(f"/api/v1/messages/{message_id}")
         assert r.status_code == 200, r.text
@@ -129,25 +129,25 @@ async def test_token_required(app, caplog, monkeypatch):
 
 
 async def test_route_allowlist(app, pool):
-    cl = await insert_cluster(pool)
+    cl = await insert_session(pool)
     async with client(app, 8002) as c:
         for method, path in [
-            ("DELETE", f"/api/v1/clusters/{cl['id']}"),
+            ("DELETE", f"/api/v1/sessions/{cl['id']}"),
             ("PUT", f"/api/v1/presets/{DEFAULT_ID}"),
             ("DELETE", f"/api/v1/presets/{DEFAULT_ID}"),
             ("POST", "/api/v1/presets"),
             ("POST", f"/api/v1/presets/{DEFAULT_ID}/copy"),
             ("POST", f"/api/v1/agents/{uuid.uuid4()}/restart"),
-            ("POST", f"/api/v1/clusters/{cl['id']}/scale"),
-            ("GET", f"/api/v1/clusters/{cl['id']}/agents"),
-            ("GET", f"/api/v1/clusters/{cl['id']}/events/stream"),
+            ("POST", f"/api/v1/sessions/{cl['id']}/scale"),
+            ("GET", f"/api/v1/sessions/{cl['id']}/agents"),
+            ("GET", f"/api/v1/sessions/{cl['id']}/events/stream"),
             ("GET", "/api/v1/stream"),
             ("GET", "/api/v1/openapi.json"),
             ("GET", "/api/v1/docs"),
             ("DELETE", f"/api/v1/messages/{uuid.uuid4()}"),
             ("POST", f"/api/v1/messages/{uuid.uuid4()}/retry"),
             ("HEAD", "/api/v1/meta"),
-            ("GET", "/api/v1/clusters/"),
+            ("GET", "/api/v1/sessions/"),
             ("GET", "/api/v1/meta/extra"),
         ]:
             r = await c.request(method, path, json={} if method in ("PUT", "POST") else None)
@@ -155,7 +155,7 @@ async def test_route_allowlist(app, pool):
             if method != "HEAD":
                 assert_error(r, 403, "forbidden")
         # the refused DELETE never reached the route
-        assert (await c.get(f"/api/v1/clusters/{cl['id']}")).status_code == 200
+        assert (await c.get(f"/api/v1/sessions/{cl['id']}")).status_code == 200
         r = await c.get("/agent/v1/me")
         assert_error(r, 404, "not_found")
     async with client(app, 8002, token=None) as c:
@@ -195,7 +195,7 @@ async def test_main_port_unchanged(app):
         assert_error(await c.get("/agent/v1/me"), 404, "not_found")
     async with client(app, 8000, peer=INSIDE, token="anything-at-all") as c:
         assert (await c.get("/api/v1/meta")).status_code == 200
-        assert (await c.get("/api/v1/clusters")).status_code == 200
+        assert (await c.get("/api/v1/sessions")).status_code == 200
     # the agent port does not serve the service routes either
     async with client(app, 8001) as c:
         assert_error(await c.get("/api/v1/meta"), 404, "not_found")
@@ -308,21 +308,21 @@ async def test_route_matching_is_exact(app):
     cid = str(uuid.uuid4())
     for path in [
         "/api/v1/meta\n",
-        "/api/v1/clusters\n",
-        f"/api/v1/clusters/{cid}\n",
+        "/api/v1/sessions\n",
+        f"/api/v1/sessions/{cid}\n",
         "/api/v1/messages/1\n",
-        "/api/v1/clusters/..",
-        "/api/v1/clusters/../messages",
+        "/api/v1/sessions/..",
+        "/api/v1/sessions/../messages",
         "/api/v1/presets/..",
         "/api/v1/messages/..",
         "/api/v1/presets/not-a-uuid",
-        "/api/v1/clusters/not-a-uuid/messages",
+        "/api/v1/sessions/not-a-uuid/messages",
         "/api/v1/messages/abc",
         f"/api/v1/messages/{cid}",
     ]:
         assert not service_auth.route_allowed("GET", path), path
         assert await asgi_status(app, "GET", path) == 403, path
-    assert service_auth.route_allowed("GET", f"/api/v1/clusters/{cid}")
+    assert service_auth.route_allowed("GET", f"/api/v1/sessions/{cid}")
     assert service_auth.route_allowed("GET", f"/api/v1/presets/{cid.upper()}")
     assert service_auth.route_allowed("GET", "/api/v1/messages/42")
     async with client(app, 8002) as c:

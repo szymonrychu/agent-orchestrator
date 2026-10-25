@@ -125,13 +125,13 @@ def test_master_key_too_short_rejected(monkeypatch, tmp_path):
 def test_single_namespace_cap_and_timing_defaults():
     s = Settings()
     assert s.namespace == "agents"
-    assert not hasattr(s, "clusters_namespace")
-    assert "clusters_namespace" not in Settings.model_fields
+    assert not hasattr(s, "sessions_namespace")
+    assert "sessions_namespace" not in Settings.model_fields
     assert s.allowed_cidrs == ["192.168.1.0/24"]
     assert s.agent_images == []
     assert s.max_replicas == 16
     assert s.max_pvc_size == "100Gi"
-    assert s.max_clusters == 20
+    assert s.max_sessions == 20
     assert s.wrapper_send_timeout_seconds == 15
     assert s.dispatching_stale_seconds == 60
     assert s.dispatching_heartbeat_seconds == 5

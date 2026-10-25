@@ -132,7 +132,7 @@ class Settings(BaseSettings):
     agent_images: CsvList = []
     max_replicas: int = 16
     max_pvc_size: str = "100Gi"
-    max_clusters: int = 20
+    max_sessions: int = 20
     autoclose_min_seconds: int = Field(default=300, ge=1)
 
     wrapper_send_timeout_seconds: float = 15
@@ -422,7 +422,7 @@ class Settings(BaseSettings):
         return frozenset(extra)
 
     def default_any_mcp_config(self) -> dict[str, Any]:
-        """The any-mcp config clusters get when their spec carries none."""
+        """The any-mcp config sessions get when their spec carries none."""
         if self.any_mcp_config_file:
             return yaml.safe_load(Path(self.any_mcp_config_file).read_text()) or {}
         return {}

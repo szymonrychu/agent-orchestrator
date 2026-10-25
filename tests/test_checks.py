@@ -1,4 +1,4 @@
-"""Checks as Jobs (D10): a queued check becomes a Job on the cluster PVC."""
+"""Checks as Jobs (D10): a queued check becomes a Job on the session PVC."""
 
 from __future__ import annotations
 
@@ -8,13 +8,13 @@ from factories import insert_check
 from fakes.fake_kube import FakeKube
 from psycopg.rows import dict_row
 
-from agents_orchestrator.db import clusters
-from agents_orchestrator.k8s.labels import CLUSTER_LABEL, cluster_labels
-from agents_orchestrator.k8s.render import render_cluster, workdir_mount, workdir_path
+from agents_orchestrator.db import sessions
+from agents_orchestrator.k8s.labels import SESSION_LABEL, session_labels
+from agents_orchestrator.k8s.render import render_session, workdir_mount, workdir_path
 from agents_orchestrator.reconciler import Reconciler
 from agents_orchestrator.reconciler.checks import CHECK_LABEL, TAIL_BYTES, TAIL_LINES
 from agents_orchestrator.settings import Settings
-from agents_orchestrator.spec import ClusterSpec
+from agents_orchestrator.spec import SessionSpec
 from agents_orchestrator.tokens import tokens_for
 
 pytestmark = pytest.mark.asyncio
@@ -35,19 +35,19 @@ class Env:
         )
         self.rec = Reconciler(pool, self.kube, self.settings, wrapper_factory=None)
 
-    async def cluster(self, slug: str = "alpha", **spec) -> clusters.Cluster:
+    async def session(self, slug: str = "alpha", **spec) -> sessions.Session:
         async with self.pool.connection() as conn:
-            return await clusters.create(conn, slug, ClusterSpec(**spec))
+            return await sessions.create(conn, slug, SessionSpec(**spec))
 
     async def check(self, check_id: int) -> dict:
         async with self.pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
             await cur.execute("SELECT * FROM checks WHERE id = %s", (check_id,))
             return await cur.fetchone()
 
-    async def run(self, cluster, command: str = "make test") -> tuple[int, str]:
-        row = await insert_check(self.pool, cluster.id, command=command)
+    async def run(self, session, command: str = "make test") -> tuple[int, str]:
+        row = await insert_check(self.pool, session.id, command=command)
         await self.rec.reconcile_once()
-        return row["id"], f"agent-{cluster.slug}-check-{row['id']}"
+        return row["id"], f"agent-{session.slug}-check-{row['id']}"
 
 
 @pytest_asyncio.fixture
@@ -56,13 +56,13 @@ async def env(pool, dsn) -> Env:
 
 
 async def test_job_rendered_with_pvc_mount(env):
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     check_id, job = await env.run(c, "pytest -q")
 
     obj = env.kube.get("Job", job)
     sts = next(
         o
-        for o in render_cluster(c, env.settings, tokens_for(env.settings, c.id))
+        for o in render_session(c, env.settings, tokens_for(env.settings, c.id))
         if o["kind"] == "StatefulSet"
     )
     pod = obj["spec"]["template"]["spec"]
@@ -92,7 +92,7 @@ async def test_job_rendered_with_pvc_mount(env):
 
 async def test_job_image_and_pull_secret(pool, dsn):
     e = Env(pool, dsn, check_image="img/check:1", image_pull_secret="harbor-pull")
-    c = await e.cluster("alpha")
+    c = await e.session("alpha")
     _, job = await e.run(c)
     pod = e.kube.get("Job", job)["spec"]["template"]["spec"]
     assert pod["containers"][0]["image"] == "img/check:1"
@@ -100,7 +100,7 @@ async def test_job_image_and_pull_secret(pool, dsn):
 
 
 async def test_success_records_exit_and_log(env):
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     check_id, job = await env.run(c)
     long_log = "\n".join(f"line {i}" for i in range(500))
     env.kube.finish_job(job, exit_code=0, log=long_log)
@@ -115,7 +115,7 @@ async def test_success_records_exit_and_log(env):
 
 
 async def test_log_tail_capped_to_16kib(env):
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     check_id, job = await env.run(c)
     env.kube.finish_job(job, exit_code=0, log=("x" * 1000 + "\n") * 100 + "last")
     await env.rec.reconcile_once()
@@ -125,7 +125,7 @@ async def test_log_tail_capped_to_16kib(env):
 
 
 async def test_failure_records_exit_code(env):
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     check_id, job = await env.run(c)
     env.kube.finish_job(job, exit_code=3, log="boom")
     await env.rec.reconcile_once()
@@ -134,7 +134,7 @@ async def test_failure_records_exit_code(env):
 
 
 async def test_timeout_marks_failed(env):
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     check_id, job = await env.run(c)
     env.kube.finish_job(job, deadline_exceeded=True, log="partial")
     await env.rec.reconcile_once()
@@ -143,7 +143,7 @@ async def test_timeout_marks_failed(env):
 
 
 async def test_running_job_stays_running_and_vanished_job_fails(env):
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     check_id, job = await env.run(c)
     await env.rec.reconcile_once()
     assert (await env.check(check_id))["status"] == "running"
@@ -155,7 +155,7 @@ async def test_running_job_stays_running_and_vanished_job_fails(env):
 
 
 async def test_foreign_job_is_not_adopted(env):
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     row = await insert_check(env.pool, c.id)
     env.kube.seed(
         {
@@ -171,14 +171,14 @@ async def test_foreign_job_is_not_adopted(env):
 
 
 async def test_job_workdir_matches_session_workdir(env):
-    c = await env.cluster("alpha", workdir="repo")
+    c = await env.session("alpha", workdir="repo")
     _, job = await env.run(c)
     obj = env.kube.get("Job", job)
     container = obj["spec"]["template"]["spec"]["containers"][0]
     assert container["workingDir"] == workdir_path(c.spec) == "/workdir/repo"
     sts = next(
         o
-        for o in render_cluster(c, env.settings, tokens_for(env.settings, c.id))
+        for o in render_session(c, env.settings, tokens_for(env.settings, c.id))
         if o["kind"] == "StatefulSet"
     )
     sts_mounts = sts["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]
@@ -187,24 +187,24 @@ async def test_job_workdir_matches_session_workdir(env):
 
 
 async def test_job_in_namespace_labelled(env):
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     check_id, job = await env.run(c)
     obj = env.kube.get("Job", job)
     assert obj["metadata"]["namespace"] == env.settings.namespace == "agents"
-    expected = {**cluster_labels("alpha"), CHECK_LABEL: str(check_id)}
+    expected = {**session_labels("alpha"), CHECK_LABEL: str(check_id)}
     assert CHECK_LABEL == "agents.szymonrichert.pl/check"
     assert obj["metadata"]["labels"] == expected
     assert obj["spec"]["template"]["metadata"]["labels"] == expected
-    assert obj["metadata"]["labels"][CLUSTER_LABEL] == "alpha"
+    assert obj["metadata"]["labels"][SESSION_LABEL] == "alpha"
     assert env.kube.forbidden == []
 
 
-async def test_deleting_cluster_cancels_checks(env):
-    c = await env.cluster("alpha")
+async def test_deleting_session_cancels_checks(env):
+    c = await env.session("alpha")
     _, job = await env.run(c)
     await insert_check(env.pool, c.id, command="later")
     async with env.pool.connection() as conn:
-        await clusters.request_delete(conn, c.id)
+        await sessions.request_delete(conn, c.id)
     await env.rec.reconcile_once()
 
     assert not env.kube.has("Job", job)
@@ -213,23 +213,23 @@ async def test_deleting_cluster_cancels_checks(env):
     assert job in env.kube.deleted("Job")
     assert env.kube.forbidden == []
     async with env.pool.connection() as conn:
-        assert await clusters.get(conn, c.id) is None  # purged
+        assert await sessions.get(conn, c.id) is None  # purged
     # the queued check was cancelled before the row's cascade removed it, never claimed
     assert env.kube.names("Job") == []
 
 
 async def test_queued_check_cancelled_when_discard_waits(env):
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     await env.rec.reconcile_once()
     queued = await insert_check(env.pool, c.id, command="later")
 
     class Hold(Reconciler):
-        async def pre_discard(self, cluster):
+        async def pre_discard(self, session):
             return False
 
     hold = Hold(env.pool, env.kube, env.settings)
     async with env.pool.connection() as conn:
-        await clusters.request_delete(conn, c.id)
+        await sessions.request_delete(conn, c.id)
     await hold.reconcile_once()
     assert (await env.check(queued["id"]))["status"] == "cancelled"
     assert env.kube.names("Job") == []

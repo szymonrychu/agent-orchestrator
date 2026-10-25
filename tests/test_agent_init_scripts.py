@@ -5,56 +5,56 @@ from __future__ import annotations
 import uuid
 
 import httpx
-from factories import insert_agent, insert_cluster
+from factories import insert_agent, insert_session
 from test_api_agent import AGENT_PORT, IP0, client_for, headers, make_settings, set_ip, token
 
 from agents_orchestrator.api.app import create_app
 from agents_orchestrator.db import presets as presets_repo
-from agents_orchestrator.spec import WORKDIR_ROOT, ClusterSpec
+from agents_orchestrator.spec import WORKDIR_ROOT, SessionSpec
 
 URL = "/agent/v1/init-scripts"
 
 
-async def preset_cluster(pool, scripts=None):
-    """A cluster with one agent (IP0) created from a stored preset."""
+async def preset_session(pool, scripts=None):
+    """A session with one agent (IP0) created from a stored preset."""
     spec = {"replicas": 1, "init_scripts": scripts or ["echo old"]}
     async with pool.connection() as conn:
         preset = await presets_repo.create(conn, f"agent-p-{uuid.uuid4().hex[:8]}", spec)
-    c = await insert_cluster(pool, spec=spec)
+    c = await insert_session(pool, spec=spec)
     async with pool.connection() as conn:
-        await conn.execute("UPDATE clusters SET preset_id = %s WHERE id = %s", (preset.id, c["id"]))
+        await conn.execute("UPDATE sessions SET preset_id = %s WHERE id = %s", (preset.id, c["id"]))
     a = await insert_agent(pool, c["id"], ordinal=0, ready=True)
     await set_ip(pool, a["id"], IP0)
     return c, preset
 
 
-async def stored(pool, cluster_id, preset_id):
+async def stored(pool, session_id, preset_id):
     async with pool.connection() as conn:
         row = await (
-            await conn.execute("SELECT spec, generation FROM clusters WHERE id = %s", (cluster_id,))
+            await conn.execute("SELECT spec, generation FROM sessions WHERE id = %s", (session_id,))
         ).fetchone()
         preset = await presets_repo.get(conn, preset_id)
     return row[0]["init_scripts"], row[1], preset.spec["init_scripts"]
 
 
 async def test_agent_get_init_scripts(pool, dsn):
-    c, preset = await preset_cluster(pool)
+    c, preset = await preset_session(pool)
     async with client_for(create_app(make_settings(dsn), pool)) as http:
         r = await http.get(URL, headers=headers(c["id"]))
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["cluster_id"] == str(c["id"])
+    assert body["session_id"] == str(c["id"])
     assert body["scripts"] == ["echo old"]
     assert body["preset_id"] == str(preset.id)
     assert body["status"] is None
     assert body["preset_updated"] is False
-    base = f"{WORKDIR_ROOT}/{ClusterSpec().workdir}/.agent-init"
+    base = f"{WORKDIR_ROOT}/{SessionSpec().workdir}/.agent-init"
     assert body["script_path"] == f"{base}/init.sh"
     assert body["log_path"] == f"{base}/init.log"
 
 
-async def test_agent_put_writes_cluster_and_preset(pool, dsn):
-    c, preset = await preset_cluster(pool)
+async def test_agent_put_writes_session_and_preset(pool, dsn):
+    c, preset = await preset_session(pool)
     async with client_for(create_app(make_settings(dsn), pool)) as http:
         r = await http.put(URL, headers=headers(c["id"]), json={"scripts": ["echo a", "echo b"]})
         bad = await http.put(URL, headers=headers(c["id"]), json={"scripts": ["  "]})
@@ -63,14 +63,14 @@ async def test_agent_put_writes_cluster_and_preset(pool, dsn):
     assert r.json()["scripts"] == ["echo a", "echo b"]
     assert bad.status_code == 422
     assert bad.json()["error"]["code"] == "invalid_request"
-    cluster_scripts, generation, preset_scripts = await stored(pool, c["id"], preset.id)
-    assert cluster_scripts == preset_scripts == ["echo a", "echo b"]
+    session_scripts, generation, preset_scripts = await stored(pool, c["id"], preset.id)
+    assert session_scripts == preset_scripts == ["echo a", "echo b"]
     assert generation == c["generation"]
 
 
 async def test_agent_init_scripts_auth(pool, dsn):
-    c, preset = await preset_cluster(pool)
-    other, _ = await preset_cluster(pool)
+    c, preset = await preset_session(pool)
+    other, _ = await preset_session(pool)
     app = create_app(make_settings(dsn), pool)
     body = {"scripts": ["echo evil"]}
     async with client_for(app) as http:
@@ -87,10 +87,10 @@ async def test_agent_init_scripts_auth(pool, dsn):
     assert (await stored(pool, c["id"], preset.id))[::2] == (["echo old"], ["echo old"])
 
 
-async def test_agent_token_of_other_cluster_cannot_name_it(pool, dsn):
-    """The cluster is the token's: another cluster's id with its own token never reaches c."""
-    c, preset = await preset_cluster(pool)
-    other = await insert_cluster(pool, spec={"replicas": 1})
+async def test_agent_token_of_other_session_cannot_name_it(pool, dsn):
+    """The session is the token's: another session's id with its own token never reaches c."""
+    c, preset = await preset_session(pool)
+    other = await insert_session(pool, spec={"replicas": 1})
     async with client_for(create_app(make_settings(dsn), pool)) as http:
         r = await http.put(
             URL, headers=headers(other["id"], token(other["id"])), json={"scripts": ["x"]}
@@ -103,7 +103,7 @@ async def test_plugin_parity(pool, dsn):
     from any_mcp.orchestrator import OrchestratorPlugin
     from any_mcp.testing import PluginHarness
 
-    c, preset = await preset_cluster(pool)
+    c, preset = await preset_session(pool)
     app = create_app(make_settings(dsn), pool)
     config = {
         "base_url": f"http://orch:{AGENT_PORT}",
@@ -129,4 +129,4 @@ async def test_plugin_parity(pool, dsn):
     assert not edit.is_error, edit.text
     assert edit.structured["preset_updated"] is True
     assert (await stored(pool, c["id"], preset.id))[::2] == (["echo plugin"], ["echo plugin"])
-    assert uuid.UUID(got.structured["cluster_id"]) == c["id"]
+    assert uuid.UUID(got.structured["session_id"]) == c["id"]
