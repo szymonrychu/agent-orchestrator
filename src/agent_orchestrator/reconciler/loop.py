@@ -209,7 +209,14 @@ class Reconciler:
         if not self.settings.agent_api_url and cluster.id not in self._warned_no_agent_url:
             self._warned_no_agent_url.add(cluster.id)
             log.warning("ORCH_AGENT_API_URL unset: cluster %s agents get no ORCH_AGENT_URL", slug)
-        objs = render_cluster(cluster, self.settings, tokens_for(self.settings, cluster.id))
+        replicas = cluster.spec.replicas
+        applied, since = await self._drain_replicas(cluster)
+        rendered = (
+            cluster
+            if applied == replicas
+            else replace(cluster, spec=cluster.spec.model_copy(update={"replicas": applied}))
+        )
+        objs = render_cluster(rendered, self.settings, tokens_for(self.settings, cluster.id))
 
         foreign = await self._foreign(slug, objs)
         if foreign:
@@ -226,8 +233,8 @@ class Reconciler:
         await self._prune(slug, desired)
         gate = await self.init.step(cluster)
 
-        replicas = cluster.spec.replicas
         ready = await self._observe(cluster)
+        draining = await self._draining(cluster.id, replicas)
         if ready >= replicas:
             phase, message = "ready", ""
         else:
@@ -240,13 +247,62 @@ class Reconciler:
             problems = await self._bootstrap_sessions(cluster)
             if gate.degraded:  # a failed init starts the sessions anyway
                 phase = "degraded"
-        message = "; ".join(filter(None, [message, gate.message, *problems]))
+        fields: dict[str, Any] = {"phase": phase, "ready": ready, "replicas": replicas}
+        drain = ""
+        if draining:
+            fields["drain"] = {
+                "target": replicas,
+                "since": since or (await self._db_now()).isoformat(),
+                "waiting": [ordinal for ordinal, busy in draining if busy],
+            }
+            drain = f"draining {len(draining)} agents"
+        fields["message"] = "; ".join(filter(None, [message, drain, gate.message, *problems]))
         log.debug("cluster %s in %s: %s", slug, ns, phase)
         await self._write_status(
-            cluster,
-            {"phase": phase, "ready": ready, "replicas": replicas, "message": message},
-            cluster.generation,
+            cluster, fields, cluster.generation, drop=() if draining else ("drain",)
         )
+
+    async def _draining(self, cluster_id: UUID, replicas: int) -> list[tuple[int, bool]]:
+        """(ordinal, busy) of each agent at or above `replicas` that is not gone (D3).
+
+        Busy: its `agent_status.state` is `busy`, or a message dispatched to it is still
+        `dispatching` or `verifying`.
+        """
+        async with self.pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT a.ordinal, COALESCE(s.state = 'busy', false) OR EXISTS ("
+                "  SELECT 1 FROM messages m WHERE m.cluster_id = a.cluster_id"
+                "  AND m.agent_id = a.id AND m.status IN ('dispatching', 'verifying'))"
+                " FROM agents a LEFT JOIN agent_status s ON s.agent_id = a.id"
+                " WHERE a.cluster_id = %s AND a.ordinal >= %s AND a.gone_at IS NULL"
+                " ORDER BY a.ordinal",
+                (cluster_id, replicas),
+            )
+            return [(ordinal, busy) for ordinal, busy in await cur.fetchall()]
+
+    async def _drain_replicas(self, cluster: Cluster) -> tuple[int, str | None]:
+        """The StatefulSet replicas of this tick and the drain's `since`, None when none.
+
+        A scale-down keeps the pods up to the highest busy draining agent, so idle agents above
+        it go at once (a StatefulSet removes from the top) and the rest as they become idle.
+        Never below the target, never above the replicas already applied, so a pod that is gone
+        is not recreated. `scale_drain_seconds` after the first tick that saw the drain (kept
+        in `status.drain.since`, so it survives a failover) the target applies regardless.
+        """
+        target = cluster.spec.replicas
+        draining = await self._draining(cluster.id, target)
+        if not draining:
+            return target, None
+        now = await self._db_now()
+        since = (cluster.status.get("drain") or {}).get("since") or now.isoformat()
+        busy = [ordinal for ordinal, is_busy in draining if is_busy]
+        elapsed = (now - datetime.fromisoformat(since)).total_seconds()
+        if not busy or elapsed >= self.settings.scale_drain_seconds:
+            return target, since
+        name = object_names(cluster.slug)["statefulset"]
+        sts = await self.kube.get_object("StatefulSet", self.settings.namespace, name)
+        current = ((sts or {}).get("spec") or {}).get("replicas", target)
+        return max(target, min(1 + max(busy), current)), since
 
     async def _bootstrap_sessions(self, cluster: Cluster) -> list[str]:
         """Give every ready agent without a live session one (D6); messages of the failures."""

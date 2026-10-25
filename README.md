@@ -71,6 +71,7 @@ Every process reads `ORCH_*` variables (the contract `agent-orchestrator-setting
 | `ORCH_DISCARD_HOOK_COMMAND` | empty | api, reconciler | pre-discard hook command (exclusive with URL) |
 | `ORCH_DISCARD_HOOK_URL` | empty | api, reconciler | pre-discard hook http(s) webhook URL |
 | `ORCH_DISCARD_HOOK_TIMEOUT_SECONDS` | `120` | api, reconciler | discard hook timeout |
+| `ORCH_SCALE_DRAIN_SECONDS` | `900` | reconciler | scale-down drain deadline (> 0): after it the StatefulSet gets the target replicas even while a draining agent is busy |
 | `ORCH_ANY_MCP_REPO` | `https://github.com/szymonrychu/any-mcp` | api, reconciler | any-mcp git repository |
 | `ORCH_ANY_MCP_REF` | `v0.2.0` | api, reconciler | any-mcp pinned release tag vX.Y.Z (never a branch) |
 | `ORCH_ON_START_TIMEOUT_SECONDS` | `600` | api, reconciler | onStart hook timeout |
@@ -258,6 +259,8 @@ The reconciler is level-triggered: every `ORCH_RECONCILE_POLL_SECONDS` (10 s), a
 3. List the cluster's pods and upsert one `agents` row per ordinal, with the per-pod URL `http://<pod>.agent-<slug>.<namespace>.svc.<cluster domain>:<ORCH_WRAPPER_PORT>` and its readiness. An agent whose pod vanished with an ordinal at or above `replicas` is marked gone; one below `replicas` is kept, unready, while its pod is recreated.
 4. Bootstrap a session on every ready agent that has none, unless the init run holds them.
 5. Write `status {phase, ready, replicas, message}` (`phase` is `pending`, `ready`, `degraded`, `deleting` or `error`) and `observed_generation`, only when something changed.
+
+A scale-down drains: agents at or above `spec.replicas` that are not gone are draining, and a busy one (`agent_status.state` `busy`, or a message to it still `dispatching` or `verifying`) finishes its turn before its pod goes. The StatefulSet is applied with replicas `max(spec.replicas, 1 + highest busy draining ordinal)`, never above the replicas already applied, so idle agents above the highest busy one go at once (a StatefulSet removes from the top) and the rest go as they become idle. Only `StatefulSet.spec.replicas` differs from the target render: the ConfigMap, Secret, Service and pod template are unchanged, so no pod rolls. Draining agents are never `ready`, so the dispatcher, leader selection and session bootstrap never pick them. `ORCH_SCALE_DRAIN_SECONDS` (900) after the first tick that saw the drain the target applies regardless, and an interrupted turn takes the verify path. While draining, `status.drain {target, since, waiting}` (`waiting`: the busy draining ordinals) is set and the message carries `draining <n> agents`; `since` lives in the status, so the deadline survives a reconciler failover. `status.replicas` and the phase keep counting the target. Raising replicas during a drain ends it with no pod restart.
 
 Init scripts (`spec.init_scripts`) run exactly once per cluster, as Job `agent-<slug>-init`, and the run is recorded in `status.init {state, scripts_hash, started_at, finished_at, exit_code, log_tail, reason, job}`, written only by the reconciler:
 
