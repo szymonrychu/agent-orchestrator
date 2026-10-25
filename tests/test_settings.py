@@ -42,7 +42,6 @@ def test_defaults():
     assert s.agent_termination_grace_seconds == 90
     assert s.http_host == "0.0.0.0"
     assert s.http_port == 8000
-    assert s.static_dir == ""
     assert s.dispatch_poll_seconds == 2
     assert s.reconcile_poll_seconds == 10
     assert s.ingest_refresh_seconds == 5
@@ -53,6 +52,13 @@ def test_defaults():
     assert s.any_mcp_ref == "v0.2.0"
     assert s.on_start_timeout_seconds == 600
     assert s.discard_hook() is None
+
+
+def test_static_dir_retired(monkeypatch):
+    monkeypatch.setenv("ORCH_STATIC_DIR", "/app/static")
+    s = Settings()
+    assert "static_dir" not in Settings.model_fields
+    assert not hasattr(s, "static_dir")
 
 
 def test_check_image_defaults_to_agent_image(monkeypatch):

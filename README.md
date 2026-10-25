@@ -1,6 +1,6 @@
 # agent-orchestrator
 
-agent-orchestrator is a web UI and headless `/api/v1` that define, run, message and discard clusters of claude-code-wrapper pods in the namespace `agents`. One Python repo and image runs four processes (`orch api`, `orch dispatcher`, `orch ingester`, `orch reconciler`) that coordinate only through a Postgres database. Messages to a cluster go round-robin to the agent free the longest; a React/MUI UI shows live state and context gauges, and the same API serves tatara and magic-trainer. The repo ships its own Helm chart.
+agent-orchestrator is a headless `/api/v1` that defines, run, message and discard clusters of claude-code-wrapper pods in the namespace `agents`. One Python repo and image runs four processes (`orch api`, `orch dispatcher`, `orch ingester`, `orch reconciler`) that coordinate only through a Postgres database. Messages to a cluster go round-robin to the agent free the longest; its web UI is the [agents-web](https://github.com/szymonrychu/agents-web) component, and the same API serves tatara and magic-trainer. The repo ships its own Helm chart.
 
 ## Development
 
@@ -47,7 +47,6 @@ Every process reads `ORCH_*` variables (the contract `agent-orchestrator-setting
 | `ORCH_AGENT_TERMINATION_GRACE_SECONDS` | `90` | api, reconciler | agent pod termination grace |
 | `ORCH_HTTP_HOST` | `0.0.0.0` | api | bind host |
 | `ORCH_HTTP_PORT` | `8000` | api | bind port |
-| `ORCH_STATIC_DIR` | empty | api | built SPA directory; empty means not mounted |
 | `ORCH_DISPATCH_POLL_SECONDS` | `2` | dispatcher | dispatcher polling fallback |
 | `ORCH_RECONCILE_POLL_SECONDS` | `10` | reconciler | reconciler poll interval |
 | `ORCH_INGEST_REFRESH_SECONDS` | `5` | ingester | ingester stream refresh interval |
@@ -83,7 +82,7 @@ One image, one `orch` entrypoint. Every command reads `ORCH_*` settings (see Con
 | Command | Runs | Settings it needs | Replicas |
 |---|---|---|---|
 | `orch migrate` | applies pending SQL migrations and exits 0 (a Postgres advisory lock serialises concurrent runs) | `ORCH_DATABASE_URL` | any, one-shot (chart initContainer or hook Job) |
-| `orch api` | uvicorn serving `/api/v1`, the UI and `/healthz`, `/readyz` on `ORCH_HTTP_HOST:ORCH_HTTP_PORT`; proxy headers are off so the direct peer is what `ORCH_ALLOWED_CIDRS` sees | `ORCH_DATABASE_URL`, `ORCH_ALLOWED_CIDRS`, `ORCH_STATIC_DIR` (optional) | any number; no Kubernetes client |
+| `orch api` | uvicorn serving `/api/v1` and `/healthz`, `/readyz` only (no UI) on `ORCH_HTTP_HOST:ORCH_HTTP_PORT`; proxy headers are off so the direct peer is what `ORCH_ALLOWED_CIDRS` sees | `ORCH_DATABASE_URL`, `ORCH_ALLOWED_CIDRS` | any number; no Kubernetes client |
 | `orch dispatcher` | the round-robin dispatcher loop | `ORCH_DATABASE_URL`, `ORCH_MASTER_KEY` or `ORCH_MASTER_KEY_FILE`, `ORCH_DISPATCH_POLL_SECONDS`, the wrapper and retry settings | any number (SKIP LOCKED queues) |
 | `orch ingester` | stores every wrapper event, inside `advisory_singleton(dsn, "ingester")` | `ORCH_DATABASE_URL`, `ORCH_MASTER_KEY` or `ORCH_MASTER_KEY_FILE`, `ORCH_INGEST_REFRESH_SECONDS` | 1 active; extra replicas wait as hot standbys |
 | `orch reconciler` | the Kubernetes reconciler with `LightkubeApi`, inside `advisory_singleton(dsn, "reconciler")` | `ORCH_DATABASE_URL`, `ORCH_MASTER_KEY` or `ORCH_MASTER_KEY_FILE`, `ORCH_AGENT_IMAGE`, `ORCH_NAMESPACE`, `ORCH_RECONCILE_POLL_SECONDS`, in-cluster credentials | 1 active; extra replicas wait as hot standbys |
@@ -315,7 +314,7 @@ One repo and one image; the entrypoint is `orch <cmd>`. The processes coordinate
 
 | Process | Command | Role |
 |---|---|---|
-| api | `orch api` | FastAPI REST and SSE, serves the SPA; calls wrappers only for the file and terminal proxies in `api/workspace.py` (derived per-cluster tokens, user decision N1), never Kubernetes |
+| api | `orch api` | FastAPI REST and SSE (API-only, no UI); calls wrappers only for the file and terminal proxies in `api/workspace.py` (derived per-cluster tokens, user decision N1), never Kubernetes |
 | dispatcher | `orch dispatcher` | claims messages and commands, calls wrapper turns, interrupt and compact, verifies ambiguous sends |
 | ingester | `orch ingester` | one SSE subscription per agent; writes events, agent status and turns |
 | reconciler | `orch reconciler` | renders and applies Kubernetes objects, observes pods, bootstraps sessions, runs checks, executes restart, runs the pre-discard hook |
@@ -454,7 +453,7 @@ Plain SQL migrations (`src/agent_orchestrator/db/migrations`), psycopg 3, no ORM
 
 ## API
 
-Base path `/api/v1`. JSON in and out. There is no authentication; access is restricted by the source allowlist below. Errors always have the shape `{"error": {"code": "<code>", "message": "<text>"}}`. The machine-readable contract is `openapi.json` at the repo root (`uv run python -m agent_orchestrator.api.openapi > openapi.json`), also served at `/api/v1/openapi.json`; a test fails when it drifts.
+Base path `/api/v1`. JSON in and out. There is no authentication; access is restricted by the source allowlist below. Errors always have the shape `{"error": {"code": "<code>", "message": "<text>"}}`. The machine-readable contract is `openapi.json` at the repo root (`uv run python -m agent_orchestrator.api.openapi > openapi.json`, then `npm run sync:api -- orchestrator` in agents-web), also served at `/api/v1/openapi.json`; a test fails when it drifts.
 
 Versioning: `/api/v1` is additive only. New routes, new optional request fields and new response fields may appear; existing routes, fields and error codes are never removed or changed in meaning. A breaking change is a new `/api/v2`.
 
