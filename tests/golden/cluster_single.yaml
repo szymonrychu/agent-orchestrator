@@ -5,7 +5,7 @@
     namespace: agents
     labels:
       agents.szymonrichert.pl/cluster: solo
-      app.kubernetes.io/managed-by: agent-orchestrator
+      app.kubernetes.io/managed-by: agents-orchestrator
   spec:
     accessModes:
     - ReadWriteMany
@@ -20,7 +20,7 @@
     namespace: agents
     labels:
       agents.szymonrichert.pl/cluster: solo
-      app.kubernetes.io/managed-by: agent-orchestrator
+      app.kubernetes.io/managed-by: agents-orchestrator
   type: Opaque
   stringData:
     CCW_AUTH_TOKEN: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -33,7 +33,7 @@
     namespace: agents
     labels:
       agents.szymonrichert.pl/cluster: solo
-      app.kubernetes.io/managed-by: agent-orchestrator
+      app.kubernetes.io/managed-by: agents-orchestrator
   data:
     config.yaml: "server:\n  auth_token: ${CCW_AUTH_TOKEN}\npaths:\n  workdir_root:\
       \ /workdir\n  sessions_root: /sessions\nclaude:\n  passthrough_env:\n  - ORCH_AGENT_TOKEN\n\
@@ -67,13 +67,13 @@
     namespace: agents
     labels:
       agents.szymonrichert.pl/cluster: solo
-      app.kubernetes.io/managed-by: agent-orchestrator
+      app.kubernetes.io/managed-by: agents-orchestrator
   spec:
     clusterIP: None
     publishNotReadyAddresses: true
     selector:
       agents.szymonrichert.pl/cluster: solo
-      app.kubernetes.io/managed-by: agent-orchestrator
+      app.kubernetes.io/managed-by: agents-orchestrator
     ports:
     - name: http
       port: 8080
@@ -85,7 +85,7 @@
     namespace: agents
     labels:
       agents.szymonrichert.pl/cluster: solo
-      app.kubernetes.io/managed-by: agent-orchestrator
+      app.kubernetes.io/managed-by: agents-orchestrator
   spec:
     replicas: 1
     podManagementPolicy: Parallel
@@ -93,12 +93,12 @@
     selector:
       matchLabels:
         agents.szymonrichert.pl/cluster: solo
-        app.kubernetes.io/managed-by: agent-orchestrator
+        app.kubernetes.io/managed-by: agents-orchestrator
     template:
       metadata:
         labels:
           agents.szymonrichert.pl/cluster: solo
-          app.kubernetes.io/managed-by: agent-orchestrator
+          app.kubernetes.io/managed-by: agents-orchestrator
         annotations:
           agents.szymonrichert.pl/config-hash: aa3a417b7cdd4bc24d4e1a3015f7f044c26be5665366f3a40e566a59da2406e3
       spec:
@@ -134,7 +134,7 @@
           - name: CLAUDE_CODE_OAUTH_TOKEN
             valueFrom:
               secretKeyRef:
-                name: agent-orchestrator-claude
+                name: agents-orchestrator-claude
                 key: CLAUDE_CODE_OAUTH_TOKEN
           - name: ORCH_AGENT_TOKEN
             valueFrom:

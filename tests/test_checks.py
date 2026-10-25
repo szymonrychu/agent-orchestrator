@@ -8,14 +8,14 @@ from factories import insert_check
 from fakes.fake_kube import FakeKube
 from psycopg.rows import dict_row
 
-from agent_orchestrator.db import clusters
-from agent_orchestrator.k8s.labels import CLUSTER_LABEL, cluster_labels
-from agent_orchestrator.k8s.render import render_cluster, workdir_mount, workdir_path
-from agent_orchestrator.reconciler import Reconciler
-from agent_orchestrator.reconciler.checks import CHECK_LABEL, TAIL_BYTES, TAIL_LINES
-from agent_orchestrator.settings import Settings
-from agent_orchestrator.spec import ClusterSpec
-from agent_orchestrator.tokens import tokens_for
+from agents_orchestrator.db import clusters
+from agents_orchestrator.k8s.labels import CLUSTER_LABEL, cluster_labels
+from agents_orchestrator.k8s.render import render_cluster, workdir_mount, workdir_path
+from agents_orchestrator.reconciler import Reconciler
+from agents_orchestrator.reconciler.checks import CHECK_LABEL, TAIL_BYTES, TAIL_LINES
+from agents_orchestrator.settings import Settings
+from agents_orchestrator.spec import ClusterSpec
+from agents_orchestrator.tokens import tokens_for
 
 pytestmark = pytest.mark.asyncio
 

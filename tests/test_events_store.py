@@ -10,7 +10,7 @@ import psycopg
 import pytest
 from factories import insert_agent, insert_cluster
 
-from agent_orchestrator.db import events as ev
+from agents_orchestrator.db import events as ev
 
 
 def env(seq: int, type: str = "message", turn_id: str | None = None, **data) -> dict:

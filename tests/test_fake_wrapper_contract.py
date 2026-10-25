@@ -20,7 +20,7 @@ import websockets
 from fakes.fake_wrapper import FakeWrapper
 from fakes.real_wrapper import RealWrapper
 
-from agent_orchestrator.wrapper import (
+from agents_orchestrator.wrapper import (
     Ambiguous,
     Busy,
     ConfigError,

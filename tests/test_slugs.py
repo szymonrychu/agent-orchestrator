@@ -6,7 +6,7 @@ import re
 
 import pytest
 
-from agent_orchestrator.spec import SLUG_MAX, generated_slug, slugify, validate_slug
+from agents_orchestrator.spec import SLUG_MAX, generated_slug, slugify, validate_slug
 
 
 @pytest.mark.parametrize(

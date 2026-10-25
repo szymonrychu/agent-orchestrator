@@ -32,7 +32,7 @@ import yaml
 from websockets.exceptions import InvalidStatus
 from websockets.sync.client import ClientConnection, connect
 
-from agent_orchestrator.settings import Settings
+from agents_orchestrator.settings import Settings
 
 pytestmark = pytest.mark.e2e
 

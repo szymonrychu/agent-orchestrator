@@ -8,8 +8,8 @@ import pytest
 import pytest_asyncio
 from test_api_clusters import assert_error, client_for, make_settings
 
-from agent_orchestrator.api.app import create_app
-from agent_orchestrator.db import presets as repo
+from agents_orchestrator.api.app import create_app
+from agents_orchestrator.db import presets as repo
 
 DEFAULT_ID = "00000000-0000-0000-0000-000000000001"
 P = "/api/v1/presets"

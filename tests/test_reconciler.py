@@ -26,21 +26,21 @@ from lightkube import AsyncClient, KubeConfig
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from agent_orchestrator.db import agents as agents_repo
-from agent_orchestrator.db import clusters, queue
-from agent_orchestrator.db.pool import listen
-from agent_orchestrator.k8s.kube import (
+from agents_orchestrator.db import agents as agents_repo
+from agents_orchestrator.db import clusters, queue
+from agents_orchestrator.db.pool import listen
+from agents_orchestrator.k8s.kube import (
     FIELD_MANAGER,
     Forbidden,
     KubeError,
     LightkubeApi,
 )
-from agent_orchestrator.k8s.labels import CLUSTER_LABEL, MANAGED_BY_LABEL, cluster_labels
-from agent_orchestrator.k8s.render import render_cluster
-from agent_orchestrator.reconciler import Reconciler
-from agent_orchestrator.settings import Settings, SettingsError
-from agent_orchestrator.spec import ClusterSpec
-from agent_orchestrator.tokens import tokens_for
+from agents_orchestrator.k8s.labels import CLUSTER_LABEL, MANAGED_BY_LABEL, cluster_labels
+from agents_orchestrator.k8s.render import render_cluster
+from agents_orchestrator.reconciler import Reconciler
+from agents_orchestrator.settings import Settings, SettingsError
+from agents_orchestrator.spec import ClusterSpec
+from agents_orchestrator.tokens import tokens_for
 
 KEY = "k" * 32
 IMAGE = "harbor.example/containers/claude-code-wrapper:ca2ddf3"
@@ -108,7 +108,7 @@ def labelled(kind: str, name: str, slug: str, *, api: str = "v1") -> dict:
 
 async def test_no_agent_url_warns_once_per_cluster(env, caplog):
     await env.cluster("alpha")
-    with caplog.at_level("WARNING", logger="agent_orchestrator.reconciler.loop"):
+    with caplog.at_level("WARNING", logger="agents_orchestrator.reconciler.loop"):
         await env.rec.reconcile_once()
         await env.rec.reconcile_once()
         warned = [r for r in caplog.records if "ORCH_AGENT_URL" in r.getMessage()]
@@ -132,7 +132,7 @@ async def test_create_applies_five_objects(env):
         "agent-alpha",
     }
     for a in applied:
-        assert (a.field_manager, a.force) == (FIELD_MANAGER, True) == ("agent-orchestrator", True)
+        assert (a.field_manager, a.force) == (FIELD_MANAGER, True) == ("agents-orchestrator", True)
         assert a.obj["metadata"]["namespace"] == "agents"
         assert a.obj["metadata"]["labels"] == cluster_labels("alpha")
     pvc = env.kube.applied("PersistentVolumeClaim")[0].obj
@@ -518,7 +518,7 @@ async def test_prune_removes_undesired_labelled_only(env):
             "kind": "ConfigMap",
             "metadata": {
                 "name": "agent-alpha-other",
-                "labels": {MANAGED_BY_LABEL: "agent-orchestrator"},
+                "labels": {MANAGED_BY_LABEL: "agents-orchestrator"},
             },
         },
         {"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "agent-alpha-plain"}},
@@ -663,7 +663,7 @@ async def test_default_pre_discard_allows(env):
 async def test_secrets_only_created_patched_deleted(env):
     # FakeKube enforces the Role: reading Secrets is refused
     for call in (
-        env.kube.get_object("Secret", "agents", "agent-orchestrator-claude"),
+        env.kube.get_object("Secret", "agents", "agents-orchestrator-claude"),
         env.kube.list_objects("Secret", "agents", cluster_labels("alpha")),
     ):
         with pytest.raises(Forbidden):
@@ -905,7 +905,7 @@ async def test_lightkube_apply_is_server_side_with_field_manager_and_force():
     req = seen[0]
     assert req.method == "PATCH"
     assert req.url.path == "/api/v1/namespaces/agents/configmaps/agent-alpha-config"
-    assert req.url.params["fieldManager"] == "agent-orchestrator"
+    assert req.url.params["fieldManager"] == "agents-orchestrator"
     assert req.url.params["force"] == "true"
     assert req.headers["content-type"] == "application/apply-patch+yaml"
     assert out["metadata"]["uid"] == "u-1" and out["data"] == {"k": "v"}
@@ -972,7 +972,7 @@ async def test_lightkube_get_list_delete_and_errors():
     selector = seen[-1].url.params["labelSelector"]
     assert set(selector.split(",")) == {
         "agents.szymonrichert.pl/cluster=alpha",
-        "app.kubernetes.io/managed-by=agent-orchestrator",
+        "app.kubernetes.io/managed-by=agents-orchestrator",
     }
     with pytest.raises(Forbidden):
         await kube.delete("Secret", "agents", "agent-alpha-ccw")

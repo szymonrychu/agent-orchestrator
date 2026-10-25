@@ -7,13 +7,13 @@ from pathlib import Path
 
 from fastapi.routing import APIRoute
 
-from agent_orchestrator.api import openapi
-from agent_orchestrator.api.app import create_app
-from agent_orchestrator.settings import Settings
+from agents_orchestrator.api import openapi
+from agents_orchestrator.api.app import create_app
+from agents_orchestrator.settings import Settings
 
 ROOT = Path(__file__).resolve().parent.parent
 README = (ROOT / "README.md").read_text(encoding="utf-8")
-STREAMS = (ROOT / "src" / "agent_orchestrator" / "api" / "streams.py").read_text(encoding="utf-8")
+STREAMS = (ROOT / "src" / "agents_orchestrator" / "api" / "streams.py").read_text(encoding="utf-8")
 
 
 def section(title: str) -> str:
@@ -65,7 +65,7 @@ def test_no_stale_route_in_readme() -> None:
 def test_openapi_json_matches_app() -> None:
     committed = (ROOT / "openapi.json").read_text(encoding="utf-8")
     assert committed == openapi.export(), (
-        "run: uv run python -m agent_orchestrator.api.openapi > openapi.json"
+        "run: uv run python -m agents_orchestrator.api.openapi > openapi.json"
     )
     assert committed.endswith("\n")
 
@@ -133,7 +133,7 @@ SERVICE_ROUTES = (
 
 
 def test_service_port_documented() -> None:
-    from agent_orchestrator.api.service_auth import ALLOWED_ROUTES
+    from agents_orchestrator.api.service_auth import ALLOWED_ROUTES
 
     assert len(SERVICE_ROUTES) == len(ALLOWED_ROUTES)
     config = section("Configuration")

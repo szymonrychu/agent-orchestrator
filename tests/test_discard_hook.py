@@ -19,12 +19,12 @@ from factories import (
 )
 from fakes.fake_kube import FakeKube
 
-from agent_orchestrator.db import clusters
-from agent_orchestrator.db.export import export_cluster_history
-from agent_orchestrator.reconciler import Reconciler
-from agent_orchestrator.reconciler.discard_hook import run_discard_hook
-from agent_orchestrator.settings import DiscardHook, Settings
-from agent_orchestrator.spec import ClusterSpec
+from agents_orchestrator.db import clusters
+from agents_orchestrator.db.export import export_cluster_history
+from agents_orchestrator.reconciler import Reconciler
+from agents_orchestrator.reconciler.discard_hook import run_discard_hook
+from agents_orchestrator.settings import DiscardHook, Settings
+from agents_orchestrator.spec import ClusterSpec
 
 IMAGE = "harbor.example/containers/claude-code-wrapper:ca2ddf3"
 

@@ -1,0 +1,46 @@
+"""Typed async client for claude-code-wrapper."""
+
+from agents_orchestrator.wrapper.client import WrapperClient
+from agents_orchestrator.wrapper.models import (
+    Ambiguous,
+    Busy,
+    ConfigError,
+    Context,
+    Envelope,
+    Gone,
+    PeerMember,
+    PeersView,
+    Rejected,
+    Snapshot,
+    SubmitOutcome,
+    TurnAccepted,
+    TurnRecord,
+    TurnSummary,
+    Unavailable,
+    WrapperError,
+    WrapperUnreachable,
+)
+from agents_orchestrator.wrapper.sse import SSEEvent, SSEParser
+
+__all__ = [
+    "Ambiguous",
+    "Busy",
+    "ConfigError",
+    "Context",
+    "Envelope",
+    "Gone",
+    "PeerMember",
+    "PeersView",
+    "Rejected",
+    "SSEEvent",
+    "SSEParser",
+    "Snapshot",
+    "SubmitOutcome",
+    "TurnAccepted",
+    "TurnRecord",
+    "TurnSummary",
+    "Unavailable",
+    "WrapperClient",
+    "WrapperError",
+    "WrapperUnreachable",
+]

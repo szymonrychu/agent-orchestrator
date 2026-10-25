@@ -19,11 +19,11 @@ from factories import (
 )
 from psycopg.rows import dict_row
 
-from agent_orchestrator.db import leadership
-from agent_orchestrator.db.queue import _CLAIM_LOCK_NAMESPACE
-from agent_orchestrator.dispatcher import Dispatcher
-from agent_orchestrator.dispatcher.loop import CHANNELS
-from agent_orchestrator.settings import Settings
+from agents_orchestrator.db import leadership
+from agents_orchestrator.db.queue import _CLAIM_LOCK_NAMESPACE
+from agents_orchestrator.dispatcher import Dispatcher
+from agents_orchestrator.dispatcher.loop import CHANNELS
+from agents_orchestrator.settings import Settings
 
 README = Path(__file__).resolve().parents[1] / "README.md"
 

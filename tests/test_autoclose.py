@@ -8,10 +8,10 @@ import json
 import psycopg
 from factories import insert_cluster
 
-from agent_orchestrator.api import autoclose
-from agent_orchestrator.api.app import create_app
-from agent_orchestrator.db import clusters
-from agent_orchestrator.settings import Settings
+from agents_orchestrator.api import autoclose
+from agents_orchestrator.api.app import create_app
+from agents_orchestrator.db import clusters
+from agents_orchestrator.settings import Settings
 
 
 async def _backdate(pool, cluster_id, seconds: int) -> None:

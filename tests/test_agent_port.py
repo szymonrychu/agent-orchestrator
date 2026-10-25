@@ -9,9 +9,9 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from agent_orchestrator import cli
-from agent_orchestrator.api.allowlist import PortGate, SourceAllowlist
-from agent_orchestrator.settings import Settings
+from agents_orchestrator import cli
+from agents_orchestrator.api.allowlist import PortGate, SourceAllowlist
+from agents_orchestrator.settings import Settings
 
 DB = "postgresql://u:p@h/db"
 

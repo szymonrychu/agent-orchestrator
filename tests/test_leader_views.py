@@ -6,8 +6,8 @@ from factories import insert_agent, insert_cluster, set_agent_status
 from test_api_clusters import make_settings
 from test_api_streams import open_sse, serve, srv  # noqa: F401
 
-from agent_orchestrator.api.app import create_app
-from agent_orchestrator.db.pool import notify
+from agents_orchestrator.api.app import create_app
+from agents_orchestrator.db.pool import notify
 
 
 async def _lead(pool, cluster_id, agent_id, epoch=3):

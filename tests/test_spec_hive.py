@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from agent_orchestrator.settings import Settings
-from agent_orchestrator.spec import ClusterSpec, SpecInvalid, validate_spec
+from agents_orchestrator.settings import Settings
+from agents_orchestrator.spec import ClusterSpec, SpecInvalid, validate_spec
 
 
 def settings(**kw) -> Settings:

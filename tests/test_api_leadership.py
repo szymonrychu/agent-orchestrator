@@ -14,8 +14,8 @@ from test_api_clusters import PEER
 from test_api_clusters import client_for as public_client
 from test_api_clusters import make_settings as public_settings
 
-from agent_orchestrator.api.app import create_app
-from agent_orchestrator.db import leadership
+from agents_orchestrator.api.app import create_app
+from agents_orchestrator.db import leadership
 
 
 async def hive(pool, replicas: int = 2, leader: int | None = 0):

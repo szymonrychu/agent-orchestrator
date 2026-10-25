@@ -20,7 +20,7 @@ from test_api_agent import (
 )
 from test_api_clusters import assert_error
 
-from agent_orchestrator.api.app import create_app
+from agents_orchestrator.api.app import create_app
 
 
 async def hive(pool, *, replicas: int = 3, max_replicas: int = 4, static: bool = False):

@@ -8,7 +8,7 @@ import pytest
 from factories import insert_agent, insert_cluster
 from test_api_clusters import assert_error, client_for, make_settings
 
-from agent_orchestrator.api.app import create_app
+from agents_orchestrator.api.app import create_app
 
 C = "/api/v1/clusters"
 P = "/api/v1/presets"

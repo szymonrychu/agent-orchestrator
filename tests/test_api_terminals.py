@@ -13,8 +13,8 @@ from fakes.fake_wrapper import FakeWrapper
 from test_api_clusters import assert_error, client_for, make_settings
 from test_api_files import KEY, Rig, token_of
 
-from agent_orchestrator.api import workspace
-from agent_orchestrator.api.app import create_app
+from agents_orchestrator.api import workspace
+from agents_orchestrator.api.app import create_app
 
 GOOD_ORIGIN = "https://orch.example"
 VIEW_FIELDS = {

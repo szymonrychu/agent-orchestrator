@@ -7,9 +7,9 @@ import uuid
 import httpx
 from factories import insert_agent, insert_cluster, set_agent_status
 
-from agent_orchestrator.api.app import create_app
-from agent_orchestrator.settings import Settings
-from agent_orchestrator.tokens import derive_tokens
+from agents_orchestrator.api.app import create_app
+from agents_orchestrator.settings import Settings
+from agents_orchestrator.tokens import derive_tokens
 
 KEY = "k" * 32
 AGENT_PORT = 8001

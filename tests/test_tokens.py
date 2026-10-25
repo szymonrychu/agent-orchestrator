@@ -5,8 +5,8 @@ from uuid import UUID
 
 import pytest
 
-from agent_orchestrator.settings import Settings, SettingsError
-from agent_orchestrator.tokens import ClusterTokens, derive_tokens, tokens_for
+from agents_orchestrator.settings import Settings, SettingsError
+from agents_orchestrator.tokens import ClusterTokens, derive_tokens, tokens_for
 
 KEY = b"k" * 32
 CID = UUID("11111111-1111-1111-1111-111111111111")

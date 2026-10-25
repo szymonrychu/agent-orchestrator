@@ -13,9 +13,9 @@ from factories import insert_agent, insert_cluster, set_agent_status
 from fakes.fake_wrapper import FakeWrapper
 from test_api_clusters import assert_error, client_for, make_settings
 
-from agent_orchestrator.api import workspace
-from agent_orchestrator.api.app import create_app
-from agent_orchestrator.tokens import derive_tokens
+from agents_orchestrator.api import workspace
+from agents_orchestrator.api.app import create_app
+from agents_orchestrator.tokens import derive_tokens
 
 KEY = "k" * 32
 

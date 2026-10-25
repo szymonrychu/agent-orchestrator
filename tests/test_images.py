@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-from agent_orchestrator.settings import Settings
+from agents_orchestrator.settings import Settings
 
 ROOT = Path(__file__).resolve().parent.parent
 IMAGE = "harbor.szymonrichert.pl/containers/agent-orchestrator"

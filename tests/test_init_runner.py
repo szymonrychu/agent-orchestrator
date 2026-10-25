@@ -15,18 +15,18 @@ from fakes.fake_wrapper import FakeWrapper
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from agent_orchestrator.db import agents as agents_repo
-from agent_orchestrator.db import clusters
-from agent_orchestrator.k8s.kube import KubeError
-from agent_orchestrator.k8s.labels import cluster_labels
-from agent_orchestrator.k8s.render import workdir_mount, workdir_path
-from agent_orchestrator.reconciler import Reconciler
-from agent_orchestrator.reconciler.checks import (
+from agents_orchestrator.db import agents as agents_repo
+from agents_orchestrator.db import clusters
+from agents_orchestrator.k8s.kube import KubeError
+from agents_orchestrator.k8s.labels import cluster_labels
+from agents_orchestrator.k8s.render import workdir_mount, workdir_path
+from agents_orchestrator.reconciler import Reconciler
+from agents_orchestrator.reconciler.checks import (
     DEADLINE_GRACE_SECONDS,
     DEADLINE_SECONDS,
     TAIL_LINES,
 )
-from agent_orchestrator.reconciler.init import (
+from agents_orchestrator.reconciler.init import (
     INIT_LABEL,
     WORKDIR_ENV,
     InitGate,
@@ -34,10 +34,10 @@ from agent_orchestrator.reconciler.init import (
     render_init_job,
     render_init_sh,
 )
-from agent_orchestrator.settings import Settings
-from agent_orchestrator.spec import INIT_DIR, INIT_SCRIPTS_MAX, ClusterSpec, init_scripts_hash
-from agent_orchestrator.tokens import tokens_for
-from agent_orchestrator.wrapper.client import WrapperClient
+from agents_orchestrator.settings import Settings
+from agents_orchestrator.spec import INIT_DIR, INIT_SCRIPTS_MAX, ClusterSpec, init_scripts_hash
+from agents_orchestrator.tokens import tokens_for
+from agents_orchestrator.wrapper.client import WrapperClient
 
 pytestmark = pytest.mark.asyncio
 
@@ -405,7 +405,7 @@ async def test_render_init_job(pool, dsn, tmp_path):
     assert cmd[:2] == ["sh", "-c"] and cmd[3] == "agent-init" and len(cmd) == 5
     init_sh = cmd[4]
     assert "alpha" in init_sh.splitlines()[0]
-    assert "run once at cluster start by agent-orchestrator" in init_sh
+    assert "run once at cluster start by agents-orchestrator" in init_sh
     assert "orchestrator_init_scripts_edit" in init_sh and "next cluster" in init_sh
     assert f"# --- script 1 ---\n{scripts[0]}\n" in init_sh
     assert f"# --- script 2 ---\n{scripts[1]}" in init_sh

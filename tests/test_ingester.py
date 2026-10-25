@@ -17,12 +17,12 @@ from factories import insert_agent, insert_cluster, insert_event, set_agent_stat
 from fakes.fake_wrapper import FakeWrapper
 from psycopg import sql
 
-from agent_orchestrator.db import status
-from agent_orchestrator.ingester import Ingester
-from agent_orchestrator.ingester.loop import map_state
-from agent_orchestrator.settings import Settings
-from agent_orchestrator.tokens import derive_tokens
-from agent_orchestrator.wrapper import WrapperClient
+from agents_orchestrator.db import status
+from agents_orchestrator.ingester import Ingester
+from agents_orchestrator.ingester.loop import map_state
+from agents_orchestrator.settings import Settings
+from agents_orchestrator.tokens import derive_tokens
+from agents_orchestrator.wrapper import WrapperClient
 
 MASTER_KEY = "k" * 40
 OLD_SINCE = "2001-02-03T04:05:06+00:00"

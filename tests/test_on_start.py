@@ -7,9 +7,9 @@ import re
 
 from any_mcp.config import AnyMcpConfig
 
-from agent_orchestrator.k8s import on_start
-from agent_orchestrator.settings import Settings
-from agent_orchestrator.spec import ClusterSpec
+from agents_orchestrator.k8s import on_start
+from agents_orchestrator.settings import Settings
+from agents_orchestrator.spec import ClusterSpec
 
 HIVE_TOOLS = [
     "me",

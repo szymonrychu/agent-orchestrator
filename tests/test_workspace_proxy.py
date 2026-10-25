@@ -9,10 +9,10 @@ import httpx
 import pytest
 from factories import insert_agent, insert_cluster, set_agent_status
 
-from agent_orchestrator.api import workspace
-from agent_orchestrator.api.app import create_app
-from agent_orchestrator.api.errors import ApiError
-from agent_orchestrator.api.workspace import (
+from agents_orchestrator.api import workspace
+from agents_orchestrator.api.app import create_app
+from agents_orchestrator.api.errors import ApiError
+from agents_orchestrator.api.workspace import (
     TERMINAL_ID_RE,
     WrapperTarget,
     forward,
@@ -20,8 +20,8 @@ from agent_orchestrator.api.workspace import (
     resolve_agent,
     validate_terminal_id,
 )
-from agent_orchestrator.settings import Settings
-from agent_orchestrator.tokens import derive_tokens
+from agents_orchestrator.settings import Settings
+from agents_orchestrator.tokens import derive_tokens
 
 KEY = "k" * 32
 
@@ -299,4 +299,4 @@ async def test_token_never_in_logs_or_responses(caplog):
         assert token not in rec.getMessage(), rec.name
         assert token not in str(rec.args) and token not in str(rec.__dict__.get("exc_info"))
     assert caplog.records, "the helper logs at DEBUG"
-    assert workspace.log.name.startswith("agent_orchestrator")
+    assert workspace.log.name.startswith("agents_orchestrator")

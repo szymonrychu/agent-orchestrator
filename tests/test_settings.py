@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_orchestrator.settings import DiscardHook, Settings, SettingsError
+from agents_orchestrator.settings import DiscardHook, Settings, SettingsError
 
 README = Path(__file__).resolve().parent.parent / "README.md"
 DB = "postgresql://u:p@h/db"
@@ -34,7 +34,7 @@ def test_defaults():
     assert s.default_auto_compact_pct == 95
     assert s.pvc_storage_class == "rook-ceph-rwx"
     assert s.pvc_size == "20Gi"
-    assert s.claude_secret_name == "agent-orchestrator-claude"
+    assert s.claude_secret_name == "agents-orchestrator-claude"
     assert s.image_pull_secret == "regcred"
     assert s.any_mcp_config_file == ""
     assert s.wrapper_port == 8080

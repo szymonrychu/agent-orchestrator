@@ -5,7 +5,7 @@
     namespace: agents
     labels:
       agents.szymonrichert.pl/cluster: alpha
-      app.kubernetes.io/managed-by: agent-orchestrator
+      app.kubernetes.io/managed-by: agents-orchestrator
   spec:
     accessModes:
     - ReadWriteMany
@@ -20,7 +20,7 @@
     namespace: agents
     labels:
       agents.szymonrichert.pl/cluster: alpha
-      app.kubernetes.io/managed-by: agent-orchestrator
+      app.kubernetes.io/managed-by: agents-orchestrator
   type: Opaque
   stringData:
     CCW_AUTH_TOKEN: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -33,7 +33,7 @@
     namespace: agents
     labels:
       agents.szymonrichert.pl/cluster: alpha
-      app.kubernetes.io/managed-by: agent-orchestrator
+      app.kubernetes.io/managed-by: agents-orchestrator
   data:
     config.yaml: "server:\n  auth_token: ${CCW_AUTH_TOKEN}\npaths:\n  workdir_root:\
       \ /workdir\n  sessions_root: /sessions\nclaude:\n  passthrough_env:\n  - AAA\n\
@@ -70,13 +70,13 @@
     namespace: agents
     labels:
       agents.szymonrichert.pl/cluster: alpha
-      app.kubernetes.io/managed-by: agent-orchestrator
+      app.kubernetes.io/managed-by: agents-orchestrator
   spec:
     clusterIP: None
     publishNotReadyAddresses: true
     selector:
       agents.szymonrichert.pl/cluster: alpha
-      app.kubernetes.io/managed-by: agent-orchestrator
+      app.kubernetes.io/managed-by: agents-orchestrator
     ports:
     - name: http
       port: 8080
@@ -88,7 +88,7 @@
     namespace: agents
     labels:
       agents.szymonrichert.pl/cluster: alpha
-      app.kubernetes.io/managed-by: agent-orchestrator
+      app.kubernetes.io/managed-by: agents-orchestrator
   spec:
     replicas: 2
     podManagementPolicy: Parallel
@@ -96,12 +96,12 @@
     selector:
       matchLabels:
         agents.szymonrichert.pl/cluster: alpha
-        app.kubernetes.io/managed-by: agent-orchestrator
+        app.kubernetes.io/managed-by: agents-orchestrator
     template:
       metadata:
         labels:
           agents.szymonrichert.pl/cluster: alpha
-          app.kubernetes.io/managed-by: agent-orchestrator
+          app.kubernetes.io/managed-by: agents-orchestrator
         annotations:
           agents.szymonrichert.pl/config-hash: 8771f9dcbe3ece08a03d5a45b901f084bbaaf11e9aa203b20e91dcbf5374729a
       spec:
@@ -137,7 +137,7 @@
           - name: CLAUDE_CODE_OAUTH_TOKEN
             valueFrom:
               secretKeyRef:
-                name: agent-orchestrator-claude
+                name: agents-orchestrator-claude
                 key: CLAUDE_CODE_OAUTH_TOKEN
           - name: ORCH_AGENT_TOKEN
             valueFrom:

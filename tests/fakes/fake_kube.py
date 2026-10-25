@@ -25,7 +25,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from agent_orchestrator.k8s.kube import FIELD_MANAGER, Forbidden, KubeError
+from agents_orchestrator.k8s.kube import FIELD_MANAGER, Forbidden, KubeError
 
 READ_VERBS = frozenset({"get", "list", "watch"})
 ORCHESTRATOR_LABELS = {

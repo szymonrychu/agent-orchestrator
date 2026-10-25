@@ -15,10 +15,10 @@ import uvicorn
 from factories import insert_agent, insert_cluster, insert_message, set_agent_status
 from test_api_clusters import assert_error, make_settings
 
-from agent_orchestrator.api.app import create_app
-from agent_orchestrator.api.listener import Listener
-from agent_orchestrator.db import events as ev
-from agent_orchestrator.db.pool import notify
+from agents_orchestrator.api.app import create_app
+from agents_orchestrator.api.listener import Listener
+from agents_orchestrator.db import events as ev
+from agents_orchestrator.db.pool import notify
 
 
 class Served:
@@ -321,7 +321,7 @@ async def test_disconnect_unsubscribes(srv, pool):
 
 
 async def test_events_stream_ignores_other_clusters_notify(pool, dsn, monkeypatch):
-    from agent_orchestrator.api import streams
+    from agents_orchestrator.api import streams
 
     calls = 0
     real_page = ev.page

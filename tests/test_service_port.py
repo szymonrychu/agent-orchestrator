@@ -13,9 +13,9 @@ import pytest_asyncio
 from factories import insert_cluster
 from test_api_clusters import assert_error, make_settings
 
-from agent_orchestrator.api import service_auth
-from agent_orchestrator.api.app import create_app
-from agent_orchestrator.settings import Settings, SettingsError
+from agents_orchestrator.api import service_auth
+from agents_orchestrator.api.app import create_app
+from agents_orchestrator.settings import Settings, SettingsError
 
 DB = "postgresql://u:p@h/db"
 DEFAULT_ID = "00000000-0000-0000-0000-000000000001"

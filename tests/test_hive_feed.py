@@ -1,6 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
-from agent_orchestrator.dispatcher.feed import (
+from agents_orchestrator.dispatcher.feed import (
     PENDING_BASH_TIMEOUT_SECONDS,
     FeedLine,
     digest_lines,

@@ -7,8 +7,8 @@ from pathlib import Path
 from test_api_agent import client_for, headers, make_settings
 from test_api_leadership import hive
 
-from agent_orchestrator.api.app import create_app
-from agent_orchestrator.spec import WORKDIR_ROOT
+from agents_orchestrator.api.app import create_app
+from agents_orchestrator.spec import WORKDIR_ROOT
 
 IP0, IP1 = "10.9.0.10", "10.9.0.11"
 BASE = "/agent/v1/locks"
@@ -167,9 +167,9 @@ async def test_check_outside_workdir_allows(pool, dsn):
 
 
 def test_workdir_root_shared_no_k8s_import():
-    src = Path(__file__).resolve().parent.parent / "src" / "agent_orchestrator"
+    src = Path(__file__).resolve().parent.parent / "src" / "agents_orchestrator"
     api = (src / "api" / "agent.py").read_text()
-    assert "agent_orchestrator.k8s" not in api and "import k8s" not in api
+    assert "agents_orchestrator.k8s" not in api and "import k8s" not in api
     assert "WORKDIR_ROOT" in api
     render = (src / "k8s" / "render.py").read_text()
     assert 'WORKDIR_ROOT = "' not in render

@@ -15,11 +15,11 @@ import pytest
 import yaml
 from claude_code_wrapper.config import load_config
 
-from agent_orchestrator.db.clusters import Cluster
-from agent_orchestrator.k8s import labels, on_start, render
-from agent_orchestrator.settings import Settings
-from agent_orchestrator.spec import ClusterSpec
-from agent_orchestrator.tokens import ClusterTokens
+from agents_orchestrator.db.clusters import Cluster
+from agents_orchestrator.k8s import labels, on_start, render
+from agents_orchestrator.settings import Settings
+from agents_orchestrator.spec import ClusterSpec
+from agents_orchestrator.tokens import ClusterTokens
 
 GOLDEN = Path(__file__).parent / "golden"
 TOKENS = ClusterTokens(auth="a" * 32, peer="p" * 32, agent="g" * 32)
@@ -125,7 +125,7 @@ def test_all_objects_labelled():
     ]
     for o in objs:
         assert o["metadata"]["labels"]["agents.szymonrichert.pl/cluster"] == "alpha"
-        assert o["metadata"]["labels"]["app.kubernetes.io/managed-by"] == "agent-orchestrator"
+        assert o["metadata"]["labels"]["app.kubernetes.io/managed-by"] == "agents-orchestrator"
 
 
 def test_sessions_subpathexpr_per_pod():
@@ -159,7 +159,7 @@ def test_pull_secret_and_oauth_secret_ref():
     assert pod["imagePullSecrets"] == [{"name": "regcred"}]
     env = {e["name"]: e for e in pod["containers"][0]["env"]}
     assert env["CLAUDE_CODE_OAUTH_TOKEN"]["valueFrom"]["secretKeyRef"] == {
-        "name": "agent-orchestrator-claude",
+        "name": "agents-orchestrator-claude",
         "key": "CLAUDE_CODE_OAUTH_TOKEN",
     }
     assert env["CCW_AUTH_TOKEN"]["valueFrom"]["secretKeyRef"] == {
@@ -267,7 +267,7 @@ def test_every_object_name_uses_reserved_prefix():
     assert set(names.values()) == {o["metadata"]["name"] for o in objs}
     assert labels.cluster_labels("beta") == {
         "agents.szymonrichert.pl/cluster": "beta",
-        "app.kubernetes.io/managed-by": "agent-orchestrator",
+        "app.kubernetes.io/managed-by": "agents-orchestrator",
     }
     assert labels.selector("beta") == {"matchLabels": labels.cluster_labels("beta")}
 

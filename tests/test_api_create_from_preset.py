@@ -8,8 +8,8 @@ import uuid
 import pytest
 from test_api_clusters import assert_error, client_for, make_settings
 
-from agent_orchestrator.api import clusters as api_clusters
-from agent_orchestrator.api.app import create_app
+from agents_orchestrator.api import clusters as api_clusters
+from agents_orchestrator.api.app import create_app
 
 DEFAULT_ID = "00000000-0000-0000-0000-000000000001"
 C = "/api/v1/clusters"

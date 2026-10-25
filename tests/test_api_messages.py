@@ -17,7 +17,7 @@ from factories import (
 )
 from test_api_clusters import assert_error, client_for, make_settings
 
-from agent_orchestrator.api.app import create_app
+from agents_orchestrator.api.app import create_app
 
 
 @pytest_asyncio.fixture

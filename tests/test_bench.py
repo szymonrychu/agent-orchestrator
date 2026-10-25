@@ -6,10 +6,10 @@ from pathlib import Path
 import httpx
 import pytest
 
-from agent_orchestrator import cli
-from agent_orchestrator.bench.report import format_table, summarize
-from agent_orchestrator.bench.runner import Bench, arm_slug
-from agent_orchestrator.bench.spec import BenchSpecError, load_spec, parse_spec
+from agents_orchestrator import cli
+from agents_orchestrator.bench.report import format_table, summarize
+from agents_orchestrator.bench.runner import Bench, arm_slug
+from agents_orchestrator.bench.spec import BenchSpecError, load_spec, parse_spec
 
 SPEC = {
     "arms": [
@@ -284,15 +284,15 @@ def test_example_has_hive_arm():
 
 
 def test_leader_epoch_none_when_cluster_view_fails(caplog):
-    with caplog.at_level("WARNING", logger="agent_orchestrator.bench"):
+    with caplog.at_level("WARNING", logger="agents_orchestrator.bench"):
         recs, _ = run(FakeApi(view_ok=False))
     assert recs and all(r["leader_epoch"] is None for r in recs)
     assert "reading leader epoch" in caplog.text
 
 
 def test_example_bench_arms_pass_api_spec_validation():
-    from agent_orchestrator.settings import Settings
-    from agent_orchestrator.spec import ClusterSpec, validate_spec
+    from agents_orchestrator.settings import Settings
+    from agents_orchestrator.spec import ClusterSpec, validate_spec
 
     settings = Settings(database_url="postgresql://x/x", master_key="k" * 32)
     spec = load_spec("examples/bench.yaml")

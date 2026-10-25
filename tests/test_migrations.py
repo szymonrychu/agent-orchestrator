@@ -16,8 +16,8 @@ from factories import (
     set_agent_status,
 )
 
-from agent_orchestrator.db.migrate import MIGRATIONS_DIR, run_migrations
-from agent_orchestrator.db.pool import listen, notify
+from agents_orchestrator.db.migrate import MIGRATIONS_DIR, run_migrations
+from agents_orchestrator.db.pool import listen, notify
 
 TABLES = {
     "clusters",

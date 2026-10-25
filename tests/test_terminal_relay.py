@@ -32,8 +32,8 @@ from websockets.asyncio.client import ClientConnection, connect
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 
-from agent_orchestrator.api import workspace
-from agent_orchestrator.api.app import create_app
+from agents_orchestrator.api import workspace
+from agents_orchestrator.api.app import create_app
 
 GOOD_ORIGIN = "https://orch.example"
 RELAY_TASK_PREFIX = "terminal-relay"

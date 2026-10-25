@@ -6,7 +6,7 @@ import uuid
 
 from factories import insert_agent, insert_cluster, set_agent_status
 
-from agent_orchestrator.db import queue as q
+from agents_orchestrator.db import queue as q
 
 
 async def _agent(pool, cluster_id, *, free_ago: float, state: str = "idle", **kw):

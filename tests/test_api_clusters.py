@@ -11,10 +11,10 @@ import pytest
 import pytest_asyncio
 from factories import insert_agent, insert_cluster, insert_message, set_agent_status
 
-import agent_orchestrator.api as api_pkg
-from agent_orchestrator.api.app import create_app
-from agent_orchestrator.db import clusters as repo
-from agent_orchestrator.settings import Settings
+import agents_orchestrator.api as api_pkg
+from agents_orchestrator.api.app import create_app
+from agents_orchestrator.db import clusters as repo
+from agents_orchestrator.settings import Settings
 
 PEER = ("10.1.2.3", 5555)
 
@@ -226,7 +226,7 @@ def _imports(path: Path) -> set[str]:
         elif isinstance(node, ast.ImportFrom):
             mod = node.module or ""
             if node.level and mod in ("k8s", "wrapper", "reconciler", "tokens"):
-                mod = "agent_orchestrator." + mod
+                mod = "agents_orchestrator." + mod
             out.add(mod)
             out.update(f"{mod}.{a.name}" for a in node.names)
     return out
@@ -235,9 +235,9 @@ def _imports(path: Path) -> set[str]:
 def test_api_never_imports_k8s_or_wrapper():
     """Only api/workspace.py (the proxy seam, N1) may call wrappers; it and api/agent.py may
     derive tokens. Nothing in api imports k8s or the reconciler."""
-    always = ("agent_orchestrator.k8s", "agent_orchestrator.reconciler")
-    wrapper = "agent_orchestrator.wrapper"
-    tokens = "agent_orchestrator.tokens"
+    always = ("agents_orchestrator.k8s", "agents_orchestrator.reconciler")
+    wrapper = "agents_orchestrator.wrapper"
+    tokens = "agents_orchestrator.tokens"
     seam = "workspace.py"
     token_users = {seam, "agent.py"}
     files = list(Path(api_pkg.__file__).parent.glob("*.py"))
@@ -253,7 +253,7 @@ def test_api_never_imports_k8s_or_wrapper():
     assert "agent.py" in {f.name for f in files}
     assert any(n.startswith(tokens) for n in _imports(files[0].with_name("agent.py")))
     assert any(
-        n.startswith("agent_orchestrator.wrapper") for n in _imports(files[0].with_name(seam))
+        n.startswith("agents_orchestrator.wrapper") for n in _imports(files[0].with_name(seam))
     )
 
 

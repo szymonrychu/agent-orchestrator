@@ -14,13 +14,13 @@ from factories import insert_agent, insert_cluster, insert_message, set_agent_st
 from fakes.fake_wrapper import FakeWrapper
 from psycopg.rows import dict_row
 
-from agent_orchestrator.db import queue as q
-from agent_orchestrator.db.pool import open_pool
-from agent_orchestrator.dispatcher import Dispatcher
-from agent_orchestrator.dispatcher.verify import Verifier
-from agent_orchestrator.settings import Settings
-from agent_orchestrator.tokens import derive_tokens
-from agent_orchestrator.wrapper.client import WrapperClient
+from agents_orchestrator.db import queue as q
+from agents_orchestrator.db.pool import open_pool
+from agents_orchestrator.dispatcher import Dispatcher
+from agents_orchestrator.dispatcher.verify import Verifier
+from agents_orchestrator.settings import Settings
+from agents_orchestrator.tokens import derive_tokens
+from agents_orchestrator.wrapper.client import WrapperClient
 
 KEY = "k" * 32
 SETTLE = 1.0

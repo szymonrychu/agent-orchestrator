@@ -9,8 +9,8 @@ import pytest
 from pydantic import ValidationError
 from test_api_clusters import assert_error, client_for, make_settings
 
-from agent_orchestrator.api.app import create_app
-from agent_orchestrator.spec import INIT_DIR, ClusterSpec, init_scripts_hash
+from agents_orchestrator.api.app import create_app
+from agents_orchestrator.spec import INIT_DIR, ClusterSpec, init_scripts_hash
 
 P = "/api/v1/presets"
 C = "/api/v1/clusters"

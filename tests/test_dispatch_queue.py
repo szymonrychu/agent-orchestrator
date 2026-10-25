@@ -11,7 +11,7 @@ import psycopg
 import pytest
 from factories import insert_agent, insert_cluster, insert_message, set_agent_status
 
-from agent_orchestrator.db import queue as q
+from agents_orchestrator.db import queue as q
 
 # ---------------------------------------------------------------- helpers
 

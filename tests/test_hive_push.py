@@ -20,12 +20,12 @@ from fakes import fake_wrapper
 from fakes.fake_wrapper import FakeWrapper
 from psycopg.rows import dict_row
 
-from agent_orchestrator.db import leadership, queue
-from agent_orchestrator.db.queue import _CLAIM_LOCK_NAMESPACE
-from agent_orchestrator.dispatcher import Dispatcher, hive
-from agent_orchestrator.settings import Settings
-from agent_orchestrator.tokens import tokens_for
-from agent_orchestrator.wrapper.client import WrapperClient
+from agents_orchestrator.db import leadership, queue
+from agents_orchestrator.db.queue import _CLAIM_LOCK_NAMESPACE
+from agents_orchestrator.dispatcher import Dispatcher, hive
+from agents_orchestrator.settings import Settings
+from agents_orchestrator.tokens import tokens_for
+from agents_orchestrator.wrapper.client import WrapperClient
 
 TOKEN = "test-token"
 KEY = "k" * 32

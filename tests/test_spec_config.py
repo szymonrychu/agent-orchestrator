@@ -8,8 +8,8 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from agent_orchestrator.settings import Settings, SettingsError
-from agent_orchestrator.spec import ClusterSpec, SpecInvalid, validate_spec
+from agents_orchestrator.settings import Settings, SettingsError
+from agents_orchestrator.spec import ClusterSpec, SpecInvalid, validate_spec
 
 WRAPPER: dict[str, Any] = {
     "hooks": {

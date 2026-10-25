@@ -8,14 +8,14 @@ from pathlib import Path
 import pytest
 from test_api_clusters import client_for, make_settings
 
-from agent_orchestrator.api.app import create_app
+from agents_orchestrator.api.app import create_app
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
 def test_spa_module_untracked():
     out = subprocess.run(
-        ["git", "ls-files", "src/agent_orchestrator/api/spa.py"],
+        ["git", "ls-files", "src/agents_orchestrator/api/spa.py"],
         cwd=ROOT,
         capture_output=True,
         text=True,

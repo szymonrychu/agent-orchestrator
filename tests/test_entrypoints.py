@@ -17,10 +17,10 @@ import psycopg
 import pytest
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
-from agent_orchestrator import cli
-from agent_orchestrator.runtime.run import run_service
-from agent_orchestrator.runtime.singleton import advisory_singleton, lock_key
-from agent_orchestrator.settings import Settings
+from agents_orchestrator import cli
+from agents_orchestrator.runtime.run import run_service
+from agents_orchestrator.runtime.singleton import advisory_singleton, lock_key
+from agents_orchestrator.settings import Settings
 
 
 def _env(dsn: str, **extra: str) -> dict[str, str]:
@@ -31,7 +31,7 @@ def _env(dsn: str, **extra: str) -> dict[str, str]:
 
 def _orch(*args: str, dsn: str, **extra: str) -> subprocess.Popen:
     return subprocess.Popen(
-        [sys.executable, "-m", "agent_orchestrator.cli", *args],
+        [sys.executable, "-m", "agents_orchestrator.cli", *args],
         env=_env(dsn, **extra),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,

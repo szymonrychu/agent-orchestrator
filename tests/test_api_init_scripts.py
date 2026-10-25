@@ -10,10 +10,10 @@ from factories import insert_cluster
 from psycopg.types.json import Jsonb
 from test_api_clusters import assert_error, client_for, make_settings
 
-from agent_orchestrator.api.app import create_app
-from agent_orchestrator.db import clusters as repo
-from agent_orchestrator.db import presets as presets_repo
-from agent_orchestrator.spec import init_scripts_hash
+from agents_orchestrator.api.app import create_app
+from agents_orchestrator.db import clusters as repo
+from agents_orchestrator.db import presets as presets_repo
+from agents_orchestrator.spec import init_scripts_hash
 
 DEFAULT_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
@@ -169,8 +169,8 @@ async def test_cluster_view_edited_flag(http, pool):
     assert (await http.get(f"/api/v1/clusters/{cid}")).json()["init_edited_since_run"] is True
     listed = {c["id"]: c for c in (await http.get("/api/v1/clusters")).json()}
     assert listed[cid]["init_edited_since_run"] is True
-    from agent_orchestrator.api.clusters import _view
-    from agent_orchestrator.settings import Settings
+    from agents_orchestrator.api.clusters import _view
+    from agents_orchestrator.settings import Settings
 
     async with pool.connection() as conn:
         c = await repo.get(conn, uuid.UUID(cid))

@@ -8,7 +8,7 @@ resolution-markers = [
 ]
 
 [[package]]
-name = "agent-orchestrator"
+name = "agents-orchestrator"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

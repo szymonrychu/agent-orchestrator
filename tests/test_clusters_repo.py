@@ -14,10 +14,10 @@ from factories import (
 )
 from pydantic import ValidationError
 
-from agent_orchestrator.db import clusters
-from agent_orchestrator.db.clusters import ClusterExists
-from agent_orchestrator.settings import Settings
-from agent_orchestrator.spec import ClusterSpec, SpecInvalid, validate_slug, validate_spec
+from agents_orchestrator.db import clusters
+from agents_orchestrator.db.clusters import ClusterExists
+from agents_orchestrator.settings import Settings
+from agents_orchestrator.spec import ClusterSpec, SpecInvalid, validate_slug, validate_spec
 
 
 def _settings(**kw) -> Settings:

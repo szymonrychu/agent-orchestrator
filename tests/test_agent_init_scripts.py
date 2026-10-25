@@ -8,9 +8,9 @@ import httpx
 from factories import insert_agent, insert_cluster
 from test_api_agent import AGENT_PORT, IP0, client_for, headers, make_settings, set_ip, token
 
-from agent_orchestrator.api.app import create_app
-from agent_orchestrator.db import presets as presets_repo
-from agent_orchestrator.spec import WORKDIR_ROOT, ClusterSpec
+from agents_orchestrator.api.app import create_app
+from agents_orchestrator.db import presets as presets_repo
+from agents_orchestrator.spec import WORKDIR_ROOT, ClusterSpec
 
 URL = "/agent/v1/init-scripts"
 

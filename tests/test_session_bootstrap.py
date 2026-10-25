@@ -10,16 +10,16 @@ from fakes.fake_kube import FakeKube
 from fakes.fake_wrapper import FakeWrapper
 from psycopg.rows import dict_row
 
-from agent_orchestrator.db import agents as agents_repo
-from agent_orchestrator.db import clusters, queue
-from agent_orchestrator.k8s.render import workdir_path
-from agent_orchestrator.reconciler import Reconciler
-from agent_orchestrator.reconciler import sessions as sessions_mod
-from agent_orchestrator.settings import Settings
-from agent_orchestrator.spec import ClusterSpec
-from agent_orchestrator.tokens import tokens_for
-from agent_orchestrator.wrapper.client import WrapperClient
-from agent_orchestrator.wrapper.models import WrapperError
+from agents_orchestrator.db import agents as agents_repo
+from agents_orchestrator.db import clusters, queue
+from agents_orchestrator.k8s.render import workdir_path
+from agents_orchestrator.reconciler import Reconciler
+from agents_orchestrator.reconciler import sessions as sessions_mod
+from agents_orchestrator.settings import Settings
+from agents_orchestrator.spec import ClusterSpec
+from agents_orchestrator.tokens import tokens_for
+from agents_orchestrator.wrapper.client import WrapperClient
+from agents_orchestrator.wrapper.models import WrapperError
 
 KEY = "k" * 32
 IMAGE = "harbor.example/containers/claude-code-wrapper:ca2ddf3"
