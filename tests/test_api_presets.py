@@ -6,10 +6,10 @@ import uuid
 
 import pytest
 import pytest_asyncio
-from test_api_clusters import assert_error, client_for, make_settings
+from test_api_sessions import assert_error, client_for, make_settings
 
-from agent_orchestrator.api.app import create_app
-from agent_orchestrator.db import presets as repo
+from agents_orchestrator.api.app import create_app
+from agents_orchestrator.db import presets as repo
 
 DEFAULT_ID = "00000000-0000-0000-0000-000000000001"
 P = "/api/v1/presets"
@@ -140,18 +140,18 @@ async def test_delete_guards(http, pool):
     assert_error(await http.delete(f"{P}/{only['id']}"), 409, "last_preset")
 
 
-async def test_delete_keeps_clusters_spec(http, pool):
+async def test_delete_keeps_sessions_spec(http, pool):
     made = await make(http, "src", {"replicas": 2})
     pid = uuid.UUID(made["id"])
     async with pool.connection() as conn:
         await conn.execute(
-            "INSERT INTO clusters (id, slug, spec, preset_id, preset_name)"
+            "INSERT INTO sessions (id, slug, spec, preset_id, preset_name)"
             " VALUES (%s, 'c1', %s::jsonb, %s, 'src')",
             (uuid.uuid4(), '{"replicas": 2}', pid),
         )
     assert (await http.delete(f"{P}/{made['id']}")).status_code == 204
     async with pool.connection() as conn:
-        cur = await conn.execute("SELECT spec, preset_id, preset_name FROM clusters")
+        cur = await conn.execute("SELECT spec, preset_id, preset_name FROM sessions")
         spec, preset_id, preset_name = await cur.fetchone()
     assert spec == {"replicas": 2} and preset_id is None and preset_name == "src"
 
@@ -230,10 +230,10 @@ async def test_reuse_running_agent_round_trip(http):
     plain = await make(http, "plain", {"replicas": 2})
     assert "reuse_running_agent" not in (await http.get(f"{P}/{plain['id']}")).json()["spec"]
 
-    c = await http.post("/api/v1/clusters", json={"preset_id": made["id"], "slug": "reuse-c"})
+    c = await http.post("/api/v1/sessions", json={"preset_id": made["id"], "slug": "reuse-c"})
     assert c.status_code == 201, c.text
     assert c.json()["spec"]["reuse_running_agent"] is True
-    p = await http.post("/api/v1/clusters", json={"preset_id": plain["id"], "slug": "plain-c"})
+    p = await http.post("/api/v1/sessions", json={"preset_id": plain["id"], "slug": "plain-c"})
     assert p.status_code == 201, p.text
     assert p.json()["spec"]["reuse_running_agent"] is None
     assert {k: v for k, v in c.json()["spec"].items() if k != "reuse_running_agent"} == {

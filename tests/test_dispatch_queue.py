@@ -9,19 +9,19 @@ import uuid
 
 import psycopg
 import pytest
-from factories import insert_agent, insert_cluster, insert_message, set_agent_status
+from factories import insert_agent, insert_message, insert_session, set_agent_status
 
-from agent_orchestrator.db import queue as q
+from agents_orchestrator.db import queue as q
 
 # ---------------------------------------------------------------- helpers
 
 
-async def _ready_agent(pool, cluster_id, *, free_ago: float = 0, state: str = "idle", **kw):
+async def _ready_agent(pool, session_id, *, free_ago: float = 0, state: str = "idle", **kw):
     """A ready agent with a session whose free_since is `free_ago` seconds before now()."""
     kw.setdefault("ready", True)
-    kw.setdefault("session_id", f"s-{uuid.uuid4().hex[:6]}")
+    kw.setdefault("wrapper_session_id", f"s-{uuid.uuid4().hex[:6]}")
     kw.setdefault("url", f"http://agent-{uuid.uuid4().hex[:6]}:8080")
-    agent = await insert_agent(pool, cluster_id, **kw)
+    agent = await insert_agent(pool, session_id, **kw)
     await set_agent_status(pool, agent["id"], state=state)
     await _set_free(pool, agent["id"], free_ago, state)
     return agent
@@ -56,9 +56,9 @@ async def _agent(pool, agent_id) -> dict:
         return dict(zip(cols, await cur.fetchone(), strict=True))
 
 
-async def _enqueue(pool, cluster_id, text: str = "hi", target=None) -> int:
+async def _enqueue(pool, session_id, text: str = "hi", target=None) -> int:
     async with pool.connection() as conn:
-        return await q.enqueue_message(conn, cluster_id, text, target)
+        return await q.enqueue_message(conn, session_id, text, target)
 
 
 async def _claim(pool):
@@ -84,14 +84,14 @@ async def _begin(conn: psycopg.AsyncConnection) -> None:
 
 
 async def test_claim_picks_oldest_free_since(pool):
-    cl = await insert_cluster(pool)
+    cl = await insert_session(pool)
     cid = cl["id"]
     await _ready_agent(pool, cid, free_ago=10)
     oldest = await _ready_agent(pool, cid, free_ago=30)
     await _ready_agent(pool, cid, free_ago=20)
     # Older free_since, but each fails one pick condition.
     await _ready_agent(pool, cid, free_ago=100, ready=False)
-    await _ready_agent(pool, cid, free_ago=100, session_id=None)
+    await _ready_agent(pool, cid, free_ago=100, wrapper_session_id=None)
     await _ready_agent(pool, cid, free_ago=100, state="busy")
     await _ready_agent(pool, cid, free_ago=100, state="booting")
     gone = await _ready_agent(pool, cid, free_ago=100)
@@ -104,8 +104,8 @@ async def test_claim_picks_oldest_free_since(pool):
     assert claim.message_id == mid
     assert claim.agent_id == oldest["id"]
     assert claim.agent_url == oldest["url"]
-    assert claim.session_id == oldest["session_id"]
-    assert claim.cluster_id == cid
+    assert claim.wrapper_session_id == oldest["wrapper_session_id"]
+    assert claim.session_id == cid
     assert claim.text == "task"
     assert claim.attempts == 0
     assert claim.previous_dispatched_at is None
@@ -120,7 +120,7 @@ async def test_claim_picks_oldest_free_since(pool):
 
 
 async def test_target_agent_restricts_pick(pool):
-    cid = (await insert_cluster(pool))["id"]
+    cid = (await insert_session(pool))["id"]
     await _ready_agent(pool, cid, free_ago=60)
     newest = await _ready_agent(pool, cid, free_ago=1)
     mid = await _enqueue(pool, cid, "for you", newest["id"])
@@ -133,13 +133,13 @@ async def test_target_agent_restricts_pick(pool):
 
 
 async def test_busy_agents_leave_message_queued(pool):
-    busy_cluster = (await insert_cluster(pool))["id"]
-    free_cluster = (await insert_cluster(pool))["id"]
-    await _ready_agent(pool, busy_cluster, state="busy")
-    await _ready_agent(pool, busy_cluster, state="busy")
-    other = await _ready_agent(pool, free_cluster)
-    stuck = await _enqueue(pool, busy_cluster, "first")
-    moving = await _enqueue(pool, free_cluster, "second")
+    busy_session = (await insert_session(pool))["id"]
+    free_session = (await insert_session(pool))["id"]
+    await _ready_agent(pool, busy_session, state="busy")
+    await _ready_agent(pool, busy_session, state="busy")
+    other = await _ready_agent(pool, free_session)
+    stuck = await _enqueue(pool, busy_session, "first")
+    moving = await _enqueue(pool, free_session, "second")
 
     claim = await _claim(pool)
 
@@ -150,11 +150,11 @@ async def test_busy_agents_leave_message_queued(pool):
     assert (await _msg(pool, stuck))["status"] == "queued"
 
 
-async def test_deleting_cluster_is_not_dispatched(pool):
-    # A deleting cluster is being exported and torn down (D15): a turn started now would miss
-    # the discard-hook history, so its queued messages stay queued while other clusters move.
-    deleting = (await insert_cluster(pool, desired="deleting"))["id"]
-    active = (await insert_cluster(pool))["id"]
+async def test_deleting_session_is_not_dispatched(pool):
+    # A deleting session is being exported and torn down (D15): a turn started now would miss
+    # the discard-hook history, so its queued messages stay queued while other sessions move.
+    deleting = (await insert_session(pool, desired="deleting"))["id"]
+    active = (await insert_session(pool))["id"]
     await _ready_agent(pool, deleting, free_ago=60)
     other = await _ready_agent(pool, active)
     held = await _enqueue(pool, deleting, "first")
@@ -168,7 +168,7 @@ async def test_deleting_cluster_is_not_dispatched(pool):
 
 
 async def test_reservation_rule_blocks_redispatch_before_idle_seen(pool):
-    cid = (await insert_cluster(pool))["id"]
+    cid = (await insert_session(pool))["id"]
     agent = await _ready_agent(pool, cid, free_ago=5)
     m1 = await _enqueue(pool, cid, "one")
     m2 = await _enqueue(pool, cid, "two")
@@ -191,7 +191,7 @@ async def test_reservation_rule_blocks_redispatch_before_idle_seen(pool):
 
 
 async def test_two_dispatchers_never_double_dispatch(pool, dsn):
-    cid = (await insert_cluster(pool))["id"]
+    cid = (await insert_session(pool))["id"]
     agents = [await _ready_agent(pool, cid, free_ago=i) for i in range(5)]
     ids = [await _enqueue(pool, cid, f"m{i}") for i in range(50)]
     claims: list = []
@@ -227,13 +227,13 @@ async def test_two_dispatchers_never_double_dispatch(pool, dsn):
     assert {c.agent_id for c in claims} <= {a["id"] for a in agents}
     async with pool.connection() as conn:
         cur = await conn.execute(
-            "SELECT count(*) FROM messages WHERE status='sent' AND cluster_id=%s", (cid,)
+            "SELECT count(*) FROM messages WHERE status='sent' AND session_id=%s", (cid,)
         )
         assert (await cur.fetchone())[0] == 50
 
 
-async def test_fifo_per_cluster(pool):
-    cid = (await insert_cluster(pool))["id"]
+async def test_fifo_per_session(pool):
+    cid = (await insert_session(pool))["id"]
     a1 = await _ready_agent(pool, cid, free_ago=3)
     a2 = await _ready_agent(pool, cid, free_ago=2)
     ids = [await _enqueue(pool, cid, f"m{i}") for i in range(6)]
@@ -252,7 +252,7 @@ async def test_fifo_per_cluster(pool):
 
 
 async def test_cancel_and_retry_guards(pool):
-    cid = (await insert_cluster(pool))["id"]
+    cid = (await insert_session(pool))["id"]
     agent = await _ready_agent(pool, cid)
     queued = await _enqueue(pool, cid)
     assert await _call(pool, q.retry_message, queued) is False
@@ -302,7 +302,7 @@ async def _backoff_seconds(conn, message_id) -> float | None:
 
 
 async def test_requeue_with_backoff_and_fail_at_max_attempts(pool, dsn):
-    cid = (await insert_cluster(pool))["id"]
+    cid = (await insert_session(pool))["id"]
     agent = await _ready_agent(pool, cid)
     mid = (await insert_message(pool, cid, status="dispatching", agent_id=agent["id"]))["id"]
     conn = await _connect(dsn)
@@ -339,7 +339,7 @@ async def test_requeue_with_backoff_and_fail_at_max_attempts(pool, dsn):
 
 
 async def test_stale_dispatching_moves_to_verifying(pool):
-    cid = (await insert_cluster(pool))["id"]
+    cid = (await insert_session(pool))["id"]
     agent = await _ready_agent(pool, cid, free_ago=200)
     m1 = await _enqueue(pool, cid, "slow")
     claim = await _claim(pool)
@@ -350,9 +350,9 @@ async def test_stale_dispatching_moves_to_verifying(pool):
         " heartbeat_at = NULL WHERE id=%s",
         (m1,),
     )
-    fresh_cluster = (await insert_cluster(pool))["id"]
-    fresh_agent = await _ready_agent(pool, fresh_cluster)
-    await _enqueue(pool, fresh_cluster, "fresh")
+    fresh_session = (await insert_session(pool))["id"]
+    fresh_agent = await _ready_agent(pool, fresh_session)
+    await _enqueue(pool, fresh_session, "fresh")
     fresh = await _claim(pool)
     assert fresh.agent_id == fresh_agent["id"]
     before = (await _agent(pool, agent["id"]))["last_dispatched_at"]
@@ -372,7 +372,7 @@ async def test_stale_dispatching_moves_to_verifying(pool):
 
 
 async def test_heartbeat_defers_stale_cutoff(pool):
-    cid = (await insert_cluster(pool))["id"]
+    cid = (await insert_session(pool))["id"]
     old = "now() - interval '120 seconds'"
     beating = (await insert_message(pool, cid, status="dispatching"))["id"]
     silent = (await insert_message(pool, cid, status="dispatching"))["id"]
@@ -392,9 +392,9 @@ async def test_heartbeat_defers_stale_cutoff(pool):
     assert await _call(pool, q.heartbeat_dispatching, silent) is False
 
 
-async def test_backoff_holds_cluster_head_fifo(pool):
-    held = (await insert_cluster(pool))["id"]
-    other = (await insert_cluster(pool))["id"]
+async def test_backoff_holds_session_head_fifo(pool):
+    held = (await insert_session(pool))["id"]
+    other = (await insert_session(pool))["id"]
     await _ready_agent(pool, held, free_ago=5)
     await _ready_agent(pool, held, free_ago=4)
     other_agent = await _ready_agent(pool, other)
@@ -426,7 +426,7 @@ async def test_backoff_holds_cluster_head_fifo(pool):
 
 
 async def test_release_makes_agent_pickable_after_non_accept(pool):
-    cid = (await insert_cluster(pool))["id"]
+    cid = (await insert_session(pool))["id"]
     agent = await _ready_agent(pool, cid, free_ago=30)
 
     async def outcome_409(conn, mid):
@@ -475,7 +475,7 @@ async def test_release_makes_agent_pickable_after_non_accept(pool):
 
 
 async def test_release_is_guarded_by_claim_time(pool):
-    cid = (await insert_cluster(pool))["id"]
+    cid = (await insert_session(pool))["id"]
     agent = await _ready_agent(pool, cid, free_ago=30)
     await _enqueue(pool, cid)
     claim = await _claim(pool)
@@ -491,7 +491,7 @@ async def test_release_is_guarded_by_claim_time(pool):
 
 
 async def test_forced_interleaving_never_double_picks_agent(pool, dsn):
-    cid = (await insert_cluster(pool))["id"]
+    cid = (await insert_session(pool))["id"]
     x = await _ready_agent(pool, cid, free_ago=30)
     y = await _ready_agent(pool, cid, free_ago=10)
     m1 = await _enqueue(pool, cid, "one")
@@ -507,7 +507,7 @@ async def test_forced_interleaving_never_double_picks_agent(pool, dsn):
         await _begin(b)
         cb = await q.claim_and_pick(b)
         assert cb is None or cb.agent_id != x["id"]
-        # The agent pick on its own, bypassing the cluster lock, re-evaluates x and skips it.
+        # The agent pick on its own, bypassing the session lock, re-evaluates x and skips it.
         pick = await q._pick_agent(b, cid, None)
         assert pick is not None
         assert pick.agent_id == y["id"]
@@ -532,10 +532,10 @@ async def test_forced_interleaving_never_double_picks_agent(pool, dsn):
 
 
 async def test_advisory_lock_keeps_fifo_under_two_dispatchers(pool, dsn):
-    cid = (await insert_cluster(pool))["id"]
+    cid = (await insert_session(pool))["id"]
     x = await _ready_agent(pool, cid, free_ago=30)
     y = await _ready_agent(pool, cid, free_ago=10)
-    other = (await insert_cluster(pool))["id"]
+    other = (await insert_session(pool))["id"]
     z = await _ready_agent(pool, other)
     m1 = await _enqueue(pool, cid, "one")
     m2 = await _enqueue(pool, cid, "two")
@@ -547,7 +547,7 @@ async def test_advisory_lock_keeps_fifo_under_two_dispatchers(pool, dsn):
         ca = await q.claim_and_pick(a)
         assert (ca.message_id, ca.agent_id) == (m1, x["id"])
 
-        # While A's claim of cluster 1 is open, B never takes m2; other clusters still dispatch.
+        # While A's claim of session 1 is open, B never takes m2; other sessions still dispatch.
         await _begin(b)
         cb = await q.claim_and_pick(b)
         assert (cb.message_id, cb.agent_id) == (m3, z["id"])
@@ -568,7 +568,7 @@ async def test_advisory_lock_keeps_fifo_under_two_dispatchers(pool, dsn):
 
 
 async def test_busy_target_does_not_block_head_of_line(pool):
-    cid = (await insert_cluster(pool))["id"]
+    cid = (await insert_session(pool))["id"]
     busy = await _ready_agent(pool, cid, free_ago=60, state="busy")
     booting = await _ready_agent(pool, cid, free_ago=60, state="booting")
     free = await _ready_agent(pool, cid, free_ago=5)
@@ -587,7 +587,7 @@ async def test_busy_target_does_not_block_head_of_line(pool):
 
 
 async def test_gone_target_fails_with_target_gone(pool):
-    cid = (await insert_cluster(pool))["id"]
+    cid = (await insert_session(pool))["id"]
     gone = await _ready_agent(pool, cid, free_ago=60)
     await _exec(pool, "UPDATE agents SET gone_at=now() WHERE id=%s", (gone["id"],))
     free = await _ready_agent(pool, cid, free_ago=5)
@@ -607,7 +607,7 @@ async def test_gone_target_fails_with_target_gone(pool):
 
 
 async def test_ambiguous_keeps_reservation_until_failed(pool):
-    cid = (await insert_cluster(pool))["id"]
+    cid = (await insert_session(pool))["id"]
     agent = await _ready_agent(pool, cid, free_ago=30)
     m1 = await _enqueue(pool, cid, "maybe")
     c1 = await _claim(pool)
@@ -628,7 +628,7 @@ async def test_ambiguous_keeps_reservation_until_failed(pool):
 
 
 async def test_verifying_transitions_and_guarded_release(pool):
-    cid = (await insert_cluster(pool))["id"]
+    cid = (await insert_session(pool))["id"]
     agent = await _ready_agent(pool, cid, free_ago=30)
 
     async def claim_verifying(text: str):
@@ -681,7 +681,7 @@ async def test_verifying_transitions_and_guarded_release(pool):
 
 
 async def test_list_verifying_age_from_db_clock(pool):
-    cid = (await insert_cluster(pool))["id"]
+    cid = (await insert_session(pool))["id"]
     agent = await _ready_agent(pool, cid)
     mid = await _enqueue(pool, cid, "check me")
     claim = await _claim(pool)
@@ -696,10 +696,10 @@ async def test_list_verifying_age_from_db_clock(pool):
     assert len(rows) == 1
     v = rows[0]
     assert v.message_id == mid
-    assert v.cluster_id == cid
+    assert v.session_id == cid
     assert v.agent_id == agent["id"]
     assert v.agent_url == agent["url"]
-    assert v.session_id == agent["session_id"]
+    assert v.wrapper_session_id == agent["wrapper_session_id"]
     assert v.dispatched_at == claim.dispatched_at
     assert v.text == "check me"
     assert v.error == "ambiguous"
@@ -711,7 +711,7 @@ async def test_list_verifying_age_from_db_clock(pool):
 
 
 async def test_transitions_notify(pool, dsn):
-    cid = (await insert_cluster(pool))["id"]
+    cid = (await insert_session(pool))["id"]
     await _ready_agent(pool, cid)
     listener = await psycopg.AsyncConnection.connect(dsn, autocommit=True)
     try:
@@ -726,8 +726,8 @@ async def test_transitions_notify(pool, dsn):
         ]
     finally:
         await listener.close()
-    assert ("message_queued", {"cluster_id": str(cid)}) in got
-    assert got.count(("status", {"cluster_id": str(cid)})) >= 3
+    assert ("message_queued", {"session_id": str(cid)}) in got
+    assert got.count(("status", {"session_id": str(cid)})) >= 3
     assert mid == claim.message_id
 
 
@@ -735,7 +735,7 @@ async def test_transitions_notify(pool, dsn):
 
 
 async def test_commands_and_checks_lifecycle(pool):
-    cid = (await insert_cluster(pool))["id"]
+    cid = (await insert_session(pool))["id"]
     agent = await _ready_agent(pool, cid)
     async with pool.connection() as conn:
         interrupt = await q.enqueue_command(conn, agent["id"], "interrupt")
@@ -747,8 +747,8 @@ async def test_commands_and_checks_lifecycle(pool):
     async with pool.connection() as conn:
         cmd = await q.claim_command(conn, ["restart", "rebootstrap"])
     assert (cmd.id, cmd.kind, cmd.status) == (restart, "restart", "running")
-    assert (cmd.agent_id, cmd.cluster_id) == (agent["id"], cid)
-    assert (cmd.agent_url, cmd.session_id) == (agent["url"], agent["session_id"])
+    assert (cmd.agent_id, cmd.session_id) == (agent["id"], cid)
+    assert (cmd.agent_url, cmd.wrapper_session_id) == (agent["url"], agent["wrapper_session_id"])
     assert cmd.started_at is not None
     assert await _call(pool, q.claim_command, ["restart", "rebootstrap"]) is None
 
@@ -780,7 +780,7 @@ async def test_commands_and_checks_lifecycle(pool):
         c2 = await q.enqueue_check(conn, cid, "ruff check .")
         c3 = await q.enqueue_check(conn, cid, "make")
     check = await _call(pool, q.claim_check)
-    assert (check.id, check.cluster_id, check.command, check.status) == (
+    assert (check.id, check.session_id, check.command, check.status) == (
         c1,
         cid,
         "pytest -q",

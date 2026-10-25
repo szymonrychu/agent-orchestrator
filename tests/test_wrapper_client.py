@@ -7,7 +7,7 @@ import json
 import httpx
 import pytest
 
-from agent_orchestrator.wrapper import (
+from agents_orchestrator.wrapper import (
     Ambiguous,
     Busy,
     ConfigError,

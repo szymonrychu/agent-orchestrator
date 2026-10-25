@@ -11,8 +11,8 @@ import pytest_asyncio
 from psycopg import sql
 from testcontainers.postgres import PostgresContainer
 
-from agent_orchestrator.db.migrate import run_migrations
-from agent_orchestrator.db.pool import open_pool
+from agents_orchestrator.db.migrate import run_migrations
+from agents_orchestrator.db.pool import open_pool
 
 TEMPLATE_DB = "orch_template"
 

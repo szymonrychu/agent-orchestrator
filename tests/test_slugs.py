@@ -6,7 +6,7 @@ import re
 
 import pytest
 
-from agent_orchestrator.spec import SLUG_MAX, generated_slug, slugify, validate_slug
+from agents_orchestrator.spec import SLUG_MAX, generated_slug, slugify, validate_slug
 
 
 @pytest.mark.parametrize(
@@ -61,6 +61,6 @@ def test_generated_slug_reserved_prefix_is_recut() -> None:
 
 
 def test_generated_slug_fallback_base() -> None:
-    assert generated_slug("!!! ???", rand=lambda: "abcd") == "cluster-abcd"
-    assert generated_slug("", rand=lambda: "abcd") == "cluster-abcd"
+    assert generated_slug("!!! ???", rand=lambda: "abcd") == "session-abcd"
+    assert generated_slug("", rand=lambda: "abcd") == "session-abcd"
     validate_slug(generated_slug("   "))

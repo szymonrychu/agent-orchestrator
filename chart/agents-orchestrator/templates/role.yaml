@@ -1,0 +1,30 @@
+{{- if .Values.rbac.create }}
+# Least privilege for the reconciler, in the release namespace only (D9, D26).
+# Secrets are write-only: session Secrets are deleted by deterministic name, never read.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "agents-orchestrator.fullname" . }}-reconciler
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agents-orchestrator.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["services", "configmaps", "persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+{{- end }}

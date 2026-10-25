@@ -1,4 +1,4 @@
-"""ClusterSpec.init_scripts: limits, hash, preset round trip and the create-from-preset snapshot."""
+"""SessionSpec.init_scripts: limits, hash, preset round trip and the create-from-preset snapshot."""
 
 from __future__ import annotations
 
@@ -7,29 +7,29 @@ import json
 
 import pytest
 from pydantic import ValidationError
-from test_api_clusters import assert_error, client_for, make_settings
+from test_api_sessions import assert_error, client_for, make_settings
 
-from agent_orchestrator.api.app import create_app
-from agent_orchestrator.spec import INIT_DIR, ClusterSpec, init_scripts_hash
+from agents_orchestrator.api.app import create_app
+from agents_orchestrator.spec import INIT_DIR, SessionSpec, init_scripts_hash
 
 P = "/api/v1/presets"
-C = "/api/v1/clusters"
+C = "/api/v1/sessions"
 
 
 def test_init_scripts_limits():
-    assert ClusterSpec().init_scripts == []
-    assert len(ClusterSpec(init_scripts=["x"] * 20).init_scripts) == 20
-    assert len(ClusterSpec(init_scripts=["a" * 16384]).init_scripts[0]) == 16384
+    assert SessionSpec().init_scripts == []
+    assert len(SessionSpec(init_scripts=["x"] * 20).init_scripts) == 20
+    assert len(SessionSpec(init_scripts=["a" * 16384]).init_scripts[0]) == 16384
     with pytest.raises(ValidationError, match=r"init_scripts\[1\]"):
-        ClusterSpec(init_scripts=["ok", "   "])
+        SessionSpec(init_scripts=["ok", "   "])
     with pytest.raises(ValidationError, match=r"init_scripts\[0\]"):
-        ClusterSpec(init_scripts=[""])
+        SessionSpec(init_scripts=[""])
     with pytest.raises(ValidationError, match=r"init_scripts\[0\]"):
-        ClusterSpec(init_scripts=["a" * 16385])
+        SessionSpec(init_scripts=["a" * 16385])
     with pytest.raises(ValidationError, match="at most 20"):
-        ClusterSpec(init_scripts=["x"] * 21)
+        SessionSpec(init_scripts=["x"] * 21)
     with pytest.raises(ValidationError):
-        ClusterSpec(init_scripts=["x", 3])
+        SessionSpec(init_scripts=["x", 3])
 
 
 def test_init_scripts_hash():
@@ -71,7 +71,7 @@ async def test_preset_round_trips_init_scripts(pool, dsn):
         )
 
 
-async def test_cluster_from_preset_snapshots_init_scripts(pool, dsn):
+async def test_session_from_preset_snapshots_init_scripts(pool, dsn):
     app = create_app(make_settings(dsn, max_replicas=4), pool)
     async with client_for(app) as http:
         r = await http.post(P, json={"name": "snap", "spec": {"init_scripts": ["echo hi"]}})

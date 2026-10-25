@@ -1,20 +1,20 @@
-"""Leader-only routing: an untargeted message behaves as if targeted to the cluster leader."""
+"""Leader-only routing: an untargeted message behaves as if targeted to the session leader."""
 
 from __future__ import annotations
 
 import uuid
 
-from factories import insert_agent, insert_cluster, set_agent_status
+from factories import insert_agent, insert_session, set_agent_status
 
-from agent_orchestrator.db import queue as q
+from agents_orchestrator.db import queue as q
 
 
-async def _agent(pool, cluster_id, *, free_ago: float, state: str = "idle", **kw):
+async def _agent(pool, session_id, *, free_ago: float, state: str = "idle", **kw):
     agent = await insert_agent(
         pool,
-        cluster_id,
+        session_id,
         ready=True,
-        session_id=f"s-{uuid.uuid4().hex[:6]}",
+        wrapper_session_id=f"s-{uuid.uuid4().hex[:6]}",
         url=f"http://agent-{uuid.uuid4().hex[:6]}:8080",
         **kw,
     )
@@ -32,20 +32,20 @@ async def _exec(pool, query: str, params: tuple = ()) -> None:
         await conn.execute(query, params)
 
 
-async def _lead(pool, cluster_id, agent_id, epoch: int = 1) -> None:
+async def _lead(pool, session_id, agent_id, epoch: int = 1) -> None:
     await _exec(
         pool,
-        "INSERT INTO cluster_leaders (cluster_id, agent_id, epoch, since, reason)"
+        "INSERT INTO session_leaders (session_id, agent_id, epoch, since, reason)"
         " VALUES (%s, %s, %s, now(), 'initial')"
-        " ON CONFLICT (cluster_id) DO UPDATE SET agent_id = EXCLUDED.agent_id,"
+        " ON CONFLICT (session_id) DO UPDATE SET agent_id = EXCLUDED.agent_id,"
         " epoch = EXCLUDED.epoch",
-        (cluster_id, agent_id, epoch),
+        (session_id, agent_id, epoch),
     )
 
 
-async def _enqueue(pool, cluster_id, text: str = "hi", target=None) -> int:
+async def _enqueue(pool, session_id, text: str = "hi", target=None) -> int:
     async with pool.connection() as conn:
-        return await q.enqueue_message(conn, cluster_id, text, target)
+        return await q.enqueue_message(conn, session_id, text, target)
 
 
 async def _claim(pool):
@@ -60,7 +60,7 @@ async def _status(pool, message_id) -> str:
 
 
 async def test_untargeted_goes_to_leader(pool):
-    c = await insert_cluster(pool)
+    c = await insert_session(pool)
     other = await _agent(pool, c["id"], free_ago=100, ordinal=0)
     leader = await _agent(pool, c["id"], free_ago=1, ordinal=1)
     await _lead(pool, c["id"], leader["id"])
@@ -72,7 +72,7 @@ async def test_untargeted_goes_to_leader(pool):
 
 
 async def test_busy_leader_holds_untargeted_only(pool):
-    c = await insert_cluster(pool)
+    c = await insert_session(pool)
     member = await _agent(pool, c["id"], free_ago=10, ordinal=0)
     leader = await _agent(pool, c["id"], free_ago=10, ordinal=1, state="busy")
     await _lead(pool, c["id"], leader["id"])
@@ -89,7 +89,7 @@ async def test_busy_leader_holds_untargeted_only(pool):
 
 
 async def test_explicit_target_wins(pool):
-    c = await insert_cluster(pool)
+    c = await insert_session(pool)
     member = await _agent(pool, c["id"], free_ago=5, ordinal=0)
     leader = await _agent(pool, c["id"], free_ago=50, ordinal=1)
     await _lead(pool, c["id"], leader["id"])
@@ -100,7 +100,7 @@ async def test_explicit_target_wins(pool):
 
 
 async def test_gone_leader_waits(pool):
-    c = await insert_cluster(pool)
+    c = await insert_session(pool)
     await _agent(pool, c["id"], free_ago=50, ordinal=0)
     leader = await _agent(pool, c["id"], free_ago=50, ordinal=1)
     await _lead(pool, c["id"], leader["id"])
@@ -111,7 +111,7 @@ async def test_gone_leader_waits(pool):
 
 
 async def test_new_leader_after_handover(pool):
-    c = await insert_cluster(pool)
+    c = await insert_session(pool)
     old = await _agent(pool, c["id"], free_ago=50, ordinal=0)
     new = await _agent(pool, c["id"], free_ago=5, ordinal=1)
     await _lead(pool, c["id"], old["id"])
@@ -127,7 +127,7 @@ async def test_new_leader_after_handover(pool):
 
 
 async def test_held_untargeted_backoff_does_not_starve_targeted(pool):
-    c = await insert_cluster(pool)
+    c = await insert_session(pool)
     member = await _agent(pool, c["id"], free_ago=10, ordinal=0)
     leader = await _agent(pool, c["id"], free_ago=10, ordinal=1, state="busy")
     await _lead(pool, c["id"], leader["id"])

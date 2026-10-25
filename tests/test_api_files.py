@@ -1,4 +1,4 @@
-"""File proxy routes: GET /api/v1/clusters/{id}/files and .../files/content (D1, D4)."""
+"""File proxy routes: GET /api/v1/sessions/{id}/files and .../files/content (D1, D4)."""
 
 from __future__ import annotations
 
@@ -9,31 +9,31 @@ from dataclasses import dataclass
 
 import httpx
 import pytest_asyncio
-from factories import insert_agent, insert_cluster, set_agent_status
+from factories import insert_agent, insert_session, set_agent_status
 from fakes.fake_wrapper import FakeWrapper
-from test_api_clusters import assert_error, client_for, make_settings
+from test_api_sessions import assert_error, client_for, make_settings
 
-from agent_orchestrator.api import workspace
-from agent_orchestrator.api.app import create_app
-from agent_orchestrator.tokens import derive_tokens
+from agents_orchestrator.api import workspace
+from agents_orchestrator.api.app import create_app
+from agents_orchestrator.tokens import derive_tokens
 
 KEY = "k" * 32
 
 
-def token_of(cluster_id) -> str:
-    return derive_tokens(KEY.encode(), cluster_id).auth
+def token_of(session_id) -> str:
+    return derive_tokens(KEY.encode(), session_id).auth
 
 
 @dataclass
 class Rig:
     http: object
     pool: object
-    cluster: dict
+    session: dict
     fakes: list[FakeWrapper]
 
-    async def agent(self, ordinal: int, *, ready: bool = True, cluster: dict | None = None):
-        """A fake wrapper with one session, registered as agent `ordinal` of the cluster."""
-        cl = cluster or self.cluster
+    async def agent(self, ordinal: int, *, ready: bool = True, session: dict | None = None):
+        """A fake wrapper with one session, registered as agent `ordinal` of the session."""
+        cl = session or self.session
         fake = FakeWrapper(token=token_of(cl["id"]))
         await fake.start()
         self.fakes.append(fake)
@@ -45,20 +45,25 @@ class Rig:
             )
         sid = made.json()["session_id"]
         row = await insert_agent(
-            self.pool, cl["id"], ordinal=ordinal, url=fake.base_url, session_id=sid, ready=ready
+            self.pool,
+            cl["id"],
+            ordinal=ordinal,
+            url=fake.base_url,
+            wrapper_session_id=sid,
+            ready=ready,
         )
         await set_agent_status(self.pool, row["id"], state="idle")
         return fake, sid, row
 
-    def url(self, tail: str = "files", cluster: dict | None = None) -> str:
-        return f"/api/v1/clusters/{(cluster or self.cluster)['id']}/{tail}"
+    def url(self, tail: str = "files", session: dict | None = None) -> str:
+        return f"/api/v1/sessions/{(session or self.session)['id']}/{tail}"
 
 
 @pytest_asyncio.fixture
 async def rig(pool, dsn) -> AsyncIterator[Rig]:
     app = create_app(make_settings(dsn, master_key=KEY), pool)
-    cluster = await insert_cluster(pool)
-    state = Rig(None, pool, cluster, [])
+    session = await insert_session(pool)
+    state = Rig(None, pool, session, [])
     async with client_for(app) as http:
         state.http = http
         try:
@@ -87,8 +92,8 @@ async def test_list_proxied_from_first_ready_agent(rig):
     r = await rig.http.get(rig.url())
     assert r.status_code == 200, r.text
     body = r.json()
-    assert set(body) == {"cluster_id", "agent_id", "root", "path", "entries", "next_offset"}
-    assert body["cluster_id"] == str(rig.cluster["id"])
+    assert set(body) == {"session_id", "agent_id", "root", "path", "entries", "next_offset"}
+    assert body["session_id"] == str(rig.session["id"])
     assert body["agent_id"] == str(row["id"])
     assert body["root"] == fake.sessions[sid].workdir
     assert body["root"] != str(fake.workdir(sid))  # reported (logical) vs backing directory
@@ -135,15 +140,15 @@ async def test_agent_id_selects_and_scopes(rig):
     ).json()
     assert got["agent_id"] == str(row2["id"]) and got["content"] == "second"
 
-    # an agent of another cluster, or an unknown one, is not_found; so is an unknown cluster
-    foreign_cluster = await insert_cluster(rig.pool)
-    _, _, foreign = await rig.agent(0, cluster=foreign_cluster)
+    # an agent of another session, or an unknown one, is not_found; so is an unknown session
+    foreign_session = await insert_session(rig.pool)
+    _, _, foreign = await rig.agent(0, session=foreign_session)
     for route in ("files", "files/content"):
         r = await rig.http.get(rig.url(route), params={"agent_id": str(foreign["id"])})
         assert_error(r, 404, "not_found")
         r = await rig.http.get(rig.url(route), params={"agent_id": str(uuid.uuid4())})
         assert_error(r, 404, "not_found")
-        r = await rig.http.get(f"/api/v1/clusters/{uuid.uuid4()}/{route}")
+        r = await rig.http.get(f"/api/v1/sessions/{uuid.uuid4()}/{route}")
         assert_error(r, 404, "not_found")
 
 
@@ -159,7 +164,7 @@ async def test_content_proxied(rig):
     assert r.status_code == 200, r.text
     body = r.json()
     assert set(body) == {
-        "cluster_id",
+        "session_id",
         "agent_id",
         "path",
         "size",
@@ -168,7 +173,7 @@ async def test_content_proxied(rig):
         "kind",
         "content",
     }
-    assert body["cluster_id"] == str(rig.cluster["id"]) and body["agent_id"] == str(row["id"])
+    assert body["session_id"] == str(rig.session["id"]) and body["agent_id"] == str(row["id"])
     assert body["path"] == "src/main.py"
     assert body["kind"] == "text" and body["content"] == "print('hé')\n"
     assert body["mime"] == "text/x-python"
@@ -205,14 +210,14 @@ async def test_errors_pass_through(rig):
     fake.token = "different"
     r = await rig.http.get(rig.url())
     assert r.status_code == 401
-    assert token_of(rig.cluster["id"]) not in r.text
-    fake.token = token_of(rig.cluster["id"])
+    assert token_of(rig.session["id"]) not in r.text
+    fake.token = token_of(rig.session["id"])
 
     await fake.set_unreachable(True)
     for route in ("files", "files/content"):
         r = await rig.http.get(rig.url(route), params={"path": "src"})
         assert_error(r, 502, "wrapper_unreachable")
-        assert token_of(rig.cluster["id"]) not in r.text
+        assert token_of(rig.session["id"]) not in r.text
     await fake.set_unreachable(False)
 
 

@@ -1,6 +1,6 @@
-# agent-orchestrator
+# agents-orchestrator
 
-agent-orchestrator is a headless `/api/v1` that defines, run, message and discard clusters of claude-code-wrapper pods in the namespace `agents`. One Python repo and image runs four processes (`orch api`, `orch dispatcher`, `orch ingester`, `orch reconciler`) that coordinate only through a Postgres database. Messages to a cluster go round-robin to the agent free the longest; its web UI is the [agents-web](https://github.com/szymonrychu/agents-web) component, and the same API serves tatara and magic-trainer. The repo ships its own Helm chart.
+agents-orchestrator is a headless `/api/v1` that defines, runs, messages and discards sessions of claude-code-wrapper pods in the namespace `agents`. One Python repo and image runs four processes (`orch api`, `orch dispatcher`, `orch ingester`, `orch reconciler`) that coordinate only through a Postgres database. Messages to a session go round-robin to the agent free the longest; its web UI is the [agents-web](https://github.com/szymonrychu/agents-web) component, and the same API serves tatara and magic-trainer. The repo ships its own Helm chart.
 
 ## Development
 
@@ -10,12 +10,12 @@ Tasks run through mise:
 - `mise run lint` - ruff check and format check
 - `mise run fmt` - format and autofix
 - `mise run test` - unit tests
-- `mise run test:integration` - tests that need a real wrapper image. When `ORCH_TEST_WRAPPER_IMAGE` is unset the task builds `e2e/agent-test.Dockerfile` as `agent-orchestrator-agent-test:e2e` (the tag `scripts/e2e.sh` uses), exports it, and runs the suite; set the variable to use another image
+- `mise run test:integration` - tests that need a real wrapper image. When `ORCH_TEST_WRAPPER_IMAGE` is unset the task builds `e2e/agent-test.Dockerfile` as `agents-orchestrator-agent-test:e2e` (the tag `scripts/e2e.sh` uses), exports it, and runs the suite; set the variable to use another image
 - `mise run test:e2e` - kind end-to-end tests
 
 ## Configuration
 
-Every process reads `ORCH_*` variables (the contract `agent-orchestrator-settings-env`, set by the Helm chart). Invalid or missing values raise one error naming every bad variable.
+Every process reads `ORCH_*` variables (the contract `agents-orchestrator-settings-env`, set by the Helm chart). Invalid or missing values raise one error naming every bad variable.
 
 | Variable | Default | Read by | Meaning |
 |---|---|---|---|
@@ -27,26 +27,26 @@ Every process reads `ORCH_*` variables (the contract `agent-orchestrator-setting
 | `ORCH_SERVICE_TOKENS` | empty | api | CSV of `<name>:<sha256 hex of the token>` (name `^[a-z0-9][a-z0-9-]{0,62}$`, 64 lowercase hex, names unique); empty refuses every service request with 401 |
 | `ORCH_SERVICE_TOKENS_FILE` | empty | api | file holding the ORCH_SERVICE_TOKENS entries (comma or newline separated); wins over ORCH_SERVICE_TOKENS |
 | `ORCH_AGENT_API_URL` | unset | api, reconciler | URL agent pods use to reach the agent port (set by the chart to the agents Service) |
-| `ORCH_NAMESPACE` | `agents` | api, reconciler, dispatcher | the one namespace of the orchestrator and every agent cluster |
-| `ORCH_AGENT_IMAGE` | empty | api, reconciler | claude-code-wrapper image the agent pods run (required to create clusters) |
+| `ORCH_NAMESPACE` | `agents` | api, reconciler, dispatcher | the one namespace of the orchestrator and every agent session |
+| `ORCH_AGENT_IMAGE` | empty | api, reconciler | claude-code-wrapper image the agent pods run (required to create sessions) |
 | `ORCH_CHECK_IMAGE` | empty | dispatcher | image for check jobs; defaults to agent_image |
 | `ORCH_DEFAULT_MODEL` | first of `ORCH_MODELS` | api, reconciler | default model for new sessions (prefilled in the form) |
 | `ORCH_DEFAULT_EFFORT` | empty | api, reconciler | default effort; empty means the Claude Code default |
 | `ORCH_MODELS` | `claude-opus-5-5,claude-sonnet-5-5,claude-haiku-5-5,claude-fable-5-1` | api | comma-separated model choices; a spec naming another model is rejected |
 | `ORCH_EFFORTS` | `low,medium,high,xhigh,max` | api | comma-separated effort choices; a spec naming another effort is rejected (empty effort is allowed) |
-| `ORCH_DEFAULT_CPU_REQUEST` | `500m` | api, reconciler | agent container CPU request filled into the stored spec when a cluster is created and the key is empty (Kubernetes quantity) |
-| `ORCH_DEFAULT_CPU_LIMIT` | `4` | api, reconciler | agent container CPU limit filled in when a cluster is created and the key is empty |
-| `ORCH_DEFAULT_MEMORY_REQUEST` | `1Gi` | api, reconciler | agent container memory request filled in when a cluster is created and the key is empty |
-| `ORCH_DEFAULT_MEMORY_LIMIT` | `8Gi` | api, reconciler | agent container memory limit filled in when a cluster is created and the key is empty |
-| `ORCH_DEFAULT_REPLICAS` | `1` | api | default agents per cluster |
+| `ORCH_DEFAULT_CPU_REQUEST` | `500m` | api, reconciler | agent container CPU request filled into the stored spec when a session is created and the key is empty (Kubernetes quantity) |
+| `ORCH_DEFAULT_CPU_LIMIT` | `4` | api, reconciler | agent container CPU limit filled in when a session is created and the key is empty |
+| `ORCH_DEFAULT_MEMORY_REQUEST` | `1Gi` | api, reconciler | agent container memory request filled in when a session is created and the key is empty |
+| `ORCH_DEFAULT_MEMORY_LIMIT` | `8Gi` | api, reconciler | agent container memory limit filled in when a session is created and the key is empty |
+| `ORCH_DEFAULT_REPLICAS` | `1` | api | default agents per session |
 | `ORCH_DEFAULT_AUTO_COMPACT_PCT` | `95` | api | auto-compact threshold percent (gauge tick and CLAUDE_AUTOCOMPACT_PCT_OVERRIDE) |
 | `ORCH_PVC_STORAGE_CLASS` | `rook-ceph-rwx` | api, reconciler | RWX storage class |
 | `ORCH_PVC_SIZE` | `20Gi` | api, reconciler | workspace PVC size |
-| `ORCH_CLAUDE_SECRET_NAME` | `agent-orchestrator-claude` | api, reconciler | Secret holding Claude credentials |
+| `ORCH_CLAUDE_SECRET_NAME` | `agents-orchestrator-claude` | api, reconciler | Secret holding Claude credentials |
 | `ORCH_IMAGE_PULL_SECRET` | `regcred` | api, reconciler | imagePullSecret name; empty means none |
 | `ORCH_ANY_MCP_CONFIG_FILE` | empty | api, reconciler | path to default any-mcp config; empty means {} |
 | `ORCH_WRAPPER_PORT` | `8080` | dispatcher, ingester | wrapper HTTP port |
-| `ORCH_CLUSTER_DOMAIN` | `cluster.local` | dispatcher, ingester, reconciler | cluster DNS domain |
+| `ORCH_CLUSTER_DOMAIN` | `cluster.local` | dispatcher, ingester, reconciler | Kubernetes cluster DNS domain |
 | `ORCH_AGENT_TERMINATION_GRACE_SECONDS` | `90` | api, reconciler | agent pod termination grace |
 | `ORCH_HTTP_HOST` | `0.0.0.0` | api | bind host |
 | `ORCH_HTTP_PORT` | `8000` | api | bind port |
@@ -57,11 +57,11 @@ Every process reads `ORCH_*` variables (the contract `agent-orchestrator-setting
 | `ORCH_LOG_LEVEL` | `INFO` | all | log level |
 | `ORCH_ALLOWED_CIDRS` | `192.168.1.0/24` | api | comma-separated direct-peer source allowlist (health routes exempt) |
 | `ORCH_ALLOWED_ORIGINS` | empty | api | comma-separated browser origins (`scheme://host[:port]`, lower-cased, no path, no trailing slash) allowed to open a WebSocket or call the terminal POST and DELETE routes; empty refuses every request that carries an `Origin`. Dev example: `http://localhost:5173` |
-| `ORCH_AGENT_IMAGES` | empty | api | comma-separated extra ClusterSpec.image allowlist (agent_image is always allowed) |
-| `ORCH_MAX_REPLICAS` | `16` | api | cap on replicas per cluster |
+| `ORCH_AGENT_IMAGES` | empty | api | comma-separated extra SessionSpec.image allowlist (agent_image is always allowed) |
+| `ORCH_MAX_REPLICAS` | `16` | api | cap on replicas per session |
 | `ORCH_MAX_PVC_SIZE` | `100Gi` | api | cap on PVC size |
-| `ORCH_MAX_CLUSTERS` | `20` | api | cap on cluster rows |
-| `ORCH_AUTOCLOSE_MIN_SECONDS` | `300` | api | smallest accepted `autoclose_after_seconds` of a cluster spec |
+| `ORCH_MAX_SESSIONS` | `20` | api | cap on session rows |
+| `ORCH_AUTOCLOSE_MIN_SECONDS` | `300` | api | smallest accepted `autoclose_after_seconds` of a session spec |
 | `ORCH_WRAPPER_SEND_TIMEOUT_SECONDS` | `15` | dispatcher, ingester | wrapper send timeout; at most half of dispatching_stale_seconds |
 | `ORCH_DISPATCHING_STALE_SECONDS` | `60` | dispatcher, ingester | dispatching row stale cutoff |
 | `ORCH_DISPATCHING_HEARTBEAT_SECONDS` | `5` | dispatcher, ingester | dispatching row heartbeat |
@@ -76,7 +76,7 @@ Every process reads `ORCH_*` variables (the contract `agent-orchestrator-setting
 | `ORCH_DISCARD_HOOK_TIMEOUT_SECONDS` | `120` | api, reconciler | discard hook timeout |
 | `ORCH_SCALE_DRAIN_SECONDS` | `900` | reconciler | scale-down drain deadline (> 0): after it the StatefulSet gets the target replicas even while a draining agent is busy |
 | `ORCH_ANY_MCP_REPO` | `https://github.com/szymonrychu/any-mcp` | api, reconciler | any-mcp git repository |
-| `ORCH_ANY_MCP_REF` | `v0.2.0` | api, reconciler | any-mcp pinned release tag vX.Y.Z (never a branch) |
+| `ORCH_ANY_MCP_REF` | `v0.3.0` | api, reconciler | any-mcp pinned release tag vX.Y.Z (never a branch) |
 | `ORCH_ON_START_TIMEOUT_SECONDS` | `600` | api, reconciler | onStart hook timeout |
 
 ## Commands
@@ -102,16 +102,16 @@ One image, one `orch` entrypoint. Every command reads `ORCH_*` settings (see Con
 
 CI (`.github/workflows/ci.yaml`, job `images`) builds the orchestrator image from the root `Dockerfile` on every push and pull request and smoke-tests it with `docker run --rm <image> --help`. Only a push to `main` logs in to Harbor (secrets `HARBOR_USERNAME`, `HARBOR_PASSWORD`) and pushes it with `regctl`.
 
-- Orchestrator image: `harbor.szymonrichert.pl/containers/agent-orchestrator:<sha7>`, where `<sha7>` is the first seven characters of the commit sha. Tags are immutable; there is no `latest`.
+- Orchestrator image: `harbor.szymonrichert.pl/containers/agents-orchestrator:<sha7>`, where `<sha7>` is the first seven characters of the commit sha. Tags are immutable; there is no `latest`.
 - Agent image: no agent image is built here. Agent pods run the claude-code-wrapper image named by `ORCH_AGENT_IMAGE`; the recommended one is `harbor.szymonrichert.pl/containers/claude-code-wrapper:1f64e9f`. This is the value for the chart's `agentImage` and agents-helmfile, and the commit the dev dependency `claude-code-wrapper` in `pyproject.toml` is pinned to, so config validation tests the wrapper the agents run.
-- any-mcp: it reaches agent pods through the rendered onStart hook, not through an image. The `any-mcp` dependency in `pyproject.toml` and `ORCH_ANY_MCP_REF` pin the same release tag (`v0.2.0`).
+- any-mcp: it reaches agent pods through the rendered onStart hook, not through an image. The `any-mcp` dependency in `pyproject.toml` and `ORCH_ANY_MCP_REF` pin the same release tag (`v0.3.0`).
 
 ## Helm chart
 
-The chart lives in `chart/agent-orchestrator` and is published to `oci://harbor.szymonrichert.pl/charts`. It installs into the one namespace the orchestrator manages; agent pods run in the release namespace.
+The chart lives in `chart/agents-orchestrator` and is published to `oci://harbor.szymonrichert.pl/charts`. It installs into the one namespace the orchestrator manages; agent pods run in the release namespace.
 
 ```sh
-helm install agent-orchestrator oci://harbor.szymonrichert.pl/charts/agent-orchestrator \
+helm install agents-orchestrator oci://harbor.szymonrichert.pl/charts/agents-orchestrator \
   --namespace agents --create-namespace \
   --set agentImage=harbor.szymonrichert.pl/containers/claude-code-wrapper:1.0.0 \
   --set postgres.url=postgresql://orch:secret@postgres:5432/orch \
@@ -126,7 +126,7 @@ A Postgres connection is required. Set exactly one of these; none, or more than 
 1. `postgres.url`: a full URI, stored in the chart Secret `<fullname>-database` (key `uri`).
 2. `postgres.host`, `user`, `database` (with `password`, `port` default 5432, `sslmode`): composed into `postgresql://<user>:<password>@<host>:<port>/<database>[?sslmode=]` with user and password URL-escaped, stored in `<fullname>-database`.
 3. `postgres.existingSecret` (with `existingSecretKey`, default `uri`): the Secret is referenced directly and no database Secret is created.
-4. `cnpg.enabled=true`: the optional CloudNativePG feature. The chart renders a `postgresql.cnpg.io/v1` Cluster `<fullname>-db` (`instances`, `imageName`, `database`, `owner`, `storage`, `walStorage`, `resources`) and reads the connection URI from the operator's `<fullname>-db-app` Secret, key `uri`. A non-empty `cnpg.backup` is copied verbatim into `spec.backup`. The CNPG operator must already be installed; it is off by default.
+4. `cnpg.enabled=true`: the optional CloudNativePG feature. The chart renders a `postgresql.cnpg.io/v1` CloudNativePG Cluster `<fullname>-db` (`instances`, `imageName`, `database`, `owner`, `storage`, `walStorage`, `resources`) and reads the connection URI from the operator's `<fullname>-db-app` Secret, key `uri`. A non-empty `cnpg.backup` is copied verbatim into `spec.backup`. The CNPG operator must already be installed; it is off by default.
 
 ### Secrets
 
@@ -196,19 +196,19 @@ ingress:
 ```
 ## Security
 
-Agent pods reach `/agent/v1` on the agents Service only, with the cluster token and from their own pod IP. The agent port serves nothing else (404), and `/agent/v1` is 404 on the main port.
+Agent pods reach `/agent/v1` on the agents Service only, with the session token and from their own pod IP. The agent port serves nothing else (404), and `/agent/v1` is 404 on the main port.
 
-Every agent pod receives `ORCH_AGENT_TOKEN` (a per-cluster HMAC of the master key, purpose `agent`), `ORCH_CLUSTER_ID` and, when `ORCH_AGENT_API_URL` is set, `ORCH_AGENT_URL`, as plain env; they are also passed through to the any-mcp stdio child. The token is therefore readable by every process in the pod, Bash and subagents included. The main-agent-only tool gate (`main_agent_only_tools`) is a best-effort guard, not a security boundary, and nothing here claims isolation from subagents. Without `ORCH_AGENT_API_URL` the reconciler logs one warning per cluster and omits `ORCH_AGENT_URL`.
+Every agent pod receives `ORCH_AGENT_TOKEN` (a per-session HMAC of the master key, purpose `agent`), `ORCH_SESSION_ID` and, when `ORCH_AGENT_API_URL` is set, `ORCH_AGENT_URL`, as plain env; they are also passed through to the any-mcp stdio child. The token is therefore readable by every process in the pod, Bash and subagents included. The main-agent-only tool gate (`main_agent_only_tools`) is a best-effort guard, not a security boundary, and nothing here claims isolation from subagents. Without `ORCH_AGENT_API_URL` the reconciler logs one warning per session and omits `ORCH_AGENT_URL`.
 
-The api trusts only the direct socket peer (`ORCH_ALLOWED_CIDRS`, see API). Behind an ingress that peer is the ingress controller, but not its node LAN IP. ingress-nginx runs hostNetwork, yet on a flannel cluster its proxied connection reaches the api pod from the node's pod-network gateway address: from another node via `flannel.1` as `10.244.N.0`, from the same node via `cni0` as `10.244.N.1`. A LAN client therefore gets `403` if `ORCH_ALLOWED_CIDRS` lists only the LAN CIDR. Set `ORCH_ALLOWED_CIDRS` to each node's podCIDR `.0/31` (covers `.0` and `.1`; agent pods get `.2` and up, so they stay outside), derived from `kubectl get nodes -o jsonpath='{range .items[*]}{.spec.podCIDR}{"\n"}{end}'`, for example `10.244.0.0/31,10.244.1.0/31`. Update the list whenever nodes are added or removed. The allowlist is blind to who the original client was.
+The api trusts only the direct socket peer (`ORCH_ALLOWED_CIDRS`, see API). Behind an ingress that peer is the ingress controller, but not its node LAN IP. ingress-nginx runs hostNetwork, yet on a flannel Kubernetes cluster its proxied connection reaches the api pod from the node's pod-network gateway address: from another node via `flannel.1` as `10.244.N.0`, from the same node via `cni0` as `10.244.N.1`. A LAN client therefore gets `403` if `ORCH_ALLOWED_CIDRS` lists only the LAN CIDR. Set `ORCH_ALLOWED_CIDRS` to each node's podCIDR `.0/31` (covers `.0` and `.1`; agent pods get `.2` and up, so they stay outside), derived from `kubectl get nodes -o jsonpath='{range .items[*]}{.spec.podCIDR}{"\n"}{end}'`, for example `10.244.0.0/31,10.244.1.0/31`. Update the list whenever nodes are added or removed. The allowlist is blind to who the original client was.
 
 The boundary this opens: an agent pod can call the ingress hostname. flannel `ipMasq` SNATs pod-to-LAN traffic to the node IP, a hostNetwork ingress-nginx admits it under a LAN `whitelist-source-range`, and proxies it to the api from the node pod-network gateway address that the allowlist accepts. A pod is then indistinguishable from a LAN client.
 
-Close it at the ingress: set `ingress.denySourceRanges` to the cluster node IPs (pod egress to the LAN is SNATed to node LAN IPs, so denying them denies pods) and `ingress.allowSourceRanges` to the LAN CIDR. A process running on a node itself is denied too. Example:
+Close it at the ingress: set `ingress.denySourceRanges` to the session node IPs (pod egress to the LAN is SNATed to node LAN IPs, so denying them denies pods) and `ingress.allowSourceRanges` to the LAN CIDR. A process running on a node itself is denied too. Example:
 
 ```yaml
 ingress:
-  denySourceRanges: ["192.168.1.10/32", "192.168.1.11/32"]  # cluster node IPs
+  denySourceRanges: ["192.168.1.10/32", "192.168.1.11/32"]  # session node IPs
   allowSourceRanges: ["192.168.1.0/24"]                      # the LAN
 ```
 
@@ -233,11 +233,11 @@ In-cluster trigger services (agents-webhook, agents-schedule) call the orchestra
   - `GET /api/v1/meta`
   - `GET /api/v1/presets`
   - `GET /api/v1/presets/{preset_id}`
-  - `GET /api/v1/clusters`
-  - `POST /api/v1/clusters`
-  - `GET /api/v1/clusters/{cluster_id}`
-  - `GET /api/v1/clusters/{cluster_id}/messages`
-  - `POST /api/v1/clusters/{cluster_id}/messages`
+  - `GET /api/v1/sessions`
+  - `POST /api/v1/sessions`
+  - `GET /api/v1/sessions/{session_id}`
+  - `GET /api/v1/sessions/{session_id}/messages`
+  - `POST /api/v1/sessions/{session_id}/messages`
   - `GET /api/v1/messages/{message_id}`
 
 Mint a token and its hash:
@@ -255,12 +255,12 @@ Command hooks run `sh -c` in the agent pod with the wrapper's full environment, 
 
 ## Releasing
 
-The chart is published to `oci://harbor.szymonrichert.pl/charts/agent-orchestrator` with immutable versions; Harbor rejects a repeated version and CI fails first with a clear message. `scripts/chart-version.sh` picks the version from `version` in `chart/agent-orchestrator/Chart.yaml`:
+The chart is published to `oci://harbor.szymonrichert.pl/charts/agents-orchestrator` with immutable versions; Harbor rejects a repeated version and CI fails first with a clear message. `scripts/chart-version.sh` picks the version from `version` in `chart/agents-orchestrator/Chart.yaml`:
 
 - Every push to `main` (after the `chart` and `images` jobs pass) publishes `<version>-main.<sha7>`, with `appVersion` set to `<sha7>`. agents-helmfile can pin that exact version.
-- A tag `vX.Y.Z` publishes `X.Y.Z`. The tag must equal Chart.yaml's `version`, otherwise the job fails. The tagged commit must already have been built by main CI: the job checks that `harbor.szymonrichert.pl/containers/agent-orchestrator:<sha7>` exists before packaging.
+- A tag `vX.Y.Z` publishes `X.Y.Z`. The tag must equal Chart.yaml's `version`, otherwise the job fails. The tagged commit must already have been built by main CI: the job checks that `harbor.szymonrichert.pl/containers/agents-orchestrator:<sha7>` exists before packaging.
 - To release: bump `version` in Chart.yaml, merge to `main`, wait for CI, then `git tag vX.Y.Z` on that commit and push the tag.
-- Publishing a version that already exists fails with `chart version <v> already published; bump chart/agent-orchestrator/Chart.yaml version`.
+- Publishing a version that already exists fails with `chart version <v> already published; bump chart/agents-orchestrator/Chart.yaml version`.
 - The Harbor robot (`HARBOR_USERNAME`, `HARBOR_PASSWORD`) needs push on both the `containers` and `charts` projects.
 ## Kubernetes permissions
 
@@ -268,90 +268,94 @@ Only the reconciler talks to Kubernetes. Everything it touches lives in one name
 
 | Resource | Verbs | Used for |
 |---|---|---|
-| `apps` statefulsets | get, list, watch, create, patch, delete | the agents of a cluster |
+| `apps` statefulsets | get, list, watch, create, patch, delete | the agents of a session |
 | services, configmaps, persistentvolumeclaims | get, list, watch, create, patch, delete | headless Service, ccw config and onStart script, the RWX workspace |
-| secrets | create, patch, delete | the cluster Secret `agent-<slug>-ccw` |
+| secrets | create, patch, delete | the session Secret `agent-<slug>-ccw` |
 | pods | get, list, watch, delete | observing agents, the restart command |
 | `batch` jobs | get, list, watch, create, delete | checks |
 | pods/log | get | check log tails |
 
 Secrets are limited to create, patch and delete: there is no get, list or watch on secrets, so the reconciler can never read the master key, the Claude token, the database credentials or any other Secret in the namespace. The Role is bound only to the reconciler's ServiceAccount; the api, dispatcher and ingester run with `automountServiceAccountToken: false`. The Role never grants `pods/exec`, and there is no ClusterRole and no wildcard.
 
-Applies are server-side applies with field manager `agent-orchestrator` and `force`, so the reconciler owns the fields it renders.
+Applies are server-side applies with field manager `agents-orchestrator` and `force`, so the reconciler owns the fields it renders.
 
 ### One shared namespace, kept safe (D26)
 
-Clusters are told apart by labels, not namespaces. Every object of cluster `<slug>` carries both `app.kubernetes.io/managed-by=agent-orchestrator` and `agents.szymonrichert.pl/cluster=<slug>`. These guards keep the reconciler off everything else in the namespace:
+Sessions are told apart by labels, not namespaces. Every object of session `<slug>` carries both `app.kubernetes.io/managed-by=agents-orchestrator` and `agents.szymonrichert.pl/session=<slug>`. These guards keep the reconciler off everything else in the namespace:
 
-- Reserved names. Every cluster object is named with the prefix `agent-<slug>` (`agent-<slug>`, `agent-<slug>-workspace`, `agent-<slug>-ccw`, `agent-<slug>-config`). The slugs `orchestrator` and `orchestrator-*` are rejected, so no cluster name can be one of the chart's own `agent-orchestrator-*` names.
-- Label guard on apply. Before applying a StatefulSet, Service, ConfigMap or PVC the reconciler reads it. When it exists without both labels it is foreign: nothing of that cluster is applied, and the cluster status records `phase: error` with `foreign_object <kind>/<name>` until the object is removed or renamed.
-- Label guard on prune. Every list carries the cluster selector, and only objects carrying both labels are ever deleted. A restart deletes a pod only when it is listed under its cluster's selector.
-- Secrets deleted by name. Secrets are never listed or read. The cluster Secret is applied with the other objects and, when the cluster is discarded, deleted by its deterministic name `agent-<slug>-ccw`; a Secret that is already gone is fine.
+- Reserved names. Every session object is named with the prefix `agent-<slug>` (`agent-<slug>`, `agent-<slug>-workspace`, `agent-<slug>-ccw`, `agent-<slug>-config`). The slugs `orchestrator` and `orchestrator-*` are rejected, so no session object can be mistaken for one of the orchestrator's own objects.
+- Label guard on apply. Before applying a StatefulSet, Service, ConfigMap or PVC the reconciler reads it. When it exists without both labels it is foreign: nothing of that session is applied, and the session status records `phase: error` with `foreign_object <kind>/<name>` until the object is removed or renamed.
+- Label guard on prune. Every list carries the session selector, and only objects carrying both labels are ever deleted. A restart deletes a pod only when it is listed under its session's selector.
+- Secrets deleted by name. Secrets are never listed or read. The session Secret is applied with the other objects and, when the session is discarded, deleted by its deterministic name `agent-<slug>-ccw`; a Secret that is already gone is fine.
 
 ### Reconcile loop
 
-The reconciler is level-triggered: every `ORCH_RECONCILE_POLL_SECONDS` (10 s), and at once on NOTIFY `cluster_changed`, it converges every cluster row:
+The reconciler is level-triggered: every `ORCH_RECONCILE_POLL_SECONDS` (10 s), and at once on NOTIFY `session_changed`, it converges every session row:
 
 1. Render the PVC, Secret, ConfigMap, headless Service and StatefulSet, check the label guard, apply them, and prune labelled objects that are no longer desired.
-2. Run the init scripts, once per cluster (see Init scripts below).
-3. List the cluster's pods and upsert one `agents` row per ordinal, with the per-pod URL `http://<pod>.agent-<slug>.<namespace>.svc.<cluster domain>:<ORCH_WRAPPER_PORT>` and its readiness. An agent whose pod vanished with an ordinal at or above `replicas` is marked gone; one below `replicas` is kept, unready, while its pod is recreated.
+2. Run the init scripts, once per session (see Init scripts below).
+3. List the session's pods and upsert one `agents` row per ordinal, with the per-pod URL `http://<pod>.agent-<slug>.<namespace>.svc.<ORCH_CLUSTER_DOMAIN>:<ORCH_WRAPPER_PORT>` and its readiness. An agent whose pod vanished with an ordinal at or above `replicas` is marked gone; one below `replicas` is kept, unready, while its pod is recreated.
 4. Bootstrap a session on every ready agent that has none, unless the init run holds them.
 5. Write `status {phase, ready, replicas, message}` (`phase` is `pending`, `ready`, `degraded`, `deleting` or `error`) and `observed_generation`, only when something changed.
 
 A scale-down drains: agents at or above `spec.replicas` that are not gone are draining, and a busy one (`agent_status.state` `busy`, or a message to it still `dispatching` or `verifying`) finishes its turn before its pod goes. The StatefulSet is applied with replicas `max(spec.replicas, 1 + highest busy draining ordinal)`, never above the replicas already applied, so idle agents above the highest busy one go at once (a StatefulSet removes from the top) and the rest go as they become idle. Only `StatefulSet.spec.replicas` differs from the target render: the ConfigMap, Secret, Service and pod template are unchanged, so no pod rolls. Draining agents are never `ready`, so the dispatcher, leader selection and session bootstrap never pick them. `ORCH_SCALE_DRAIN_SECONDS` (900) after the first tick that saw the drain the target applies regardless, and an interrupted turn takes the verify path. While draining, `status.drain {target, since, waiting}` (`waiting`: the busy draining ordinals) is set and the message carries `draining <n> agents`; `since` lives in the status, so the deadline survives a reconciler failover. `status.replicas` and the phase keep counting the target. Raising replicas during a drain ends it with no pod restart.
 
-Init scripts (`spec.init_scripts`) run exactly once per cluster, as Job `agent-<slug>-init`, and the run is recorded in `status.init {state, scripts_hash, started_at, finished_at, exit_code, log_tail, reason, job}`, written only by the reconciler:
+Init scripts (`spec.init_scripts`) run exactly once per session, as Job `agent-<slug>-init`, and the run is recorded in `status.init {state, scripts_hash, started_at, finished_at, exit_code, log_tail, reason, job}`, written only by the reconciler:
 
-- The first converge decides, once. No scripts writes `state: skipped`; scripts write `state: running` and then create the Job. Once `status.init` exists no other Job is ever started for the cluster: an edit of `spec.init_scripts`, also of a `skipped` cluster, applies to the next cluster created from the preset.
-- The Job runs in the agent image (`spec.image` or `ORCH_AGENT_IMAGE`) as uid 1000, with `spec.env`, the agent resources and the cluster PVC, in the cluster workdir, with `backoffLimit: 0` and a 30 min deadline. It writes `<workdir>/.agent-init/init.sh` (the scripts as run, under a header), `init.log` (their output) and a `.gitignore` of `*`, and runs `init.sh` with `sh -eu`; the Job's exit code is the script's. Only the workdir is shared: what a script installs elsewhere in the Job pod does not reach the agent pods.
+- The first converge decides, once. No scripts writes `state: skipped`; scripts write `state: running` and then create the Job. Once `status.init` exists no other Job is ever started for the session: an edit of `spec.init_scripts`, also of a `skipped` session, applies to the next session created from the preset.
+- The Job runs in the agent image (`spec.image` or `ORCH_AGENT_IMAGE`) as uid 1000, with `spec.env`, the agent resources and the session PVC, in the session workdir, with `backoffLimit: 0` and a 30 min deadline. It writes `<workdir>/.agent-init/init.sh` (the scripts as run, under a header), `init.log` (their output) and a `.gitignore` of `*`, and runs `init.sh` with `sh -eu`; the Job's exit code is the script's. Only the workdir is shared: what a script installs elsewhere in the Job pod does not reach the agent pods.
 - `state` goes `running` then `succeeded` (`exit_code` 0) or `failed` (the container's `exit_code`, or `reason` `timeout`, `job_missing`, `foreign_object` or `job_create_failed: <msg>`); `log_tail` is the last 200 lines (16 KiB) of the pod log. After the outcome is recorded the Job is deleted; it has no TTL, so an offline reconciler still reads the outcome. A converge never prunes it; a discard deletes it.
 - While `status.init` is absent or `running`, no session is bootstrapped: `phase` is `pending` and the message carries `init running`. A `failed` run still starts the sessions, with `phase` `degraded` and `init failed` in the message. `skipped` and `succeeded` change nothing.
 
-A deleting cluster first passes the pre-discard gate, then loses every labelled object including its PVC, and its Secret by name. Once no labelled object or pod is left, its row is deleted, which cascades its agents, messages, events, turns, commands and checks. An error in one cluster is written into its status message and never stops the others. Restart commands are claimed in the same pass: the agent's pod is deleted and the StatefulSet recreates it.
+A deleting session first passes the pre-discard gate, then loses every labelled object including its PVC, and its Secret by name. Once no labelled object or pod is left, its row is deleted, which cascades its agents, messages, events, turns, commands and checks. An error in one session is written into its status message and never stops the others. Restart commands are claimed in the same pass: the agent's pod is deleted and the StatefulSet recreates it.
 
 ## Discard
 
-`DELETE /api/v1/clusters/{id}` marks the cluster `deleting`; the reconciler then removes everything, in this order:
+`DELETE /api/v1/sessions/{id}` marks the session `deleting`; the reconciler then removes everything, in this order:
 
 1. **Quiesce** (only when a hook is configured and has not yet delivered): the StatefulSet is scaled to zero and the reconciler waits until no agent pod is left, then gives the ingester `ORCH_DISCARD_DRAIN_SECONDS` (5) to store the last events of their streams. The wait is bounded by `ORCH_DISCARD_QUIESCE_TIMEOUT_SECONDS` (120) from the start of the discard; after that the discard logs a warning and goes on.
 2. **Export** the full history as JSONL.
 3. **Hook**: deliver the export; a failed hook blocks the deletion and is retried with backoff.
 4. **Delete** everything.
 
-A discard deletes the cluster's Kubernetes objects (check Jobs, the init Job, StatefulSet and its pods, headless Service, ConfigMap, the Secret by name and the RWX PVC with the workspace) and, last, the cluster row, which cascades its whole chat history: agents, messages, turns, commands, checks and events.
+A discard deletes the session's Kubernetes objects (check Jobs, the init Job, StatefulSet and its pods, headless Service, ConfigMap, the Secret by name and the RWX PVC with the workspace) and, last, the session row, which cascades its whole chat history: agents, messages, turns, commands, checks and events.
 
 ### Hook
 
 An optional hook receives the full history export before anything is deleted. None is configured by default. The hook comes from, in order of precedence:
 
-1. `spec.discard_hook_url` of the cluster (a webhook URL, http or https only);
+1. `spec.discard_hook_url` of the session (a webhook URL, http or https only);
 2. `ORCH_DISCARD_HOOK_COMMAND` (a shell command) or `ORCH_DISCARD_HOOK_URL` (a webhook URL), set at most one.
 
 A command comes only from settings, never from the spec: the API has no auth and the reconciler holds the Kubernetes credentials. Both kinds are bounded by `ORCH_DISCARD_HOOK_TIMEOUT_SECONDS` (120).
 
 ### Export format
 
-JSONL, one JSON object per line, each with a `kind`. The first line is the `cluster` record (`id`, `slug`, `spec`, `created_at`). Then come the `agent`, `message`, `turn`, `command`, `check` and `event` records of the cluster, each kind in id order (turns in `started_at` order); a record carries the table's columns. A `command` record's own kind column is named `command_kind`. Timestamps are ISO 8601 UTC. The export is streamed from the database with server-side cursors, so a long history is never held in memory. The cluster is already `deleting` and the API refuses new messages, so, with the agents quiesced first, the history includes every event the agents produced.
+JSONL, one JSON object per line, each with a `kind`. The first line is the `session` record (`id`, `slug`, `spec`, `created_at`). Then come the `agent`, `message`, `turn`, `command`, `check` and `event` records of the session, each kind in id order (turns in `started_at` order); a record carries the table's columns. A `command` record's own kind column is named `command_kind`. Timestamps are ISO 8601 UTC. The export is streamed from the database with server-side cursors, so a long history is never held in memory. The session is already `deleting` and the API refuses new messages, so, with the agents quiesced first, the history includes every event the agents produced.
+
+### Breaking change, 2026-10-25
+
+The hook contract renamed the unit to session with no alias: a command hook now gets `ORCH_SESSION_ID` and `ORCH_SESSION_SLUG` (formerly `ORCH_CLUSTER_ID` and `ORCH_CLUSTER_SLUG`), a webhook gets `X-Orch-Session-Id` and `X-Orch-Session-Slug` (formerly `X-Orch-Cluster-Id` and `X-Orch-Cluster-Slug`), and the first export record has kind `session`, renamed with the unit. Operators must update their hook scripts and receivers before upgrading; the old names are never sent.
 
 ### Command contract
 
-Run through `sh -c` with the JSONL on stdin, `ORCH_CLUSTER_ID` and `ORCH_CLUSTER_SLUG` in its environment, in its own process group. Exit 0 is success. A non-zero exit is a failure whose reason carries the exit code and the tail of stderr (bounded). On timeout the whole process group is killed.
+Run through `sh -c` with the JSONL on stdin, `ORCH_SESSION_ID` and `ORCH_SESSION_SLUG` in its environment, in its own process group. Exit 0 is success. A non-zero exit is a failure whose reason carries the exit code and the tail of stderr (bounded). On timeout the whole process group is killed.
 
 ### Webhook contract
 
-An HTTP `POST` of the JSONL, streamed, with `Content-Type: application/x-ndjson`, `X-Orch-Cluster-Id` and `X-Orch-Cluster-Slug`. Any 2xx is success; any other status, a connection error or a timeout is a failure.
+An HTTP `POST` of the JSONL, streamed, with `Content-Type: application/x-ndjson`, `X-Orch-Session-Id` and `X-Orch-Session-Slug`. Any 2xx is success; any other status, a connection error or a timeout is a failure.
 
 ### Delivery and retries
 
-Delivery is at-least-once. Success writes `status.discard_hook_delivered` (database time), after which the export is never sent again, also not after a reconciler restart. A crash between the hook accepting and that write sends the export a second time, so a receiver must tolerate duplicates (the cluster `id` identifies them).
+Delivery is at-least-once. Success writes `status.discard_hook_delivered` (database time), after which the export is never sent again, also not after a reconciler restart. A crash between the hook accepting and that write sends the export a second time, so a receiver must tolerate duplicates (the session `id` identifies them).
 
-A failing hook holds the discard: nothing is deleted, the cluster stays `deleting`, and the status records `discard_hook_failed` (the reason), `discard_hook_failures` (the count) and `discard_hook_next_at`. The hook is retried on a later reconcile once the database clock passes `discard_hook_next_at`, with the backoff `ORCH_RETRY_BACKOFF_BASE_SECONDS` doubling up to `ORCH_RETRY_BACKOFF_MAX_SECONDS`. One cluster's failing hook never stops the other clusters reconciling.
+A failing hook holds the discard: nothing is deleted, the session stays `deleting`, and the status records `discard_hook_failed` (the reason), `discard_hook_failures` (the count) and `discard_hook_next_at`. The hook is retried on a later reconcile once the database clock passes `discard_hook_next_at`, with the backoff `ORCH_RETRY_BACKOFF_BASE_SECONDS` doubling up to `ORCH_RETRY_BACKOFF_MAX_SECONDS`. One session's failing hook never stops the other sessions reconciling.
 
 ### Autoclose
 
-A cluster whose spec sets `autoclose_after_seconds` closes itself: once `created_at` plus that many seconds has passed, the api sweeper marks it `deleting`, and the reconciler discards it exactly as for `DELETE /api/v1/clusters/{id}` (discard hook export included, no handoff turn). The time is counted from `created_at`, not from the last activity. The value must be at least `ORCH_AUTOCLOSE_MIN_SECONDS` (default 300). The sweeper polls every 10 s, so a cluster closes up to about 10 s after its deadline. Every api replica runs the sweeper; the update is status-guarded (`WHERE desired = 'active'`), so each cluster is flipped once.
+A session whose spec sets `autoclose_after_seconds` closes itself: once `created_at` plus that many seconds has passed, the api sweeper marks it `deleting`, and the reconciler discards it exactly as for `DELETE /api/v1/sessions/{id}` (discard hook export included, no handoff turn). The time is counted from `created_at`, not from the last activity. The value must be at least `ORCH_AUTOCLOSE_MIN_SECONDS` (default 300). The sweeper polls every 10 s, so a session closes up to about 10 s after its deadline. Every api replica runs the sweeper; the update is status-guarded (`WHERE desired = 'active'`), so each session is flipped once.
 
-The `clusters` table keeps one writer, the api: the sweeper is an api background task that writes `desired` and `generation` (the same write as `DELETE`), never the reconciler.
+The `sessions` table keeps one writer, the api: the sweeper is an api background task that writes `desired` and `generation` (the same write as `DELETE`), never the reconciler.
 
 ## Architecture
 
@@ -359,7 +363,7 @@ One repo and one image; the entrypoint is `orch <cmd>`. The processes coordinate
 
 | Process | Command | Role |
 |---|---|---|
-| api | `orch api` | FastAPI REST and SSE (API-only, no UI); calls wrappers only for the file and terminal proxies in `api/workspace.py` (derived per-cluster tokens, user decision N1), never Kubernetes |
+| api | `orch api` | FastAPI REST and SSE (API-only, no UI); calls wrappers only for the file and terminal proxies in `api/workspace.py` (derived per-session tokens, user decision N1), never Kubernetes |
 | dispatcher | `orch dispatcher` | claims messages and commands, calls wrapper turns, interrupt and compact, verifies ambiguous sends |
 | ingester | `orch ingester` | one SSE subscription per agent; writes events, agent status and turns |
 | reconciler | `orch reconciler` | renders and applies Kubernetes objects, observes pods, bootstraps sessions, runs checks, executes restart, runs the pre-discard hook |
@@ -372,7 +376,7 @@ The rule "services talk only through the queue or HTTP APIs, with no shared stat
 
 | Table | Writer |
 |---|---|
-| `clusters` | api; the reconciler writes only `status` and `observed_generation` and deletes the row when a discard completes. `preset_id` is also set to null by the `ON DELETE SET NULL` cascade when the api deletes a preset, an api-originated write |
+| `sessions` | api; the reconciler writes only `status` and `observed_generation` and deletes the row when a discard completes. `preset_id` is also set to null by the `ON DELETE SET NULL` cascade when the api deletes a preset, an api-originated write |
 | `presets` | api |
 | `agents` | reconciler; `last_dispatched_at` is written by the dispatch claim; `pod_ip` is written by the reconciler |
 | `agent_status` | ingester |
@@ -382,7 +386,7 @@ The rule "services talk only through the queue or HTTP APIs, with no shared stat
 | `commands` | api inserts; the dispatcher claims interrupt and compact and inserts `rebootstrap`; the reconciler claims restart and rebootstrap |
 | `checks` | api inserts; the reconciler does the rest |
 | `leadership_requests` | api inserts; the dispatcher decides rows (`applied` or `rejected`) only through `WHERE status = 'queued'` guarded updates |
-| `cluster_leaders` | dispatcher |
+| `session_leaders` | dispatcher |
 | `file_locks` | api |
 
 ### NOTIFY channels and polling fallbacks
@@ -391,55 +395,55 @@ NOTIFY payloads are wake-up hints that carry ids only. Every loop also polls, be
 
 | Channel | Payload | Sent by | Heard by |
 |---|---|---|---|
-| `cluster_changed` | `{cluster_id}` | api (clusters repository); reconciler on status writes and purge | reconciler, status stream |
-| `agent_free` | `{cluster_id, agent_id}` | ingester | dispatcher |
-| `events` | `{cluster_id, max_id}` | ingester | events stream |
-| `status` | `{cluster_id}` | ingester, dispatcher, reconciler | status stream |
-| `leadership_requested` | `{cluster_id}` | api (leadership routes) | dispatcher |
-| `leader_changed` | `{cluster_id, agent_id, epoch}` | dispatcher (leadership pass) | hive-state push, cluster stream |
+| `session_changed` | `{session_id}` | api (sessions repository); reconciler on status writes and purge | reconciler, status stream |
+| `agent_free` | `{session_id, agent_id}` | ingester | dispatcher |
+| `events` | `{session_id, max_id}` | ingester | events stream |
+| `status` | `{session_id}` | ingester, dispatcher, reconciler | status stream |
+| `leadership_requested` | `{session_id}` | api (leadership routes) | dispatcher |
+| `leader_changed` | `{session_id, agent_id, epoch}` | dispatcher (leadership pass) | hive-state push, session stream |
 
 Polling fallbacks: dispatcher `ORCH_DISPATCH_POLL_SECONDS` (2 s), reconciler `ORCH_RECONCILE_POLL_SECONDS` (10 s), ingester stream refresh `ORCH_INGEST_REFRESH_SECONDS` (5 s); the api SSE streams re-read on a 5 s poll when no NOTIFY arrives.
 
 ### Hive
 
-A hive is a cluster that may run several agents. It is derived, not switched: `coalesce(spec.max_replicas, spec.replicas) > 1` (`spec.hive`). A cluster whose cap is 1 runs alone: no leader row, no `hive_state`, no peer notes, no orchestrator tools, and routing is the usual agent free the longest.
+A hive is a session that may run several agents. It is derived, not switched: `coalesce(spec.max_replicas, spec.replicas) > 1` (`spec.hive`). A session whose cap is 1 runs alone: no leader row, no `hive_state`, no peer notes, no orchestrator tools, and routing is the usual agent free the longest.
 
-- Leader and epoch. Each hive has at most one leader, recorded in `cluster_leaders` with an `epoch` that grows on every change. Untargeted messages go to the leader only (see Routing); an explicit `target_agent_id` always wins.
-- Handover only. The leader hands leadership away with `POST /agent/v1/leadership/handover` (or the `leadership_handover` tool), carrying the epoch it read; there is no takeover route. The one other way to change the leader is the user override `POST /api/v1/clusters/{cluster_id}/leader`. A lost leader (gone, or unready longer than `LEADER_GRACE_SECONDS`) is replaced automatically. Details are under Leadership.
-- `hive_state` and the feed. The dispatcher pushes each agent a keyed `hive_state` note (leader, epoch, members, handover hint) when it changes, and an appended feed note with the peers' activity, at most every `PUSH_INTERVAL_SECONDS` (10 s) per cluster. Both are wrapper notes, so they are peer data and not user instructions. The push runs in the dispatcher, never the ingester.
+- Leader and epoch. Each hive has at most one leader, recorded in `session_leaders` with an `epoch` that grows on every change. Untargeted messages go to the leader only (see Routing); an explicit `target_agent_id` always wins.
+- Handover only. The leader hands leadership away with `POST /agent/v1/leadership/handover` (or the `leadership_handover` tool), carrying the epoch it read; there is no takeover route. The one other way to change the leader is the user override `POST /api/v1/sessions/{session_id}/leader`. A lost leader (gone, or unready longer than `LEADER_GRACE_SECONDS`) is replaced automatically. Details are under Leadership.
+- `hive_state` and the feed. The dispatcher pushes each agent a keyed `hive_state` note (leader, epoch, members, handover hint) when it changes, and an appended feed note with the peers' activity, at most every `PUSH_INTERVAL_SECONDS` (10 s) per session. Both are wrapper notes, so they are peer data and not user instructions. The push runs in the dispatcher, never the ingester.
 - Advisory locks. Agents claim files through the lock tools; the `onAgentToolCall` check hook warns about a file another live agent holds and never denies a write. See File locks.
-- Tool gating is fixed at render time. The orchestrator any-mcp plugin and its tool allowlist (`me`, `leadership_handover`, `lock_claim`, `lock_release`, `lock_list`, `lock_reassign`) are rendered into the pod only when the cluster is a hive, from `max_replicas` and `static`; a later scale never changes what the agents see. The wrapper peer seeds are also rendered from the cap (`max_replicas`, else `replicas`), so agents added by scaling are already known peers.
-- The plugin name `orchestrator` is reserved in a cluster's any-mcp `plugins`. The entry rendered by `k8s/on_start.py` replaces any user entry of that name (and a spec that sets it is rejected 422 `invalid_request`).
-- Agents reach the orchestrator on the separate agent port (see Agent API), with a per-cluster token and the pod IP as identity.
+- Tool gating is fixed at render time. The orchestrator any-mcp plugin and its tool allowlist (`me`, `leadership_handover`, `lock_claim`, `lock_release`, `lock_list`, `lock_reassign`) are rendered into the pod only when the session is a hive, from `max_replicas` and `static`; a later scale never changes what the agents see. The wrapper peer seeds are also rendered from the cap (`max_replicas`, else `replicas`), so agents added by scaling are already known peers.
+- The plugin name `orchestrator` is reserved in a session's any-mcp `plugins`. The entry rendered by `k8s/on_start.py` replaces any user entry of that name (and a spec that sets it is rejected 422 `invalid_request`).
+- Agents reach the orchestrator on the separate agent port (see Agent API), with a per-session token and the pod IP as identity.
 
 ### Leadership
 
-Every hive cluster (`coalesce(spec.max_replicas, spec.replicas) > 1`) has at most one leader row in `cluster_leaders`, written only by the dispatcher in `leadership_pass` (`db/leadership.py`). Alone clusters never get a leader row. The pass is one transaction under the per-cluster claim lock (`pg_try_advisory_xact_lock` with the claim namespace and `hashtext(cluster_id)`, the lock `claim_and_pick` takes), so a leader change and a message claim never interleave; a dispatcher that cannot take the lock skips the cluster for that wake. Each pass runs three steps in order:
+Every hive session (`coalesce(spec.max_replicas, spec.replicas) > 1`) has at most one leader row in `session_leaders`, written only by the dispatcher in `leadership_pass` (`db/leadership.py`). Alone sessions never get a leader row. The pass is one transaction under the per-session claim lock (`pg_try_advisory_xact_lock` with the claim namespace and `hashtext(session_id)`, the lock `claim_and_pick` takes), so a leader change and a message claim never interleave; a dispatcher that cannot take the lock skips the session for that wake. Each pass runs three steps in order:
 
-1. Initial leader (Q2). With no leader row, the lowest-ordinal ready agent (ready, not gone, with a session) becomes leader at epoch 1, reason `initial`. The new row starts `feed_cursor` at the cluster's newest event id, so history is never pushed as current activity.
+1. Initial leader (Q2). With no leader row, the lowest-ordinal ready agent (ready, not gone, with a wrapper session) becomes leader at epoch 1, reason `initial`. The new row starts `feed_cursor` at the session's newest event id, so history is never pushed as current activity.
 2. Queued requests, in id order. Each is decided with one `WHERE status = 'queued'` guarded update that sets `status`, `reject_reason` and `decided_at`, and is checked against the leader as it is at apply time, not when it was queued:
-   - `handover`: rejected `not_leader` unless `from_agent_id` is the current leader; `stale_epoch` unless its epoch equals the current epoch; a named target must be in the cluster, ready, not gone and not the leader, else `target_not_ready`; without a target the ready agent free the longest other than the leader is picked (idle first, then `free_since` ascending, then id, the claim's order), and with none the request is rejected `no_peers`. Applied: reason `handover: <reason>`.
-   - `user` (Q10, the make-leader override): the target must be in the cluster, ready and not gone, else `target_not_ready`. The epoch is not checked (user requests carry none). A target that already leads is applied with no change and no epoch bump. Applied: reason `user`.
+   - `handover`: rejected `not_leader` unless `from_agent_id` is the current leader; `stale_epoch` unless its epoch equals the current epoch; a named target must be in the session, ready, not gone and not the leader, else `target_not_ready`; without a target the ready agent free the longest other than the leader is picked (idle first, then `free_since` ascending, then id, the claim's order), and with none the request is rejected `no_peers`. Applied: reason `handover: <reason>`.
+   - `user` (Q10, the make-leader override): the target must be in the session, ready and not gone, else `target_not_ready`. The epoch is not checked (user requests carry none). A target that already leads is applied with no change and no epoch bump. Applied: reason `user`.
    - An applied change writes the target, `epoch + 1` and `since = now()`.
 3. Lost leader. A gone leader, or one not ready for longer than `LEADER_GRACE_SECONDS` (30 s, a module constant), is replaced by the ready agent free the longest at `epoch + 1`, reason `leader_lost`; with no ready agent the row stays. `unready_since` is set when a pass first sees the leader not ready and cleared by the next pass that sees it ready again, so two separate short unready windows never add up to a takeover.
 
-Every change sends `NOTIFY leader_changed {cluster_id, agent_id, epoch}`.
+Every change sends `NOTIFY leader_changed {session_id, agent_id, epoch}`.
 
-Election and lost-leader detection are poll-driven. Readiness is observed by the reconciler and is not a NOTIFY the dispatcher hears, so the initial election, the grace clock and the takeover run on the next dispatcher drain, within `ORCH_DISPATCH_POLL_SECONDS` of the readiness change. "The first ready agent leads" therefore means the lowest-ordinal ready agent at the first pass that sees one ready, within the poll window, not the first instantaneous ready event. Requests are applied promptly: `leadership_requested` wakes the dispatcher. Each drain runs the pass, before claiming messages, for hive clusters with queued requests, with no leader row while an agent could lead, whose leader is gone or not ready, or whose `unready_since` is still set.
+Election and lost-leader detection are poll-driven. Readiness is observed by the reconciler and is not a NOTIFY the dispatcher hears, so the initial election, the grace clock and the takeover run on the next dispatcher drain, within `ORCH_DISPATCH_POLL_SECONDS` of the readiness change. "The first ready agent leads" therefore means the lowest-ordinal ready agent at the first pass that sees one ready, within the poll window, not the first instantaneous ready event. Requests are applied promptly: `leadership_requested` wakes the dispatcher. Each drain runs the pass, before claiming messages, for hive sessions with queued requests, with no leader row while an agent could lead, whose leader is gone or not ready, or whose `unready_since` is still set.
 
 ### Leader lease
 
-A hive spec may set `leader_lease_seconds` (60 to 604800, hive clusters only). When the current leader's term (`cluster_leaders.since`, database clock) is older than the lease, step 4 of `leadership_pass` hands leadership to the ready agent free the longest, at `epoch + 1`, a new `since`, reason `lease_expired`, with the usual `leader_changed` NOTIFY. It runs only at the leader's turn boundary: the leader's `agent_status.state` is `idle` and no message of the leader is `dispatching` or `verifying`. A busy leader keeps leadership past its lease and is handed over on the first pass after its turn ends, so no turn is interrupted and no message is re-routed. With no other ready agent the leader stays, nothing is written, and the lease is re-checked on every pass. A leader chosen by a queued request in step 2 starts a fresh term. It is a handover of the current term, never a takeover, and no agent can trigger it. Clusters without `leader_lease_seconds` keep today's indefinite leadership. An expired lease makes the cluster a leadership candidate, so the dispatcher's next drain (within `ORCH_DISPATCH_POLL_SECONDS`) runs the pass.
+A hive spec may set `leader_lease_seconds` (60 to 604800, hive sessions only). When the current leader's term (`session_leaders.since`, database clock) is older than the lease, step 4 of `leadership_pass` hands leadership to the ready agent free the longest, at `epoch + 1`, a new `since`, reason `lease_expired`, with the usual `leader_changed` NOTIFY. It runs only at the leader's turn boundary: the leader's `agent_status.state` is `idle` and no message of the leader is `dispatching` or `verifying`. A busy leader keeps leadership past its lease and is handed over on the first pass after its turn ends, so no turn is interrupted and no message is re-routed. With no other ready agent the leader stays, nothing is written, and the lease is re-checked on every pass. A leader chosen by a queued request in step 2 starts a fresh term. It is a handover of the current term, never a takeover, and no agent can trigger it. Sessions without `leader_lease_seconds` keep today's indefinite leadership. An expired lease makes the session a leadership candidate, so the dispatcher's next drain (within `ORCH_DISPATCH_POLL_SECONDS`) runs the pass.
 
 ### Routing
 
-Untargeted messages go to the leader of a hive. When the cluster has a `cluster_leaders` row, `_claim_in_cluster` treats an untargeted queued message as targeted to the leader and dispatches it through the same pick (idle, ready, not gone, free since its last dispatch). While the leader is busy the untargeted head holds the cluster's untargeted FIFO, so later untargeted messages wait, while later messages with an explicit `target_agent_id` to other free agents still dispatch. An explicit target always wins. A gone leader does not fail untargeted messages with `target_gone`: they stay queued until the leadership pass elects a successor. With no leader row (alone clusters, or a hive before its first pass) the pick stays the agent free the longest. Peer-delivered turns never pass the dispatcher, so this rule does not apply to them.
+Untargeted messages go to the leader of a hive. When the session has a `session_leaders` row, `_claim_in_session` treats an untargeted queued message as targeted to the leader and dispatches it through the same pick (idle, ready, not gone, free since its last dispatch). While the leader is busy the untargeted head holds the session's untargeted FIFO, so later untargeted messages wait, while later messages with an explicit `target_agent_id` to other free agents still dispatch. An explicit target always wins. A gone leader does not fail untargeted messages with `target_gone`: they stay queued until the leadership pass elects a successor. With no leader row (alone sessions, or a hive before its first pass) the pick stays the agent free the longest. Peer-delivered turns never pass the dispatcher, so this rule does not apply to them.
 
-Hive state push (`dispatcher/hive.py`, dispatcher process only, in its own task): at most every 10 s per cluster (and on `leader_changed`), each not-gone agent with a session gets a keyed `hive_state` note (leader, epoch, members with ready, state and context, the handover hint when `auto_compact_pct` is set) whenever the state hash changes, and an appended feed note with the peers' activity since `cluster_leaders.feed_cursor`. `state_hash` is a JSON map of the hash each agent last accepted, so one unreachable agent is retried alone. The cluster lock is held only around the DB read and write, never across wrapper HTTP; each push has a 3 s timeout. Feed rows younger than 5 s are not consumed yet (ids commit out of order), and Bash calls without a result are carried to a later tick.
+Hive state push (`dispatcher/hive.py`, dispatcher process only, in its own task): at most every 10 s per session (and on `leader_changed`), each not-gone agent with a wrapper session gets a keyed `hive_state` note (leader, epoch, members with ready, state and context, the handover hint when `auto_compact_pct` is set) whenever the state hash changes, and an appended feed note with the peers' activity since `session_leaders.feed_cursor`. `state_hash` is a JSON map of the hash each agent last accepted, so one unreachable agent is retried alone. The session lock is held only around the DB read and write, never across wrapper HTTP; each push has a 3 s timeout. Feed rows younger than 5 s are not consumed yet (ids commit out of order), and Bash calls without a result are carried to a later tick.
 
 ## Delivery and retries
 
-The dispatcher claims the oldest queued message of a cluster, reserves the agent free the longest, and posts it as a wrapper turn carrying `metadata = {orch_message_id, orch_attempt}`. Every send ends in exactly one outcome (D23, D24):
+The dispatcher claims the oldest queued message of a session, reserves the agent free the longest, and posts it as a wrapper turn carrying `metadata = {orch_message_id, orch_attempt}`. Every send ends in exactly one outcome (D23, D24):
 
 | Outcome | Wrapper answer | Reservation | Message becomes |
 |---|---|---|---|
@@ -451,13 +455,13 @@ The dispatcher claims the oldest queued message of a cluster, reserves the agent
 | rejected | 413, 422 and any other 4xx | released | `failed` (`rejected`) at once; a resend cannot succeed |
 | ambiguous | read timeout, reset after the request was written, 2xx without a `turn_id` | kept | `verifying` (`ambiguous`); the verifier decides |
 
-Backoff. A counted attempt sets `not_before = now() + least(ORCH_RETRY_BACKOFF_BASE_SECONDS * 2^(attempts - 1), ORCH_RETRY_BACKOFF_MAX_SECONDS)` (defaults 2 s and 60 s: 2, 4, 8, 16 s, and so on up to the 60 s cap). The bound is the cluster's `spec.max_attempts` (default 5, 1 to 10): the attempt that reaches it fails the message. An untargeted head waiting out its backoff holds its cluster's queue, which keeps per-cluster FIFO. A retry goes through the normal claim, so it may land on another agent. Every time comparison uses the database clock `now()`; wrapper timestamps are stored, never compared.
+Backoff. A counted attempt sets `not_before = now() + least(ORCH_RETRY_BACKOFF_BASE_SECONDS * 2^(attempts - 1), ORCH_RETRY_BACKOFF_MAX_SECONDS)` (defaults 2 s and 60 s: 2, 4, 8, 16 s, and so on up to the 60 s cap). The bound is the session's `spec.max_attempts` (default 5, 1 to 10): the attempt that reaches it fails the message. An untargeted head waiting out its backoff holds its session's queue, which keeps per-session FIFO. A retry goes through the normal claim, so it may land on another agent. Every time comparison uses the database clock `now()`; wrapper timestamps are stored, never compared.
 
 Slow sends. The send timeout `ORCH_WRAPPER_SEND_TIMEOUT_SECONDS` (15 s) is at most half of the stale cutoff `ORCH_DISPATCHING_STALE_SECONDS` (60 s). While a send is in flight the `dispatching` row heartbeats every `ORCH_DISPATCHING_HEARTBEAT_SECONDS` (5 s). A `dispatching` row whose `coalesce(heartbeat_at, dispatched_at)` is older than the cutoff belonged to a lost dispatcher: it moves to `verifying` (`dispatcher_lost`), never straight back to `queued`.
 
 ### The `verifying` state
 
-A message in `verifying` has `ambiguous_at = now()` and keeps its agent reserved, because its turn may be running. Every dispatcher pass (each NOTIFY wake and each poll) runs the verifier (`dispatcher/verify.py`) over at most 50 such messages. For each one it asks the original agent's wrapper, with the cluster's derived token, whether a turn carrying this message started:
+A message in `verifying` has `ambiguous_at = now()` and keeps its agent reserved, because its turn may be running. Every dispatcher pass (each NOTIFY wake and each poll) runs the verifier (`dispatcher/verify.py`) over at most 50 such messages. For each one it asks the original agent's wrapper, with the session's derived token, whether a turn carrying this message started:
 
 - It reads the session snapshot. When `current_turn_id` is set, it fetches that turn record. It then fetches the records of the newest 10 turns of the turns list (the list holds summaries only, so each record is read on its own).
 - Started: a record whose `metadata.orch_message_id` is this message. The message becomes `sent` with that `turn_id` and the reservation stays. A peer or other turn running on the agent does not match, because the match is on the message id, never on "some turn is running".
@@ -484,39 +488,41 @@ The residual case: a turn request the wrapper holds for longer than the settle w
 
 ## Data model
 
-Plain SQL migrations (`src/agent_orchestrator/db/migrations`), psycopg 3, no ORM. Events live as long as their cluster and are deleted by cascade when a discard deletes the cluster row.
+Plain SQL migrations (`src/agents_orchestrator/db/migrations`), psycopg 3, no ORM. Events live as long as their session and are deleted by cascade when a discard deletes the session row.
 
 | Table | Holds |
 |---|---|
-| `clusters` | id, unique slug, `spec` (jsonb ClusterSpec), `generation` / `observed_generation` (the reconcile queue), `desired` (`active`, `deleting`), `status` (phase, message and the once-per-cluster init run in `status.init`), `preset_id` (nullable; the `ON DELETE SET NULL` cascade sets it to null when the api deletes the preset, an api-originated write, so `clusters` keeps a single writer) and `preset_name` (the name at create, kept) |
-| `presets` | named ClusterSpec templates: unique case-insensitive `name` (1 to 40 characters), `spec` (jsonb, only what the user set), `is_default`; migration `0002` seeds `Default` with `{"replicas": 1}`, which can be edited but not renamed or deleted |
-| `agents` | one row per pod: ordinal, pod name, url, readiness, session id, `last_dispatched_at`, `gone_at` |
+| `sessions` | id, unique slug, `spec` (jsonb SessionSpec), `generation` / `observed_generation` (the reconcile queue), `desired` (`active`, `deleting`), `status` (phase, message and the once-per-session init run in `status.init`), `preset_id` (nullable; the `ON DELETE SET NULL` cascade sets it to null when the api deletes the preset, an api-originated write, so `sessions` keeps a single writer) and `preset_name` (the name at create, kept) |
+| `presets` | named SessionSpec templates: unique case-insensitive `name` (1 to 40 characters), `spec` (jsonb, only what the user set), `is_default`; migration `0002` seeds `Default` with `{"replicas": 1}`, which can be edited but not renamed or deleted |
+| `agents` | one row per pod: ordinal, pod name, url, readiness, the wrapper session (`wrapper_session_id`, `wrapper_session_created_at`), `last_dispatched_at`, `gone_at` |
 | `agent_status` | wrapper state (`unknown`, `booting`, `idle`, `busy`, `dead`), `free_since`, current turn, context tokens and percentage, last seq, peers |
 | `messages` | queue: text, status (`queued`, `dispatching`, `verifying`, `sent`, `failed`, `cancelled`), target and chosen agent, turn id, attempts, error, `not_before`, `ambiguous_at` |
 | `turns` | one row per wrapper turn: origin, start, completion, status, final text, usage |
-| `events` | every stored wrapper event; UNIQUE(agent_id, session_id, seq); the global bigserial id is the SSE id and the page cursor |
+| `events` | every stored wrapper event; UNIQUE(agent_id, wrapper_session_id, seq), where wrapper_session_id is the claude-code-wrapper's own session id; the global bigserial id is the SSE id and the page cursor |
 | `commands` | queue: `interrupt`, `compact`, `restart`, `rebootstrap` with status and result |
 | `leadership_requests` | queue: `handover` (from the leader) or `user` requests with target agent, epoch, status (`queued`, `applied`, `rejected`); the api inserts, the dispatcher decides |
-| `cluster_leaders` | one row per hive: leader agent, `epoch`, `since`, `reason` (`initial`, `handover: <reason>`, `user`, `leader_lost`), `unready_since`, feed cursor and pushed hive-state hash; the dispatcher is the only writer (see Leadership) |
+| `session_leaders` | one row per hive: leader agent, `epoch`, `since`, `reason` (`initial`, `handover: <reason>`, `user`, `leader_lost`), `unready_since`, feed cursor and pushed hive-state hash; the dispatcher is the only writer (see Leadership) |
 | `checks` | queue: a shell command run as a Kubernetes Job; exit code and log tail |
 
 ## API
 
-Base path `/api/v1`. JSON in and out. There is no authentication; access is restricted by the source allowlist below. Errors always have the shape `{"error": {"code": "<code>", "message": "<text>"}}`. The machine-readable contract is `openapi.json` at the repo root (`uv run python -m agent_orchestrator.api.openapi > openapi.json`, then `npm run sync:api -- orchestrator` in agents-web), also served at `/api/v1/openapi.json`; a test fails when it drifts.
+Base path `/api/v1`. JSON in and out. There is no authentication; access is restricted by the source allowlist below. Errors always have the shape `{"error": {"code": "<code>", "message": "<text>"}}`. The machine-readable contract is `openapi.json` at the repo root (`uv run python -m agents_orchestrator.api.openapi > openapi.json`, then `npm run sync:api -- orchestrator` in agents-web), also served at `/api/v1/openapi.json`; a test fails when it drifts.
 
 Versioning: `/api/v1` is additive only. New routes, new optional request fields and new response fields may appear; existing routes, fields and error codes are never removed or changed in meaning. A breaking change is a new `/api/v2`.
 
-Documented exception, 2026-10-23: `PATCH /api/v1/clusters/{cluster_id}` was removed (it now answers 405), and `POST /api/v1/clusters` requires exactly one of `spec` and `preset_id`. Why: a live spec edit rolled every agent pod of a running cluster; clusters now snapshot their preset at create and the spec is fixed from then on. To change it, discard the cluster and schedule again from a preset.
+Documented exception, 2026-10-23: `PATCH /api/v1/sessions/{session_id}` was removed (it now answers 405), and `POST /api/v1/sessions` requires exactly one of `spec` and `preset_id`. Why: a live spec edit rolled every agent pod of a running session; sessions now snapshot their preset at create and the spec is fixed from then on. To change it, discard the session and schedule again from a preset.
 
 In-place fields (amends the exception above): `spec.replicas` and `spec.init_scripts` are the only spec fields that change in place (no generation bump, no pod roll); PATCH stays 405.
 
+Documented exception, 2026-10-25: the orchestrator's unit is a session. Every `/api/v1/clusters...` route became `/api/v1/sessions...` (path parameter `session_id`), every `cluster_id` field became `session_id`, the schemas `SessionSpec`, `SessionSummary`, `SessionView` and `CreateSession`, `caps.max_sessions`, the error codes `session_deleting`, `static_session` and `session_limit`, and the SSE events `session_status` and `session_removed`. There is no alias: the old routes answer 404. Why: one word for one thing across the API, the UI and the database (tables `sessions` and `session_leaders`, migration `0005`).
+
 Source allowlist: the api checks the direct socket peer against `ORCH_ALLOWED_CIDRS` (default `192.168.1.0/24`). `Forwarded`, `X-Forwarded-For` and `X-Real-IP` are never read. A caller outside the list gets `403 forbidden`. `/healthz` and `/readyz` are exempt.
 
-Error codes: `bad_request` (400), `forbidden` (403), `forbidden_origin` (403, `Origin` not in `ORCH_ALLOWED_ORIGINS` on a terminal POST or DELETE or a WebSocket upgrade), `not_found` (404), `conflict` (409, slug or preset name exists), `preset_default` (409, renaming or deleting the default preset), `last_preset` (409, deleting the only preset), `cluster_deleting` (409, also a scale of a cluster being deleted), `static_cluster` (409, scaling a static cluster), `leader_would_leave` (409, a scale-down that would remove the leader), `out_of_range` (422, replicas outside 1..`max_replicas`), `cluster_limit` (409, `ORCH_MAX_CLUSTERS` reached), `not_queued` (409), `not_failed` (409), `agent_gone` (409), `agent_not_ready` (409, no ready agent for a file or terminal proxy), `invalid_path` (400, a file path is absolute, holds a NUL byte or leaves the workdir), `not_a_directory` (400, listing a file), `not_a_file` (400, reading a directory or special file), `terminal_limit` (409, the wrapper's per-pod terminal cap is reached), `session_not_active` (409, the agent's wrapper session is not active), `terminal_not_found` (404, no such shell on that agent), `invalid_size` (422, rows or cols outside 1..1000), `invalid_request` (422, also a terminal id that is not `term_` plus 12 lowercase hex digits), `target_gone` (422), `internal` (500, 503 on `/readyz`), `wrapper_error` (502, the wrapper answered 5xx), `wrapper_unreachable` (502, the wrapper pod could not be reached), `unavailable` (503, no master key for the proxies).
+Error codes: `bad_request` (400), `forbidden` (403), `forbidden_origin` (403, `Origin` not in `ORCH_ALLOWED_ORIGINS` on a terminal POST or DELETE or a WebSocket upgrade), `not_found` (404), `conflict` (409, slug or preset name exists), `preset_default` (409, renaming or deleting the default preset), `last_preset` (409, deleting the only preset), `session_deleting` (409, also a scale of a session being deleted), `static_session` (409, scaling a static session), `leader_would_leave` (409, a scale-down that would remove the leader), `out_of_range` (422, replicas outside 1..`max_replicas`), `session_limit` (409, `ORCH_MAX_SESSIONS` reached), `not_queued` (409), `not_failed` (409), `agent_gone` (409), `agent_not_ready` (409, no ready agent for a file or terminal proxy), `invalid_path` (400, a file path is absolute, holds a NUL byte or leaves the workdir), `not_a_directory` (400, listing a file), `not_a_file` (400, reading a directory or special file), `terminal_limit` (409, the wrapper's per-pod terminal cap is reached), `session_not_active` (409, the agent's wrapper session is not active), `terminal_not_found` (404, no such shell on that agent), `invalid_size` (422, rows or cols outside 1..1000), `invalid_request` (422, also a terminal id that is not `term_` plus 12 lowercase hex digits), `target_gone` (422), `internal` (500, 503 on `/readyz`), `wrapper_error` (502, the wrapper answered 5xx), `wrapper_unreachable` (502, the wrapper pod could not be reached), `unavailable` (503, no master key for the proxies).
 
 ### `GET /api/v1/meta`
 
-Defaults and limits for forms: `defaults` (model, effort, replicas, auto_compact_pct, pvc_size, storage_class, max_attempts), `agent_image`, `agent_images` (the image allowlist), `models`, `caps` (`max_replicas`, `max_pvc_size`, `max_clusters`, from `ORCH_MAX_REPLICAS`, `ORCH_MAX_PVC_SIZE`, `ORCH_MAX_CLUSTERS`) and `discard_hook` (`none`, `command`, `url`). Response 200.
+Defaults and limits for forms: `defaults` (model, effort, replicas, auto_compact_pct, pvc_size, storage_class, max_attempts), `agent_image`, `agent_images` (the image allowlist), `models`, `caps` (`max_replicas`, `max_pvc_size`, `max_sessions`, from `ORCH_MAX_REPLICAS`, `ORCH_MAX_PVC_SIZE`, `ORCH_MAX_SESSIONS`) and `discard_hook` (`none`, `command`, `url`). Response 200.
 
 ### `GET /api/v1/presets`
 
@@ -524,11 +530,11 @@ All presets as a list of preset views `{id, name, is_default, spec, created_at, 
 
 ### `POST /api/v1/presets`
 
-Body `{"name": "<name>", "spec": {...}}`. The name is 1 to 40 characters of letters, digits, spaces, dots, dashes and underscores, with no leading or trailing space; the API never trims it. Names are unique ignoring case. `spec` takes the same fields as the cluster spec (all optional) and is checked against the current settings (models, efforts, image allowlist, caps) like a cluster create; only the keys sent are stored, no defaults are filled. Response 201 with the preset view. Errors: 422 `invalid_request` (bad name, or a spec the settings refuse), 409 `conflict` (name taken).
+Body `{"name": "<name>", "spec": {...}}`. The name is 1 to 40 characters of letters, digits, spaces, dots, dashes and underscores, with no leading or trailing space; the API never trims it. Names are unique ignoring case. `spec` takes the same fields as the session spec (all optional) and is checked against the current settings (models, efforts, image allowlist, caps) like a session create; only the keys sent are stored, no defaults are filled. Response 201 with the preset view. Errors: 422 `invalid_request` (bad name, or a spec the settings refuse), 409 `conflict` (name taken).
 
 ### `GET /api/v1/presets/{preset_id}`
 
-One preset view. `spec.reuse_running_agent` (optional, default false) tells trigger services to reuse the cluster still running for the preset; it is served here on the main port and on the service port. Response 200. Errors: 404 `not_found`.
+One preset view. `spec.reuse_running_agent` (optional, default false) tells trigger services to reuse the session still running for the preset; it is served here on the main port and on the service port. Response 200. Errors: 404 `not_found`.
 
 ### `PUT /api/v1/presets/{preset_id}`
 
@@ -536,60 +542,60 @@ Body `{"name": "<name>", "spec": {...}}` replaces the name and the whole spec, w
 
 ### `DELETE /api/v1/presets/{preset_id}`
 
-Deletes the preset. Clusters made from it keep their spec; their `preset_id` becomes null. Response 204 with no body. Errors: 404 `not_found`, 409 `preset_default` (the default cannot be deleted), 409 `last_preset` (the only preset cannot be deleted).
+Deletes the preset. Sessions made from it keep their spec; their `preset_id` becomes null. Response 204 with no body. Errors: 404 `not_found`, 409 `preset_default` (the default cannot be deleted), 409 `last_preset` (the only preset cannot be deleted).
 
 ### `POST /api/v1/presets/{preset_id}/copy`
 
 Optional body `{"name": "<name>"}`. Creates a new, non-default preset holding the source's stored spec verbatim. Without a name it is `<source name> copy`, then `<source name> copy 2`, `copy 3` and so on until free; the source part is cut to fit 40 characters and right-trimmed before ` copy`. Response 201 with the new preset view. Errors: 404 `not_found` (unknown source), 409 `conflict` (an explicit name is taken), 422 `invalid_request` (bad explicit name).
 
-### `GET /api/v1/clusters`
+### `GET /api/v1/sessions`
 
-All clusters as a list of cluster views. Response 200.
+All sessions as a list of session views. Response 200.
 
-### `POST /api/v1/clusters`
+### `POST /api/v1/sessions`
 
-Schedules a cluster. The body holds exactly one of `spec` and `preset_id`, else 422 `invalid_request` ("exactly one of spec or preset_id"):
+Schedules a session. The body holds exactly one of `spec` and `preset_id`, else 422 `invalid_request` ("exactly one of spec or preset_id"):
 
-- From a preset: `{"preset_id": "<uuid>", "slug": "<dns label, optional>"}`. Without `slug` the API generates `<preset name as a dns label>-<4 random letters>` (for example `default-qkzt`) and retries a clash with a fresh suffix up to 5 times, then answers 409 `conflict`. The preset spec is validated against the current settings when you schedule (a preset that has become invalid is 422 `invalid_request` with a message starting `preset '<name>': `), empty resource keys and an unset `replicas` are filled from the current defaults (`ORCH_DEFAULT_*`, `ORCH_DEFAULT_REPLICAS`), and the result is stored as the cluster's own spec: a snapshot. Editing or deleting the preset afterwards never changes the cluster, its `spec` or its `generation`; the cluster view keeps `preset_name` and `preset_id` becomes null once the preset is deleted. An unknown `preset_id` is 404 `not_found`.
-- Raw spec, for headless callers: `{"slug": "<dns label>", "spec": {...}}`; `slug` is required with `spec` (422 otherwise). `spec` fields (all optional): `replicas`, `max_replicas`, `static`, `image`, `model`, `effort`, `peers`, `workdir`, `pvc_size`, `resources`, `env`, `any_mcp_config`, `max_attempts`, `auto_compact_pct`, `discard_hook_url`, `init_scripts`, `wrapper`, `leader_lease_seconds`, `autoclose_after_seconds`, `reuse_running_agent` (see Cluster configuration below). `max_replicas` (1 to 16, at most `ORCH_MAX_REPLICAS`, at least `replicas`) is the replica cap and defaults to `replicas`; `static` (default false) pins the size and requires `max_replicas == replicas`. A cluster with `max_replicas > 1` is a hive (no switch): it may run several agents; `static` only forbids scaling. A cluster with `max_replicas == 1` runs alone. The any-mcp plugin name and namespace `orchestrator` are reserved for the rendered plugin (422 `invalid_request`). `init_scripts` (list of shell scripts, default empty; at most 20 entries, each non-empty after strip and at most 16384 characters, 422 `invalid_request` naming the index otherwise) runs once per cluster, not per pod or restart; an edit (on a preset or a cluster) applies to the next cluster and is never rendered into pods, so changing it never rolls them; a cluster created from a preset snapshots the preset's scripts. Presets stay sparse: unset `max_replicas`, `static`, `init_scripts` and `reuse_running_agent` are not stored. Such a cluster has null `preset_id` and `preset_name`.
+- From a preset: `{"preset_id": "<uuid>", "slug": "<dns label, optional>"}`. Without `slug` the API generates `<preset name as a dns label>-<4 random letters>` (for example `default-qkzt`) and retries a clash with a fresh suffix up to 5 times, then answers 409 `conflict`. The preset spec is validated against the current settings when you schedule (a preset that has become invalid is 422 `invalid_request` with a message starting `preset '<name>': `), empty resource keys and an unset `replicas` are filled from the current defaults (`ORCH_DEFAULT_*`, `ORCH_DEFAULT_REPLICAS`), and the result is stored as the session's own spec: a snapshot. Editing or deleting the preset afterwards never changes the session, its `spec` or its `generation`; the session view keeps `preset_name` and `preset_id` becomes null once the preset is deleted. An unknown `preset_id` is 404 `not_found`.
+- Raw spec, for headless callers: `{"slug": "<dns label>", "spec": {...}}`; `slug` is required with `spec` (422 otherwise). `spec` fields (all optional): `replicas`, `max_replicas`, `static`, `image`, `model`, `effort`, `peers`, `workdir`, `pvc_size`, `resources`, `env`, `any_mcp_config`, `max_attempts`, `auto_compact_pct`, `discard_hook_url`, `init_scripts`, `wrapper`, `leader_lease_seconds`, `autoclose_after_seconds`, `reuse_running_agent` (see Session configuration below). `max_replicas` (1 to 16, at most `ORCH_MAX_REPLICAS`, at least `replicas`) is the replica cap and defaults to `replicas`; `static` (default false) pins the size and requires `max_replicas == replicas`. A session with `max_replicas > 1` is a hive (no switch): it may run several agents; `static` only forbids scaling. A session with `max_replicas == 1` runs alone. The any-mcp plugin name and namespace `orchestrator` are reserved for the rendered plugin (422 `invalid_request`). `init_scripts` (list of shell scripts, default empty; at most 20 entries, each non-empty after strip and at most 16384 characters, 422 `invalid_request` naming the index otherwise) runs once per session, not per pod or restart; an edit (on a preset or a session) applies to the next session and is never rendered into pods, so changing it never rolls them; a session created from a preset snapshots the preset's scripts. Presets stay sparse: unset `max_replicas`, `static`, `init_scripts` and `reuse_running_agent` are not stored. Such a session has null `preset_id` and `preset_name`.
 
-Response 201 with the cluster view. Errors: 422 `invalid_request` (bad slug, both or neither of `spec` and `preset_id`, `spec` without `slug`, image outside `ORCH_AGENT_IMAGES`, reserved env key, replicas or PVC size above the caps, invalid `any_mcp_config`, an invalid preset), 404 `not_found` (unknown preset), 409 `conflict` (slug exists, or no free generated slug), 409 `cluster_limit`, 403 `forbidden`.
+Response 201 with the session view. Errors: 422 `invalid_request` (bad slug, both or neither of `spec` and `preset_id`, `spec` without `slug`, image outside `ORCH_AGENT_IMAGES`, reserved env key, replicas or PVC size above the caps, invalid `any_mcp_config`, an invalid preset), 404 `not_found` (unknown preset), 409 `conflict` (slug exists, or no free generated slug), 409 `session_limit`, 403 `forbidden`.
 
-### `GET /api/v1/clusters/{cluster_id}`
+### `GET /api/v1/sessions/{session_id}`
 
-One cluster view: `id`, `slug`, `spec`, `desired`, `status`, `generation`, `observed_generation`, `created_at`, `preset_id` (null for a raw-spec cluster or once the preset is deleted), `preset_name`, `summary` (`state` of `working`, `waiting`, `booting`, `error`, `deleting`; `ready`, `replicas`, `context_pct_max`, `auto_compact_pct`, `queued`, `failed`), `hive`, `max_replicas` (the cap), `static`, `leader_agent_id` and `leader_epoch` (both null for an alone cluster or before the first election), `leader_since` and `leader_reason` (when the current leader's term began and why it began, `start`, a handover reason or `lease_expired`; null without a leader), `closes_at` (`created_at` plus `spec.autoclose_after_seconds`, null when unset), and `init_edited_since_run` (same rule as `edited_since_run` of the init-scripts view; also in the list and the status stream). Response 200. Errors: 404 `not_found`.
+One session view: `id`, `slug`, `spec`, `desired`, `status`, `generation`, `observed_generation`, `created_at`, `preset_id` (null for a raw-spec session or once the preset is deleted), `preset_name`, `summary` (`state` of `working`, `waiting`, `booting`, `error`, `deleting`; `ready`, `replicas`, `context_pct_max`, `auto_compact_pct`, `queued`, `failed`), `hive`, `max_replicas` (the cap), `static`, `leader_agent_id` and `leader_epoch` (both null for an alone session or before the first election), `leader_since` and `leader_reason` (when the current leader's term began and why it began, `start`, a handover reason or `lease_expired`; null without a leader), `closes_at` (`created_at` plus `spec.autoclose_after_seconds`, null when unset), and `init_edited_since_run` (same rule as `edited_since_run` of the init-scripts view; also in the list and the status stream). Response 200. Errors: 404 `not_found`.
 
-### `DELETE /api/v1/clusters/{cluster_id}`
+### `DELETE /api/v1/sessions/{session_id}`
 
-Discards the cluster: after the optional history-export hook, deletes every Kubernetes object, the PVC and the chat history. Takes no query parameters. Response 202 with the cluster view (`desired: deleting`). Errors: 404 `not_found`, 422 `invalid_request` (any query parameter).
+Discards the session: after the optional history-export hook, deletes every Kubernetes object, the PVC and the chat history. Takes no query parameters. Response 202 with the session view (`desired: deleting`). Errors: 404 `not_found`, 422 `invalid_request` (any query parameter).
 
-### `POST /api/v1/clusters/{cluster_id}/leader`
+### `POST /api/v1/sessions/{session_id}/leader`
 
-Queues a user leadership override (the UI "Make leader"): body `{agent_id}`, any agent of the cluster. A user request overrides the handover-only rule; the dispatcher applies it and bumps the epoch. Response 202 `{request_id}`. Errors: 404 `not_found` (unknown cluster, or an agent that is not in this cluster), 409 `alone` (a single-agent cluster has no leader).
+Queues a user leadership override (the UI "Make leader"): body `{agent_id}`, any agent of the session. A user request overrides the handover-only rule; the dispatcher applies it and bumps the epoch. Response 202 `{request_id}`. Errors: 404 `not_found` (unknown session, or an agent that is not in this session), 409 `alone` (a single-agent session has no leader).
 
-### `POST /api/v1/clusters/{cluster_id}/scale`
+### `POST /api/v1/sessions/{session_id}/scale`
 
-Sets the running replica count: body `{"replicas": <int>}` (extra fields are rejected). Response 202 `{cluster_id, replicas, previous_replicas, max_replicas}`; the cluster view then shows the new `spec.replicas` with an unchanged `generation`. Setting the current value changes nothing. Errors: 404 `not_found`, 409 `static_cluster`, 409 `cluster_deleting`, 409 `leader_would_leave`, 422 `out_of_range` (outside 1..`max_replicas`), 422 `invalid_request` (malformed body). See Scaling below.
+Sets the running replica count: body `{"replicas": <int>}` (extra fields are rejected). Response 202 `{session_id, replicas, previous_replicas, max_replicas}`; the session view then shows the new `spec.replicas` with an unchanged `generation`. Setting the current value changes nothing. Errors: 404 `not_found`, 409 `static_session`, 409 `session_deleting`, 409 `leader_would_leave`, 422 `out_of_range` (outside 1..`max_replicas`), 422 `invalid_request` (malformed body). See Scaling below.
 
-### `GET /api/v1/clusters/{cluster_id}/init-scripts`
+### `GET /api/v1/sessions/{session_id}/init-scripts`
 
-The cluster's init scripts and the last init run: `cluster_id`, `scripts` (the stored `spec.init_scripts`), `preset_id` and `preset_name` (null for a raw-spec cluster or once the preset is deleted), `status` (the init run from `status.init`, or null before any run: `state` of `skipped`, `running`, `succeeded`, `failed`; `scripts_hash`; and, when known, `started_at`, `finished_at`, `exit_code`, `log_tail`, `reason`), `edited_since_run` (true when a run exists, is not `skipped`, and its `scripts_hash` differs from the hash of the stored scripts), `script_path` and `log_path` (`<workdir>/.agent-init/init.sh` and `init.log` inside the agent pods, under `/workdir/<spec.workdir>`), and `preset_updated` (always false on GET). Response 200. Errors: 404 `not_found`, 403 `forbidden`.
+The session's init scripts and the last init run: `session_id`, `scripts` (the stored `spec.init_scripts`), `preset_id` and `preset_name` (null for a raw-spec session or once the preset is deleted), `status` (the init run from `status.init`, or null before any run: `state` of `skipped`, `running`, `succeeded`, `failed`; `scripts_hash`; and, when known, `started_at`, `finished_at`, `exit_code`, `log_tail`, `reason`), `edited_since_run` (true when a run exists, is not `skipped`, and its `scripts_hash` differs from the hash of the stored scripts), `script_path` and `log_path` (`<workdir>/.agent-init/init.sh` and `init.log` inside the agent pods, under `/workdir/<spec.workdir>`), and `preset_updated` (always false on GET). Response 200. Errors: 404 `not_found`, 403 `forbidden`.
 
-### `PUT /api/v1/clusters/{cluster_id}/init-scripts`
+### `PUT /api/v1/sessions/{session_id}/init-scripts`
 
-Replaces the cluster's init scripts. Body `{"scripts": ["<shell script>", ...]}` (at most 20 entries, each non-empty after strip and at most 16384 characters). One transaction writes the cluster's stored `spec.init_scripts` and, when the cluster has a source preset that still exists (the Default preset included), that preset's `spec.init_scripts` too, bumping the preset's `updated_at`. `generation` is not bumped and no pod rolls. The running cluster never re-runs its init; the next cluster created from the preset runs the new list. Response 200 with the same view as the GET, with `preset_updated` true when a preset was written and false for a raw-spec cluster or a deleted preset. Errors: 422 `invalid_request` (invalid list, naming the index; nothing is written), 404 `not_found`, 409 `conflict` (the cluster is being deleted), 403 `forbidden`.
+Replaces the session's init scripts. Body `{"scripts": ["<shell script>", ...]}` (at most 20 entries, each non-empty after strip and at most 16384 characters). One transaction writes the session's stored `spec.init_scripts` and, when the session has a source preset that still exists (the Default preset included), that preset's `spec.init_scripts` too, bumping the preset's `updated_at`. `generation` is not bumped and no pod rolls. The running session never re-runs its init; the next session created from the preset runs the new list. Response 200 with the same view as the GET, with `preset_updated` true when a preset was written and false for a raw-spec session or a deleted preset. Errors: 422 `invalid_request` (invalid list, naming the index; nothing is written), 404 `not_found`, 409 `conflict` (the session is being deleted), 403 `forbidden`.
 
-### `GET /api/v1/clusters/{cluster_id}/agents`
+### `GET /api/v1/sessions/{session_id}/agents`
 
-List of agent views: `id`, `ordinal`, `pod_name`, `ready`, `state`, `free_since`, `current_turn_id`, `context` (`used_tokens`, `window_tokens`, `used_percentage`, or null), `context_pct` (null until known), `leader` (true for the cluster's current leader), `peers`, `gone`. Response 200. Errors: 404 `not_found`.
+List of agent views: `id`, `ordinal`, `pod_name`, `ready`, `state`, `free_since`, `current_turn_id`, `context` (`used_tokens`, `window_tokens`, `used_percentage`, or null), `context_pct` (null until known), `leader` (true for the session's current leader), `peers`, `gone`. Response 200. Errors: 404 `not_found`.
 
-### `POST /api/v1/clusters/{cluster_id}/messages`
+### `POST /api/v1/sessions/{session_id}/messages`
 
-Body `{"text": "<non-empty>", "target_agent_id": "<uuid, optional>"}`. Queues a message for round-robin dispatch (or for one agent). Response 202 `{"message_id": <int>, "status": "queued"}`. Errors: 404 `not_found`, 409 `cluster_deleting`, 422 `invalid_request` (empty text, target not in this cluster), 422 `target_gone`.
+Body `{"text": "<non-empty>", "target_agent_id": "<uuid, optional>"}`. Queues a message for round-robin dispatch (or for one agent). Response 202 `{"message_id": <int>, "status": "queued"}`. Errors: 404 `not_found`, 409 `session_deleting`, 422 `invalid_request` (empty text, target not in this session), 422 `target_gone`.
 
-### `GET /api/v1/clusters/{cluster_id}/messages`
+### `GET /api/v1/sessions/{session_id}/messages`
 
-Query `status` (comma-separated, from `queued`, `dispatching`, `verifying`, `sent`, `failed`, `cancelled`) and `limit` (1-500, default 100). Response 200: list of message views (`id`, `cluster_id`, `text`, `status`, `target_agent_id`, `agent_id`, `turn_id`, `attempts`, `max_attempts`, `next_attempt_at`, `error`, `created_at`, `dispatched_at`, `turn`: `status`, `started_at`, `completed_at`, `final_text`, `usage`). Errors: 404 `not_found`, 422 `invalid_request`.
+Query `status` (comma-separated, from `queued`, `dispatching`, `verifying`, `sent`, `failed`, `cancelled`) and `limit` (1-500, default 100). Response 200: list of message views (`id`, `session_id`, `text`, `status`, `target_agent_id`, `agent_id`, `turn_id`, `attempts`, `max_attempts`, `next_attempt_at`, `error`, `created_at`, `dispatched_at`, `turn`: `status`, `started_at`, `completed_at`, `final_text`, `usage`). Errors: 404 `not_found`, 422 `invalid_request`.
 
 ### `GET /api/v1/messages/{message_id}`
 
@@ -619,29 +625,29 @@ Queues a pod restart. Response 202 `{"command_id": <int>}`. Errors: 404 `not_fou
 
 Command view: `id`, `agent_id`, `kind`, `status`, `result`, `created_at`, `started_at`, `finished_at`. Response 200. Errors: 404 `not_found`.
 
-### `POST /api/v1/clusters/{cluster_id}/checks`
+### `POST /api/v1/sessions/{session_id}/checks`
 
-Body `{"command": "<non-empty shell command>"}`. Runs the command in a Kubernetes Job against the cluster's workspace. Response 202 `{"check_id": <int>}`. Errors: 404 `not_found`, 409 `cluster_deleting`, 422 `invalid_request`.
+Body `{"command": "<non-empty shell command>"}`. Runs the command in a Kubernetes Job against the session's workspace. Response 202 `{"check_id": <int>}`. Errors: 404 `not_found`, 409 `session_deleting`, 422 `invalid_request`.
 
 ### `GET /api/v1/checks/{check_id}`
 
-Check view: `id`, `cluster_id`, `command`, `status`, `exit_code`, `log_tail`, `created_at`, `started_at`, `finished_at`. Response 200. Errors: 404 `not_found`.
+Check view: `id`, `session_id`, `command`, `status`, `exit_code`, `log_tail`, `created_at`, `started_at`, `finished_at`. Response 200. Errors: 404 `not_found`.
 
-### `GET /api/v1/clusters/{cluster_id}/events`
+### `GET /api/v1/sessions/{session_id}/events`
 
-Pages stored events. Query `before_id` or `after_id` (mutually exclusive), `limit` (1-500, default 200), `agent_id`, `types` (repeatable or comma-separated). Response 200 `{"events": [...], "has_more_before": bool, "next_after_id": int|null}`; each event has `id`, `cluster_id`, `agent_id`, `session_id`, `seq`, `ts`, `type`, `turn_id`, `data`. Errors: 400 `bad_request` (both cursors), 404 `not_found`.
+Pages stored events. Query `before_id` or `after_id` (mutually exclusive), `limit` (1-500, default 200), `agent_id`, `types` (repeatable or comma-separated). Response 200 `{"events": [...], "has_more_before": bool, "next_after_id": int|null}`; each event has `id`, `session_id`, `agent_id`, `wrapper_session_id` (the claude-code-wrapper's own session id), `seq`, `ts`, `type`, `turn_id`, `data`. Errors: 400 `bad_request` (both cursors), 404 `not_found`.
 
-### `GET /api/v1/clusters/{cluster_id}/events/stream`
+### `GET /api/v1/sessions/{session_id}/events/stream`
 
-SSE stream of the cluster's stored events after a cursor: query `after_id` or the `Last-Event-ID` header; with neither, it starts at the current end. Each frame has `id` = the event id, `event` = the stored event type and `data` = the event JSON. Errors before the stream starts: 400 `bad_request`, 404 `not_found`.
+SSE stream of the session's stored events after a cursor: query `after_id` or the `Last-Event-ID` header; with neither, it starts at the current end. Each frame has `id` = the event id, `event` = the stored event type and `data` = the event JSON, with the same fields as a page event (`wrapper_session_id` included). Errors before the stream starts: 400 `bad_request`, 404 `not_found`.
 
-### `GET /api/v1/clusters/{cluster_id}/files`
+### `GET /api/v1/sessions/{session_id}/files`
 
-Lists one directory of the cluster's shared workdir, read through the wrapper of the first ready agent (lowest ordinal) or of `agent_id`. Read-only; dotfiles and `.git` are included. Query: `path` (relative to the workdir, default empty is the workdir root), `offset` (integer >= 0, default 0; pass the previous `next_offset`), `agent_id` (optional; an agent of this cluster, else 404 `not_found`). Response 200:
+Lists one directory of the session's shared workdir, read through the wrapper of the first ready agent (lowest ordinal) or of `agent_id`. Read-only; dotfiles and `.git` are included. Query: `path` (relative to the workdir, default empty is the workdir root), `offset` (integer >= 0, default 0; pass the previous `next_offset`), `agent_id` (optional; an agent of this session, else 404 `not_found`). Response 200:
 
 ```json
 {
-  "cluster_id": "5b7e...", "agent_id": "0c1d...",
+  "session_id": "5b7e...", "agent_id": "0c1d...",
   "root": "/workdir/proj", "path": "src",
   "entries": [
     {"name": "pkg", "type": "dir", "size": null, "mtime": "2026-10-23T09:01:00.011Z"},
@@ -651,15 +657,15 @@ Lists one directory of the cluster's shared workdir, read through the wrapper of
 }
 ```
 
-`root` is the absolute real path of the workdir and `path` the normalised relative path. `type` is `dir`, `file`, `symlink` (listed, never followed) or `other`; `size` is bytes for a `file` and null otherwise; `mtime` is UTC ISO-8601. Directories come first, then the rest, each by name; a page holds at most the wrapper's `limits.files_max_entries` entries and `next_offset` is the `offset` of the next page, or null on the last. A workdir that does not exist yet answers 404 `not_found` for the empty path. Errors: 400 `invalid_path`, 400 `not_a_directory`, 404 `not_found` (cluster, agent, path or workdir), 409 `agent_not_ready` (no usable agent), 422 `invalid_request` (bad `offset`), 502 `wrapper_unreachable`, 502 `wrapper_error`, 503 `unavailable` (no master key). The wrapper status and code are passed through unchanged for 4xx.
+`root` is the absolute real path of the workdir and `path` the normalised relative path. `type` is `dir`, `file`, `symlink` (listed, never followed) or `other`; `size` is bytes for a `file` and null otherwise; `mtime` is UTC ISO-8601. Directories come first, then the rest, each by name; a page holds at most the wrapper's `limits.files_max_entries` entries and `next_offset` is the `offset` of the next page, or null on the last. A workdir that does not exist yet answers 404 `not_found` for the empty path. Errors: 400 `invalid_path`, 400 `not_a_directory`, 404 `not_found` (session, agent, path or workdir), 409 `agent_not_ready` (no usable agent), 422 `invalid_request` (bad `offset`), 502 `wrapper_unreachable`, 502 `wrapper_error`, 503 `unavailable` (no master key). The wrapper status and code are passed through unchanged for 4xx.
 
-### `GET /api/v1/clusters/{cluster_id}/files/content`
+### `GET /api/v1/sessions/{session_id}/files/content`
 
-Reads one file of the cluster workdir through the same agent choice as the listing. Query: `path` (relative to the workdir), `agent_id` (optional). Response 200:
+Reads one file of the session workdir through the same agent choice as the listing. Query: `path` (relative to the workdir), `agent_id` (optional). Response 200:
 
 ```json
 {
-  "cluster_id": "5b7e...", "agent_id": "0c1d...",
+  "session_id": "5b7e...", "agent_id": "0c1d...",
   "path": "src/main.py", "size": 812, "mtime": "2026-10-23T09:02:10.500Z",
   "mime": "text/x-python", "kind": "text", "content": "print('hi')\n"
 }
@@ -673,7 +679,7 @@ Starts an interactive login shell in the agent's session workdir, through the ag
 
 ```json
 {
-  "agent_id": "0c1d...", "cluster_id": "5b7e...", "pod_name": "demo-0",
+  "agent_id": "0c1d...", "session_id": "5b7e...", "pod_name": "demo-0",
   "terminal_id": "term_0123456789ab", "created_at": "2026-10-23T09:03:00.000Z",
   "alive": true, "exit_code": null, "attached": false, "rows": 24, "cols": 80
 }
@@ -681,15 +687,15 @@ Starts an interactive login shell in the agent's session workdir, through the ag
 
 Attach to the shell with the WebSocket route. Errors: 403 `forbidden_origin`, 404 `not_found` (agent), 409 `agent_not_ready`, 409 `terminal_limit` (the wrapper allows 8 shells per pod), 409 `session_not_active`, 422 `invalid_size`, 422 `invalid_request` (unknown body key), 502 `wrapper_unreachable`, 502 `wrapper_error`, 503 `unavailable`. The wrapper status and code are passed through unchanged for 4xx.
 
-### `GET /api/v1/clusters/{cluster_id}/terminals`
+### `GET /api/v1/sessions/{session_id}/terminals`
 
-Lists the shells of every ready agent of the cluster. The agents are queried concurrently; one that cannot answer is listed in `unavailable_agents` instead of failing the request, and a cluster with no ready agent answers an empty list. Response 200:
+Lists the shells of every ready agent of the session. The agents are queried concurrently; one that cannot answer is listed in `unavailable_agents` instead of failing the request, and a session with no ready agent answers an empty list. Response 200:
 
 ```json
 {
   "terminals": [
     {
-      "agent_id": "0c1d...", "cluster_id": "5b7e...", "pod_name": "demo-0",
+      "agent_id": "0c1d...", "session_id": "5b7e...", "pod_name": "demo-0",
       "terminal_id": "term_0123456789ab", "created_at": "2026-10-23T09:03:00.000Z",
       "alive": true, "exit_code": null, "attached": true, "rows": 40, "cols": 120
     }
@@ -698,7 +704,7 @@ Lists the shells of every ready agent of the cluster. The agents are queried con
 }
 ```
 
-`attached` is true while a client is attached; an exited shell stays listed with `alive` false and its `exit_code` until closed or reaped. Errors: 404 `not_found` (cluster), 503 `unavailable`.
+`attached` is true while a client is attached; an exited shell stays listed with `alive` false and its `exit_code` until closed or reaped. Errors: 404 `not_found` (session), 503 `unavailable`.
 
 ### `DELETE /api/v1/agents/{agent_id}/terminals/{terminal_id}`
 
@@ -706,7 +712,7 @@ Closes one shell and everything it started. Guarded by the Origin allowlist like
 
 ### `WS /api/v1/agents/{agent_id}/terminals/{terminal_id}/attach`
 
-Attaches to one shell created with `POST /api/v1/agents/{agent_id}/terminals`. WebSocket routes are not in OpenAPI, so this section is the contract. The api relays the socket to the agent's wrapper (`/v1/sessions/{session_id}/terminals/{terminal_id}/attach`), adding the cluster's wrapper bearer itself: the client never sees or sends a wrapper token, and the token appears in no frame, close reason or log line.
+Attaches to one shell created with `POST /api/v1/agents/{agent_id}/terminals`. WebSocket routes are not in OpenAPI, so this section is the contract. The api relays the socket to the agent's wrapper (`/v1/sessions/{session_id}/terminals/{terminal_id}/attach`), adding the session's wrapper bearer itself: the client never sees or sends a wrapper token, and the token appears in no frame, close reason or log line.
 
 Frames, relayed unchanged in both directions:
 
@@ -723,7 +729,7 @@ Close codes. Every other failure is a close after the socket was accepted, with 
 |---|---|---|
 | 1008 | `invalid_terminal_id` | `terminal_id` is not `term_` plus 12 lowercase hex digits; checked first, no wrapper connection is opened |
 | 4404 | `not_found` | unknown agent (or not a UUID), or the wrapper knows no such session or terminal (its 404) |
-| 4409 | `agent_not_ready` | the agent is not ready, has no wrapper session or its cluster is being discarded, or the wrapper session is not active (its 409) |
+| 4409 | `agent_not_ready` | the agent is not ready, has no wrapper session or its session is being discarded, or the wrapper session is not active (its 409) |
 | 1011 | `wrapper_unavailable`, `unavailable` | the wrapper is unreachable, rejected the bearer, or failed otherwise; `unavailable` when no master key is configured |
 
 Once both sides are open, a close on either side closes the other side with a mapped code: 1000, 1003, 1008, 1009, 1011, 1013, 4000-4999 and every other code a close frame may carry (such as 1001 when a browser tab closes) pass through with their reason; 1005 (a close frame without a code) becomes 1000; 1006 (connection dropped without a close frame), 1015 and a close without a code become 1011. The reserved codes 1005, 1006 and 1015 are never sent. The relay keeps no buffer of its own and ends with its connections.
@@ -738,7 +744,7 @@ import httpx
 from websockets.asyncio.client import connect
 
 API = "http://orchestrator.example.com"
-AGENT = "0c1d..."  # an agent id from GET /api/v1/clusters/{cluster_id}/agents
+AGENT = "0c1d..."  # an agent id from GET /api/v1/sessions/{session_id}/agents
 
 
 async def main() -> None:
@@ -764,24 +770,24 @@ Use `wss://` behind a TLS ingress. A closed socket raises `websockets.exceptions
 
 ### `GET /api/v1/stream`
 
-SSE stream of live cluster, agent and message state. It opens with a `snapshot`, then sends only deltas. Response 200 `text/event-stream`.
+SSE stream of live session, agent and message state. It opens with a `snapshot`, then sends only deltas. Response 200 `text/event-stream`.
 
 ### Events
 
-The `/clusters/{cluster_id}/events/stream` frames are named by the stored wrapper event type (for example `session_state`, `user_message`, `assistant_text`, `tool_call`, `turn_completed`, plus the synthetic `gap` row written when a sequence hole is detected). The `/stream` status stream uses these fixed names:
+The `/sessions/{session_id}/events/stream` frames are named by the stored wrapper event type (for example `session_state`, `user_message`, `assistant_text`, `tool_call`, `turn_completed`, plus the synthetic `gap` row written when a sequence hole is detected). The `/stream` status stream uses these fixed names:
 
 | Event | Stream | Data |
 |---|---|---|
-| `snapshot` | `/stream` | `{"clusters": [{"cluster": <cluster view>, "agents": [<agent view>]}]}`, sent once on connect |
-| `cluster_status` | `/stream` | `{"cluster": <cluster view>}` when a cluster changed |
-| `agent_status` | `/stream` | `{"cluster_id", "agent": <agent view>}` when an agent changed |
-| `message_status` | `/stream` | `{"cluster_id", "queued", "failed", "messages": [<changed message views>]}` |
-| `cluster_removed` | `/stream` | `{"cluster_id"}` when a discard completed |
-| `leader_changed` | `/stream` | `{"cluster_id", "agent_id", "epoch"}` on NOTIFY `leader_changed`; the `cluster_status` and `agent_status` frames that follow carry the new leader |
+| `snapshot` | `/stream` | `{"sessions": [{"session": <session view>, "agents": [<agent view>]}]}`, sent once on connect |
+| `session_status` | `/stream` | `{"session": <session view>}` when a session changed |
+| `agent_status` | `/stream` | `{"session_id", "agent": <agent view>}` when an agent changed |
+| `message_status` | `/stream` | `{"session_id", "queued", "failed", "messages": [<changed message views>]}` |
+| `session_removed` | `/stream` | `{"session_id"}` when a discard completed |
+| `leader_changed` | `/stream` | `{"session_id", "agent_id", "epoch"}` on NOTIFY `leader_changed`; the `session_status` and `agent_status` frames that follow carry the new leader |
 
-### Cluster configuration
+### Session configuration
 
-Create-time only fields of the cluster `spec` (also accepted on `POST /api/v1/presets` and `PUT /api/v1/presets/{preset_id}`; a cluster created from a preset snapshots them). They cannot be edited on a running cluster; discard and schedule again. Unset fields are not stored and not rendered.
+Create-time only fields of the session `spec` (also accepted on `POST /api/v1/presets` and `PUT /api/v1/presets/{preset_id}`; a session created from a preset snapshots them). They cannot be edited on a running session; discard and schedule again. Unset fields are not stored and not rendered.
 
 `spec.wrapper` is a typed block of claude-code-wrapper settings; unknown keys are 422. Every key, with the wrapper config path it renders to:
 
@@ -805,44 +811,46 @@ Reserved entries stay first and cannot be removed or reordered: the `onStart` ho
 
 Escaping: every string value in `spec.wrapper` (not keys) has each `$` doubled to `$$` before it reaches the wrapper config, so the wrapper's `${VAR}` interpolation yields the literal text and a pod environment variable such as `${CLAUDE_CODE_OAUTH_TOKEN}` cannot be read through it. A shell command still sees `$VAR` at run time.
 
-`spec.leader_lease_seconds` (60 to 604800, hive clusters only, so `max_replicas > 1`): once the leader's term (`leader_since`) is older than the lease, the dispatcher hands leadership to the longest-free ready peer at the leader's next turn boundary, with `leader_reason` `lease_expired` and the epoch raised by one. A running turn is never interrupted, and with no ready peer the leader stays. Unset means a leader holds leadership until it hands over.
+`spec.leader_lease_seconds` (60 to 604800, hive sessions only, so `max_replicas > 1`): once the leader's term (`leader_since`) is older than the lease, the dispatcher hands leadership to the longest-free ready peer at the leader's next turn boundary, with `leader_reason` `lease_expired` and the epoch raised by one. A running turn is never interrupted, and with no ready peer the leader stays. Unset means a leader holds leadership until it hands over.
 
-`spec.autoclose_after_seconds` (integer, at least `ORCH_AUTOCLOSE_MIN_SECONDS`, default 300, at most 2592000): the cluster goes to `desired: deleting` within about 10 s of `created_at` plus this many seconds and is discarded like `DELETE /api/v1/clusters/{cluster_id}` (with the discard hook export). `closes_at` of the cluster view shows the deadline; unset means the cluster lives until discarded.
+`spec.autoclose_after_seconds` (integer, at least `ORCH_AUTOCLOSE_MIN_SECONDS`, default 300, at most 2592000): the session goes to `desired: deleting` within about 10 s of `created_at` plus this many seconds and is discarded like `DELETE /api/v1/sessions/{session_id}` (with the discard hook export). `closes_at` of the session view shows the deadline; unset means the session lives until discarded.
 
-`spec.reuse_running_agent` (boolean, default false, sparse: unset is not stored or returned): read only by the trigger services (agents-webhook, agents-schedule), which send a new event to the cluster still running for the preset instead of creating another one. The orchestrator never acts on it, so a cluster a user creates ignores it. A preset carries it and a cluster created from the preset snapshots it in its spec; trigger services read it through `GET /api/v1/presets/{preset_id}` on the service port. A non-boolean is refused with 422 `invalid_request`.
+`spec.reuse_running_agent` (boolean, default false, sparse: unset is not stored or returned): read only by the trigger services (agents-webhook, agents-schedule), which send a new event to the session still running for the preset instead of creating another one. The orchestrator never acts on it, so a session a user creates ignores it. A preset carries it and a session created from the preset snapshots it in its spec; trigger services read it through `GET /api/v1/presets/{preset_id}` on the service port. A non-boolean is refused with 422 `invalid_request`.
 
-View fields: `closes_at`, `leader_since` and `leader_reason` (see `GET /api/v1/clusters/{cluster_id}`).
+View fields: `closes_at`, `leader_since` and `leader_reason` (see `GET /api/v1/sessions/{session_id}`).
 
-Refusals are 422 `invalid_request` on `POST /api/v1/clusters`, `POST /api/v1/presets` and `PUT /api/v1/presets/{preset_id}`; the message names the field: `wrapper.hooks.<event>: unknown hook event`, `wrapper.hooks.<event>.<i>.matcher: only allowed on onAgentToolCall, onToolResult`, `wrapper.hooks.<event>.<i>.interval_seconds: required on onTick`, `wrapper.mcp_servers.<any-mcp or ccw>: the name is reserved`, `wrapper.plugins.install.<i>.plugin: marketplace '<m>' is not listed in marketplaces or claude-plugins-official`, `leader_lease_seconds requires a hive cluster (max_replicas > 1)`, and `autoclose_after_seconds <n> is below the minimum <floor>`. Values outside a numeric range (for example `leader_lease_seconds` under 60) are refused with the field name in the message too.
+Refusals are 422 `invalid_request` on `POST /api/v1/sessions`, `POST /api/v1/presets` and `PUT /api/v1/presets/{preset_id}`; the message names the field: `wrapper.hooks.<event>: unknown hook event`, `wrapper.hooks.<event>.<i>.matcher: only allowed on onAgentToolCall, onToolResult`, `wrapper.hooks.<event>.<i>.interval_seconds: required on onTick`, `wrapper.mcp_servers.<any-mcp or ccw>: the name is reserved`, `wrapper.plugins.install.<i>.plugin: marketplace '<m>' is not listed in marketplaces or claude-plugins-official`, `leader_lease_seconds requires a hive session (max_replicas > 1)`, and `autoclose_after_seconds <n> is below the minimum <floor>`. Values outside a numeric range (for example `leader_lease_seconds` under 60) are refused with the field name in the message too.
 
 ### Scaling
 
-How API callers size a cluster:
+How API callers size a session:
 
-- `max_replicas` is the cap: 1 to `ORCH_MAX_REPLICAS` (at most 16), default `replicas`, fixed when the cluster is created.
-- `static` (default false) pins the size and requires `max_replicas == replicas`; scaling a static cluster is 409 `static_cluster`.
-- Hive, alone and scalable are derived: `max_replicas > 1` is a hive, `max_replicas == 1` runs alone, and a cluster is scalable when it is not static and `max_replicas > 1`.
-- `POST /api/v1/clusters/{cluster_id}/scale` (and the leader's scale tool on the agent API) changes `spec.replicas` in place: no generation bump and no restart of surviving pods.
+- `max_replicas` is the cap: 1 to `ORCH_MAX_REPLICAS` (at most 16), default `replicas`, fixed when the session is created.
+- `static` (default false) pins the size and requires `max_replicas == replicas`; scaling a static session is 409 `static_session`.
+- Hive, alone and scalable are derived: `max_replicas > 1` is a hive, `max_replicas == 1` runs alone, and a session is scalable when it is not static and `max_replicas > 1`.
+- `POST /api/v1/sessions/{session_id}/scale` (and the leader's scale tool on the agent API) changes `spec.replicas` in place: no generation bump and no restart of surviving pods.
 - Scale-down removes the highest ordinals, after the drain of their queued and running work.
-- Detecting a leaving agent: read `spec.replicas` of the cluster view, `ordinal` of each agent view and `status.drain` of the cluster view. An agent with `ordinal >= spec.replicas` while `status.drain` is present is leaving. It finishes its turn (its state `busy` or a message still `dispatching` or `verifying`) before its pod is removed; idle leaving agents go at once. `status.drain` is `{"target", "since", "waiting"}`: `target` is the new `spec.replicas`, `since` the first tick that saw the drain, `waiting` the ordinals still busy. After `ORCH_SCALE_DRAIN_SECONDS` (default 900) from `since` the target applies regardless of busy agents. `status.drain` is absent once the drain is done.
-- The leader is never removed: a scale-down below the leader's ordinal is 409 `leader_would_leave`. Make another agent leader first (`POST /api/v1/clusters/{cluster_id}/leader`), then scale.
-- New pods never re-run init scripts; those run once per cluster.
+- Detecting a leaving agent: read `spec.replicas` of the session view, `ordinal` of each agent view and `status.drain` of the session view. An agent with `ordinal >= spec.replicas` while `status.drain` is present is leaving. It finishes its turn (its state `busy` or a message still `dispatching` or `verifying`) before its pod is removed; idle leaving agents go at once. `status.drain` is `{"target", "since", "waiting"}`: `target` is the new `spec.replicas`, `since` the first tick that saw the drain, `waiting` the ordinals still busy. After `ORCH_SCALE_DRAIN_SECONDS` (default 900) from `since` the target applies regardless of busy agents. `status.drain` is absent once the drain is done.
+- The leader is never removed: a scale-down below the leader's ordinal is 409 `leader_would_leave`. Make another agent leader first (`POST /api/v1/sessions/{session_id}/leader`), then scale.
+- New pods never re-run init scripts; those run once per session.
 
 ## Agent API
 
-Agent pods call the orchestrator on `/agent/v1`. It is served only on the agent port (`ORCH_AGENT_PORT`, default 8001, reached through the agents Service); the main port answers 404 for it, and the agent port serves nothing else except `/healthz` and `/readyz`. The pod env carries `ORCH_AGENT_URL`, `ORCH_CLUSTER_ID` and `ORCH_AGENT_TOKEN`.
+Agent pods call the orchestrator on `/agent/v1`. It is served only on the agent port (`ORCH_AGENT_PORT`, default 8001, reached through the agents Service); the main port answers 404 for it, and the agent port serves nothing else except `/healthz` and `/readyz`. The pod env carries `ORCH_AGENT_URL`, `ORCH_SESSION_ID` and `ORCH_AGENT_TOKEN`.
 
 Every request needs:
 
-- `Authorization: Bearer <ORCH_AGENT_TOKEN>`, the cluster's derived agent token.
-- `X-Orch-Cluster: <cluster id>`.
+- `Authorization: Bearer <ORCH_AGENT_TOKEN>`, the session's derived agent token.
+- `X-Orch-Session: <session id>`.
 
-The caller's identity is its socket peer: the direct peer IP must be the `pod_ip` of a not-gone agent of that cluster. Forwarded headers are never read.
+The header and env renamed the unit to session with no alias (formerly `X-Orch-Cluster` and `ORCH_CLUSTER_ID`, and the old any-mcp orchestrator plugin key, now `session`): a request carrying only `X-Orch-Cluster` is refused like a missing header. Agents need any-mcp `v0.3.0` or later. The token derivation is unchanged, so a running session's token stays valid.
+
+The caller's identity is its socket peer: the direct peer IP must be the `pod_ip` of a not-gone agent of that session. Forwarded headers are never read.
 
 Errors use the usual `{"error": {"code", "message"}}` shape:
 
-- `401 unauthorized`: a header is missing, the cluster is unknown or the token is wrong. One shared message for every case.
-- `403 forbidden`: the peer IP is not a live agent pod of that cluster (including the former IP of a gone agent).
+- `401 unauthorized`: a header is missing, the session is unknown or the token is wrong. One shared message for every case.
+- `403 forbidden`: the peer IP is not a live agent pod of that session (including the former IP of a gone agent).
 
 ### `GET /agent/v1/me`
 
@@ -850,7 +858,7 @@ The caller's identity, the leader and the hive members.
 
 ```json
 {
-  "cluster_id": "uuid", "agent_id": "uuid", "pod_name": "string", "ordinal": 0,
+  "session_id": "uuid", "agent_id": "uuid", "pod_name": "string", "ordinal": 0,
   "leader": "pod name or null", "epoch": "int or null",
   "max_replicas": 4, "static": false,
   "members": [
@@ -859,27 +867,27 @@ The caller's identity, the leader and the hive members.
 }
 ```
 
-`leader` and `epoch` come from the cluster's leader record and are null while there is none. `members` are the not-gone agents by ordinal; `state` is the stored agent state and `context_pct` is null when unknown.
+`leader` and `epoch` come from the session's leader record and are null while there is none. `members` are the not-gone agents by ordinal; `state` is the stored agent state and `context_pct` is null when unknown.
 
 ### `POST /agent/v1/leadership/handover`
 
-The current leader hands leadership away. Body `{to?, reason, epoch}`: `to` is the pod name of a member (omitted: any agent), `reason` is 1 to 500 characters, `epoch` is the epoch the caller read from `GET /agent/v1/me`. Queues a `handover` request and sends `NOTIFY leadership_requested {cluster_id}`; the dispatcher re-checks everything at apply time. There is no takeover route. Response 202 `{request_id}`. Errors, checked in this order: 409 `alone` (a single-agent cluster), 409 `not_leader` (the caller is not the current leader, or there is none), 409 `stale_epoch` (`epoch` differs from the current epoch), 404 `not_found` (unknown `to`), 422 `invalid_request`.
+The current leader hands leadership away. Body `{to?, reason, epoch}`: `to` is the pod name of a member (omitted: any agent), `reason` is 1 to 500 characters, `epoch` is the epoch the caller read from `GET /agent/v1/me`. Queues a `handover` request and sends `NOTIFY leadership_requested {session_id}`; the dispatcher re-checks everything at apply time. There is no takeover route. Response 202 `{request_id}`. Errors, checked in this order: 409 `alone` (a single-agent session), 409 `not_leader` (the caller is not the current leader, or there is none), 409 `stale_epoch` (`epoch` differs from the current epoch), 404 `not_found` (unknown `to`), 422 `invalid_request`.
 
 ### `GET /agent/v1/init-scripts`
 
-The init scripts of the caller's cluster and the last init run, so the agent knows how its cluster was initialised. The cluster is always the token's; there is no way to name another. Response 200, the same view as the public `GET /api/v1/clusters/{id}/init-scripts` (`cluster_id`, `scripts`, `preset_id`, `preset_name`, `status`, `edited_since_run`, `script_path`, `log_path`, `preset_updated` always false). The scripts and the run log are also files under `.agent-init/` in the workdir. Any agent of the cluster may call it. Errors: the 401 and 403 above.
+The init scripts of the caller's session and the last init run, so the agent knows how its session was initialised. The session is always the token's; there is no way to name another. Response 200, the same view as the public `GET /api/v1/sessions/{id}/init-scripts` (`session_id`, `scripts`, `preset_id`, `preset_name`, `status`, `edited_since_run`, `script_path`, `log_path`, `preset_updated` always false). The scripts and the run log are also files under `.agent-init/` in the workdir. Any agent of the session may call it. Errors: the 401 and 403 above.
 
 ### `PUT /agent/v1/init-scripts`
 
-Replaces the caller's cluster init scripts. Body `{"scripts": ["<shell script>", ...]}` with the same limits as the public PUT. Writes the cluster's stored `spec.init_scripts` and its source preset's (when it still exists) in one transaction, with no generation bump and no pod roll; the edit applies to the next cluster created from the preset and never re-runs here. Response 200 with the view above and `preset_updated` true when a preset was written. Errors: 422 `invalid_request` (nothing is written), 409 `conflict` (the cluster is being deleted), plus the 401 and 403 above. These two routes back the plugin tools `orchestrator_init_scripts_get` and `orchestrator_init_scripts_edit`.
+Replaces the caller's session init scripts. Body `{"scripts": ["<shell script>", ...]}` with the same limits as the public PUT. Writes the session's stored `spec.init_scripts` and its source preset's (when it still exists) in one transaction, with no generation bump and no pod roll; the edit applies to the next session created from the preset and never re-runs here. Response 200 with the view above and `preset_updated` true when a preset was written. Errors: 422 `invalid_request` (nothing is written), 409 `conflict` (the session is being deleted), plus the 401 and 403 above. These two routes back the plugin tools `orchestrator_init_scripts_get` and `orchestrator_init_scripts_edit`.
 
 ### `POST /agent/v1/scale`
 
-The leader grows or shrinks its own cluster. Body `{replicas}`; sets `spec.replicas` in place (no generation bump, no pod roll) through the same writer as the public `POST /api/v1/clusters/{id}/scale`, with the caller checked as leader. Response 202 `{cluster_id, replicas, previous_replicas, max_replicas}`. Errors: 403 `not_leader` (the caller is not the current leader), 409 `static_cluster`, 422 `out_of_range` (outside 1 to `max_replicas`), 409 `leader_would_leave` (the leader's ordinal would be removed), 409 `cluster_deleting`, 422 `invalid_request`, plus the 401 and 403 above. Served only on the agent port; the public scale route is not reachable there. Backs the plugin tool `orchestrator_scale`.
+The leader grows or shrinks its own session. Body `{replicas}`; sets `spec.replicas` in place (no generation bump, no pod roll) through the same writer as the public `POST /api/v1/sessions/{id}/scale`, with the caller checked as leader. Response 202 `{session_id, replicas, previous_replicas, max_replicas}`. Errors: 403 `not_leader` (the caller is not the current leader), 409 `static_session`, 422 `out_of_range` (outside 1 to `max_replicas`), 409 `leader_would_leave` (the leader's ordinal would be removed), 409 `session_deleting`, 422 `invalid_request`, plus the 401 and 403 above. Served only on the agent port; the public scale route is not reachable there. Backs the plugin tool `orchestrator_scale`.
 
 ### File locks
 
-Advisory locks on files, so agents claim what they edit and are warned before writing a file another live agent holds. Paths are relative to the cluster workdir (`/workdir/<spec.workdir>`); an absolute path under it is converted, and an empty path, a `..` escape or a path outside the workdir is `400 invalid_path`. The workdir root constant `WORKDIR_ROOT` lives in `spec.py`, shared by the renderer and the api.
+Advisory locks on files, so agents claim what they edit and are warned before writing a file another live agent holds. Paths are relative to the session workdir (`/workdir/<spec.workdir>`); an absolute path under it is converted, and an empty path, a `..` escape or a path outside the workdir is `400 invalid_path`. The workdir root constant `WORKDIR_ROOT` lives in `spec.py`, shared by the renderer and the api.
 
 - `POST /agent/v1/locks/claim` body `{paths: [1..50]}` -> 200 `{claimed: [path], held: [{path, agent}]}`. A lock held by another live agent stays theirs (`held`); a lock held by a gone agent is taken over.
 - `POST /agent/v1/locks/release` body `{paths}` -> 200 `{released: [path]}`; only the caller's own locks.
@@ -889,10 +897,10 @@ Advisory locks on files, so agents claim what they edit and are warned before wr
 
 ## Bench
 
-`orch bench SPEC --api URL --out FILE [--keep]` runs the experiment: does round-robin with several peered agents finish faster, fail less and verify more often? It talks only to the public `/api/v1` through httpx. See `examples/bench.yaml` (arms 1/off, 3/off, 3/on and the explicit hive arm hive3; every arm with more than one replica is a hive, `single` is the alone baseline). An arm may also set `max_replicas` and `static`, passed into the cluster spec.
+`orch bench SPEC --api URL --out FILE [--keep]` runs the experiment: does round-robin with several peered agents finish faster, fail less and verify more often? It talks only to the public `/api/v1` through httpx. See `examples/bench.yaml` (arms 1/off, 3/off, 3/on and the explicit hive arm hive3; every arm with more than one replica is a hive, `single` is the alone baseline). An arm may also set `max_replicas` and `static`, passed into the session spec.
 
-Spec keys: `arms: [{name, replicas, peers}]`, `cluster` (a cluster spec base, for example `model`, `effort`), `tasks: [{name, prompt, verify}]`, `repeats`, `timeout_seconds` and optional `chaos: {after_seconds}`. A bad spec exits 2 and names the field. Prompts are sent verbatim.
+Spec keys: `arms: [{name, replicas, peers}]`, `session` (a session spec base, for example `model`, `effort`), `tasks: [{name, prompt, verify}]`, `repeats`, `timeout_seconds` and optional `chaos: {after_seconds}`. A bad spec exits 2 and names the field. Prompts are sent verbatim.
 
-For each arm it creates cluster `bench-<arm>-<run>` (a DNS-1123 slug of at most 40 characters), waits for every replica to be ready with a session, then for each task and repeat posts the message and follows `GET /api/v1/stream` until the turn completes or fails (polling `GET /messages/{id}` when the stream is unavailable). With `chaos`, after `after_seconds` it restarts one random busy agent via `POST /agents/{id}/restart`. It then runs the task's `verify` command as a check and waits for it.
+For each arm it creates session `bench-<arm>-<run>` (a DNS-1123 slug of at most 40 characters), waits for every replica to be ready with a wrapper session, then for each task and repeat posts the message and follows `GET /api/v1/stream` until the turn completes or fails (polling `GET /messages/{id}` when the stream is unavailable). With `chaos`, after `after_seconds` it restarts one random busy agent via `POST /agents/{id}/restart`. It then runs the task's `verify` command as a check and waits for it.
 
-Each (arm, task, repeat) appends one JSONL record to `--out`: `arm`, `task`, `repeat`, `cluster_id`, `message_id`, `wall_seconds` (queued to completed), `turn_status`, `failed_turns` (retries plus a final failure), `input_tokens` and `output_tokens` (from the turn `usage`), `verify_passed`, `exit_code` and `leader_epoch` (from the cluster view after the run). The summary table has per arm the runs, mean and p50 wall seconds (completed runs), failures, mean tokens, verify pass rate and the final leader epoch. The bench clusters are discarded at the end (which deletes their history too) unless `--keep`.
+Each (arm, task, repeat) appends one JSONL record to `--out`: `arm`, `task`, `repeat`, `session_id`, `message_id`, `wall_seconds` (queued to completed), `turn_status`, `failed_turns` (retries plus a final failure), `input_tokens` and `output_tokens` (from the turn `usage`), `verify_passed`, `exit_code` and `leader_epoch` (from the session view after the run). The summary table has per arm the runs, mean and p50 wall seconds (completed runs), failures, mean tokens, verify pass rate and the final leader epoch. The bench sessions are discarded at the end (which deletes their history too) unless `--keep`.

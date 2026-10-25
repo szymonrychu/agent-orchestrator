@@ -7,12 +7,12 @@ from pathlib import Path
 import httpx
 import pytest
 from fastapi import Depends, FastAPI
-from test_api_clusters import make_settings
+from test_api_sessions import make_settings
 
-from agent_orchestrator.api import errors
-from agent_orchestrator.api.app import create_app
-from agent_orchestrator.api.origin import OriginAllowlist, require_allowed_origin
-from agent_orchestrator.settings import Settings, SettingsError
+from agents_orchestrator.api import errors
+from agents_orchestrator.api.app import create_app
+from agents_orchestrator.api.origin import OriginAllowlist, require_allowed_origin
+from agents_orchestrator.settings import Settings, SettingsError
 
 ROOT = Path(__file__).resolve().parent.parent
 DB = "postgresql://u:p@h/db"
@@ -48,8 +48,8 @@ def test_settings_parse_and_validate(monkeypatch):
 
 
 def test_default_ports_are_dropped(monkeypatch):
-    from agent_orchestrator.api.origin import origin_allowed
-    from agent_orchestrator.settings import normalise_origin
+    from agents_orchestrator.api.origin import origin_allowed
+    from agents_orchestrator.settings import normalise_origin
 
     assert normalise_origin("https://Host:443") == "https://host"
     assert normalise_origin("http://host:80") == "http://host"
@@ -194,7 +194,7 @@ async def test_http_dependency():
 
 
 def test_readmes_document_dev_origin():
-    for path in (ROOT / "README.md", ROOT / "chart" / "agent-orchestrator" / "README.md"):
+    for path in (ROOT / "README.md", ROOT / "chart" / "agents-orchestrator" / "README.md"):
         text = path.read_text()
         assert "ORCH_ALLOWED_ORIGINS" in text, path
         assert "http://localhost:5173" in text, path

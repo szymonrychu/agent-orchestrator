@@ -6,7 +6,7 @@ metadata:
   name: postgres
   labels:
     app.kubernetes.io/name: postgres
-    app.kubernetes.io/part-of: agent-orchestrator-e2e
+    app.kubernetes.io/part-of: agents-orchestrator-e2e
 spec:
   replicas: 1
   selector:
@@ -16,7 +16,7 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: postgres
-        app.kubernetes.io/part-of: agent-orchestrator-e2e
+        app.kubernetes.io/part-of: agents-orchestrator-e2e
     spec:
       containers:
         - name: postgres
@@ -49,7 +49,7 @@ metadata:
   name: postgres
   labels:
     app.kubernetes.io/name: postgres
-    app.kubernetes.io/part-of: agent-orchestrator-e2e
+    app.kubernetes.io/part-of: agents-orchestrator-e2e
 spec:
   selector:
     app.kubernetes.io/name: postgres

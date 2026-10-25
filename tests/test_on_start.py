@@ -6,10 +6,11 @@ import json
 import re
 
 from any_mcp.config import AnyMcpConfig
+from any_mcp.orchestrator import OrchestratorPlugin
 
-from agent_orchestrator.k8s import on_start
-from agent_orchestrator.settings import Settings
-from agent_orchestrator.spec import ClusterSpec
+from agents_orchestrator.k8s import on_start
+from agents_orchestrator.settings import Settings
+from agents_orchestrator.spec import SessionSpec
 
 HIVE_TOOLS = [
     "me",
@@ -41,24 +42,24 @@ def written_config(script: str) -> dict:
     return json.loads(m.group(1))
 
 
-def entries(spec: ClusterSpec, settings: Settings | None = None) -> dict:
+def entries(spec: SessionSpec, settings: Settings | None = None) -> dict:
     cfg = written_config(on_start.render_on_start(spec, settings or make_settings(), "alpha"))
     return {p["name"]: p for p in cfg.get("plugins", [])}
 
 
 def test_alone_has_no_orchestrator_entry():
-    spec = ClusterSpec(replicas=1)
+    spec = SessionSpec(replicas=1)
     assert on_start.orchestrator_allow(spec) == []
     assert "orchestrator" not in entries(spec)
 
 
 def test_static_hive_has_no_scale_tool():
-    spec = ClusterSpec(replicas=2, static=True)
+    spec = SessionSpec(replicas=2, static=True)
     assert on_start.orchestrator_allow(spec) == HIVE_TOOLS
 
 
 def test_hive_entry_and_allow():
-    spec = ClusterSpec(replicas=2, max_replicas=4, auto_compact_pct=70)
+    spec = SessionSpec(replicas=2, max_replicas=4, auto_compact_pct=70)
     assert on_start.orchestrator_allow(spec) == [*HIVE_TOOLS, "scale"]
     entry = entries(spec)["orchestrator"]
     assert entry == {
@@ -69,7 +70,7 @@ def test_hive_entry_and_allow():
         "config": {
             "base_url": "${ORCH_AGENT_URL}",
             "token": "${ORCH_AGENT_TOKEN}",
-            "cluster": "${ORCH_CLUSTER_ID}",
+            "session": "${ORCH_SESSION_ID}",
             "agent": "${POD_NAME}",
             "slug": "alpha",
             "max_replicas": 4,
@@ -82,9 +83,20 @@ def test_hive_entry_and_allow():
     AnyMcpConfig.model_validate(cfg)
 
 
+def test_plugin_entry_session_key():
+    """The rendered entry names the session and validates under any-mcp v0.3.0."""
+    spec = SessionSpec(replicas=2, max_replicas=4)
+    cfg = written_config(on_start.render_on_start(spec, make_settings(), "alpha"))
+    config = AnyMcpConfig.model_validate(cfg)
+    entry = next(p for p in config.plugins if p.name == "orchestrator")
+    assert entry.config["session"] == "${ORCH_SESSION_ID}"
+    plugin_config = OrchestratorPlugin.Config.model_validate(entry.config)
+    assert plugin_config.session == "${ORCH_SESSION_ID}"
+
+
 def test_user_config_merged():
     user = {"plugins": [{"name": "gh", "plugin": "x:Y", "config": {"a": 1}}], "tools": {}}
-    spec = ClusterSpec(replicas=2, any_mcp_config=user)
+    spec = SessionSpec(replicas=2, any_mcp_config=user)
     got = entries(spec)
     assert got["gh"] == user["plugins"][0]
     assert "orchestrator" in got
@@ -100,31 +112,31 @@ def test_user_config_merged():
 def test_default_config_used_when_spec_has_none(tmp_path):
     f = tmp_path / "mcp.yaml"
     f.write_text("plugins:\n  - {name: gh, plugin: 'x:Y'}\n")
-    got = entries(ClusterSpec(replicas=2), make_settings(any_mcp_config_file=str(f)))
+    got = entries(SessionSpec(replicas=2), make_settings(any_mcp_config_file=str(f)))
     assert set(got) == {"gh", "orchestrator"}
 
 
 def test_omitted_without_agent_api_url_or_slug():
-    spec = ClusterSpec(replicas=2)
+    spec = SessionSpec(replicas=2)
     assert "orchestrator" not in entries(spec, make_settings(agent_api_url=None))
 
 
 def test_placeholders_not_secrets():
-    spec = ClusterSpec(replicas=2)
+    spec = SessionSpec(replicas=2)
     script = on_start.render_on_start(spec, make_settings(master_key=SECRET * 2), "alpha")
     assert "${ORCH_AGENT_TOKEN}" in script and "${POD_NAME}" in script
     assert SECRET not in script
 
 
 def test_invariant_to_replicas():
-    a = on_start.render_on_start(ClusterSpec(replicas=2, max_replicas=4), make_settings(), "alpha")
-    b = on_start.render_on_start(ClusterSpec(replicas=3, max_replicas=4), make_settings(), "alpha")
+    a = on_start.render_on_start(SessionSpec(replicas=2, max_replicas=4), make_settings(), "alpha")
+    b = on_start.render_on_start(SessionSpec(replicas=3, max_replicas=4), make_settings(), "alpha")
     assert a == b
 
 
 def test_user_orchestrator_entry_replaced():
     user = {"plugins": [{"name": "orchestrator", "plugin": "x:Y"}, {"name": "gh", "plugin": "x:Z"}]}
-    spec = ClusterSpec(replicas=2, any_mcp_config=user)
+    spec = SessionSpec(replicas=2, any_mcp_config=user)
     cfg = written_config(on_start.render_on_start(spec, make_settings(), "alpha"))
     names = [p["name"] for p in cfg["plugins"]]
     assert names.count("orchestrator") == 1 and "gh" in names

@@ -5,11 +5,11 @@ from __future__ import annotations
 import uuid
 
 import httpx
-from factories import insert_agent, insert_cluster, set_agent_status
+from factories import insert_agent, insert_session, set_agent_status
 
-from agent_orchestrator.api.app import create_app
-from agent_orchestrator.settings import Settings
-from agent_orchestrator.tokens import derive_tokens
+from agents_orchestrator.api.app import create_app
+from agents_orchestrator.settings import Settings
+from agents_orchestrator.tokens import derive_tokens
 
 KEY = "k" * 32
 AGENT_PORT = 8001
@@ -26,8 +26,8 @@ def make_settings(dsn: str) -> Settings:
     )
 
 
-def token(cluster_id) -> str:
-    return derive_tokens(KEY.encode(), cluster_id).agent
+def token(session_id) -> str:
+    return derive_tokens(KEY.encode(), session_id).agent
 
 
 def client_for(app, ip: str = IP0) -> httpx.AsyncClient:
@@ -35,9 +35,9 @@ def client_for(app, ip: str = IP0) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=transport, base_url=f"http://orch:{AGENT_PORT}")
 
 
-def headers(cluster_id, tok: str | None = None) -> dict[str, str]:
-    h = {"X-Orch-Cluster": str(cluster_id)}
-    h["Authorization"] = f"Bearer {tok if tok is not None else token(cluster_id)}"
+def headers(session_id, tok: str | None = None) -> dict[str, str]:
+    h = {"X-Orch-Session": str(session_id)}
+    h["Authorization"] = f"Bearer {tok if tok is not None else token(session_id)}"
     return h
 
 
@@ -47,7 +47,7 @@ async def set_ip(pool, agent_id, ip):
 
 
 async def hive(pool, replicas: int = 2):
-    c = await insert_cluster(pool, spec={"replicas": replicas, "max_replicas": 4})
+    c = await insert_session(pool, spec={"replicas": replicas, "max_replicas": 4})
     a0 = await insert_agent(pool, c["id"], ordinal=0, ready=True)
     a1 = await insert_agent(pool, c["id"], ordinal=1, ready=False)
     await set_ip(pool, a0["id"], IP0)
@@ -61,7 +61,7 @@ async def test_me_identity(pool, dsn):
         r = await http.get("/agent/v1/me", headers=headers(c["id"]))
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["cluster_id"] == str(c["id"])
+    assert body["session_id"] == str(c["id"])
     assert body["agent_id"] == str(a1["id"])
     assert body["pod_name"] == a1["pod_name"]
     assert body["ordinal"] == 1
@@ -73,17 +73,17 @@ async def test_me_identity(pool, dsn):
 
 async def test_token_rejections(pool, dsn):
     c, _, _ = await hive(pool)
-    other = await insert_cluster(pool, spec={"replicas": 1})
+    other = await insert_session(pool, spec={"replicas": 1})
     app = create_app(make_settings(dsn), pool)
     cases = [
         {},
         {"Authorization": f"Bearer {token(c['id'])}"},
-        {"X-Orch-Cluster": str(c["id"])},
+        {"X-Orch-Session": str(c["id"])},
         headers(c["id"], "wrong"),
         headers(c["id"], token(other["id"])),
         {**headers(c["id"]), "Authorization": token(c["id"])},
         headers(uuid.uuid4()),
-        {**headers(c["id"]), "X-Orch-Cluster": "not-a-uuid"},
+        {**headers(c["id"]), "X-Orch-Session": "not-a-uuid"},
     ]
     messages = set()
     async with client_for(app) as http:
@@ -94,6 +94,21 @@ async def test_token_rejections(pool, dsn):
             assert err["code"] == "unauthorized"
             messages.add(err["message"])
     assert len(messages) == 1
+
+
+async def test_old_cluster_header_refused(pool, dsn):
+    """The pre-rename header is no alias: carrying only it is a missing X-Orch-Session."""
+    c, _, _ = await hive(pool)
+    old = {"Authorization": f"Bearer {token(c['id'])}", "X-Orch-Cluster": str(c["id"])}
+    async with client_for(create_app(make_settings(dsn), pool), IP1) as http:
+        refused = await http.get("/agent/v1/me", headers=old)
+        missing = await http.get("/agent/v1/me", headers={"Authorization": old["Authorization"]})
+        accepted = await http.get("/agent/v1/me", headers=headers(c["id"]))
+    assert refused.status_code == missing.status_code == 401, refused.text
+    assert refused.json() == missing.json()
+    assert refused.json()["error"]["code"] == "unauthorized"
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["session_id"] == str(c["id"])
 
 
 async def test_ip_binding(pool, dsn):
@@ -129,7 +144,7 @@ async def test_me_leader_and_members(pool, dsn):
         assert body["leader"] is None and body["epoch"] is None
         async with pool.connection() as conn:
             await conn.execute(
-                "INSERT INTO cluster_leaders (cluster_id, agent_id, epoch, since, reason)"
+                "INSERT INTO session_leaders (session_id, agent_id, epoch, since, reason)"
                 " VALUES (%s, %s, 3, now(), 'test')",
                 (c["id"], a0["id"]),
             )

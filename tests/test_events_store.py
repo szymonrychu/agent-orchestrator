@@ -8,9 +8,9 @@ import uuid
 
 import psycopg
 import pytest
-from factories import insert_agent, insert_cluster
+from factories import insert_agent, insert_session
 
-from agent_orchestrator.db import events as ev
+from agents_orchestrator.db import events as ev
 
 
 def env(seq: int, type: str = "message", turn_id: str | None = None, **data) -> dict:
@@ -20,9 +20,9 @@ def env(seq: int, type: str = "message", turn_id: str | None = None, **data) -> 
 
 
 async def _setup(pool, agents: int = 1):
-    cluster = await insert_cluster(pool)
-    ags = [await insert_agent(pool, cluster["id"]) for _ in range(agents)]
-    return cluster["id"], [a["id"] for a in ags]
+    session = await insert_session(pool)
+    ags = [await insert_agent(pool, session["id"]) for _ in range(agents)]
+    return session["id"], [a["id"] for a in ags]
 
 
 async def _insert(pool, cid, aid, envelopes, sid="s1"):
@@ -63,7 +63,7 @@ async def test_notify_only_on_new_rows(pool, dsn):
                 got.append(json.loads(n.payload))
 
         await asyncio.wait_for(drain(), 5)
-    assert got == [{"cluster_id": str(cid), "max_id": first}]
+    assert got == [{"session_id": str(cid), "max_id": first}]
 
 
 async def test_page_newest_then_before(pool):

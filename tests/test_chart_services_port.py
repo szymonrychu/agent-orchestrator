@@ -6,7 +6,7 @@ from typing import Any
 
 from helm_render import render, render_error
 
-FULL = "agent-orchestrator"
+FULL = "agents-orchestrator"
 BASE: dict[str, Any] = {
     "agentImage": "registry.example/wrapper:1",
     "masterKey": {"value": "mk"},

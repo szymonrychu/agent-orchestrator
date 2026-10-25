@@ -25,15 +25,15 @@ jobs:
     timeout-minutes: 30
     env:
       HARBOR_URL: harbor.szymonrichert.pl
-      IMAGE: harbor.szymonrichert.pl/containers/agent-orchestrator
+      IMAGE: harbor.szymonrichert.pl/containers/agents-orchestrator
     steps:
       - uses: actions/checkout@v4
       - name: Compute short sha
         run: echo "SHORTSHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
       - name: Build image
-        run: docker build -t agent-orchestrator:ci .
+        run: docker build -t agents-orchestrator:ci .
       - name: Smoke test
-        run: docker run --rm agent-orchestrator:ci --help
+        run: docker run --rm agents-orchestrator:ci --help
       - uses: regclient/actions/regctl-installer@main
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
       - name: Login to Harbor
@@ -47,7 +47,7 @@ jobs:
       - name: Push image
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
-          docker save agent-orchestrator:ci -o image.tar
+          docker save agents-orchestrator:ci -o image.tar
           regctl registry set "$HARBOR_URL" --blob-chunk 52428800 --blob-max 52428800
           regctl image import "$IMAGE:$SHORTSHA" image.tar
 
@@ -108,14 +108,14 @@ jobs:
           echo "$HARBOR_PASSWORD" | regctl registry login "$HARBOR_URL" -u "$HARBOR_USERNAME" --pass-stdin
       - name: Refuse an existing version
         run: |
-          if helm show chart "$CHART_REPO/agent-orchestrator" --version "$VERSION" > /dev/null 2>&1; then
-            echo "chart version $VERSION already published; bump chart/agent-orchestrator/Chart.yaml version"
+          if helm show chart "$CHART_REPO/agents-orchestrator" --version "$VERSION" > /dev/null 2>&1; then
+            echo "chart version $VERSION already published; bump chart/agents-orchestrator/Chart.yaml version"
             exit 1
           fi
       - name: Package
-        run: helm package chart/agent-orchestrator --version "$VERSION" --app-version "$SHA7"
+        run: helm package chart/agents-orchestrator --version "$VERSION" --app-version "$SHA7"
       - name: Push
-        run: helm push "agent-orchestrator-$VERSION.tgz" "$CHART_REPO"
+        run: helm push "agents-orchestrator-$VERSION.tgz" "$CHART_REPO"
 
   chart-publish-tag:
     needs: [chart]
@@ -146,13 +146,13 @@ jobs:
           echo "$HARBOR_PASSWORD" | regctl registry login "$HARBOR_URL" -u "$HARBOR_USERNAME" --pass-stdin
       - name: Refuse an existing version
         run: |
-          if helm show chart "$CHART_REPO/agent-orchestrator" --version "$VERSION" > /dev/null 2>&1; then
-            echo "chart version $VERSION already published; bump chart/agent-orchestrator/Chart.yaml version"
+          if helm show chart "$CHART_REPO/agents-orchestrator" --version "$VERSION" > /dev/null 2>&1; then
+            echo "chart version $VERSION already published; bump chart/agents-orchestrator/Chart.yaml version"
             exit 1
           fi
       - name: Require the built image
-        run: regctl image digest "$HARBOR_URL/containers/agent-orchestrator:$SHA7" > /dev/null || { echo "image harbor.szymonrichert.pl/containers/agent-orchestrator:$SHA7 not found; tag a commit main CI already built"; exit 1; }
+        run: regctl image digest "$HARBOR_URL/containers/agents-orchestrator:$SHA7" > /dev/null || { echo "image harbor.szymonrichert.pl/containers/agents-orchestrator:$SHA7 not found; tag a commit main CI already built"; exit 1; }
       - name: Package
-        run: helm package chart/agent-orchestrator --version "$VERSION" --app-version "$SHA7"
+        run: helm package chart/agents-orchestrator --version "$VERSION" --app-version "$SHA7"
       - name: Push
-        run: helm push "agent-orchestrator-$VERSION.tgz" "$CHART_REPO"
+        run: helm push "agents-orchestrator-$VERSION.tgz" "$CHART_REPO"

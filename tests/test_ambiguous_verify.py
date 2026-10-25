@@ -10,17 +10,17 @@ import asyncio
 import uuid
 
 import pytest_asyncio
-from factories import insert_agent, insert_cluster, insert_message, set_agent_status
+from factories import insert_agent, insert_message, insert_session, set_agent_status
 from fakes.fake_wrapper import FakeWrapper
 from psycopg.rows import dict_row
 
-from agent_orchestrator.db import queue as q
-from agent_orchestrator.db.pool import open_pool
-from agent_orchestrator.dispatcher import Dispatcher
-from agent_orchestrator.dispatcher.verify import Verifier
-from agent_orchestrator.settings import Settings
-from agent_orchestrator.tokens import derive_tokens
-from agent_orchestrator.wrapper.client import WrapperClient
+from agents_orchestrator.db import queue as q
+from agents_orchestrator.db.pool import open_pool
+from agents_orchestrator.dispatcher import Dispatcher
+from agents_orchestrator.dispatcher.verify import Verifier
+from agents_orchestrator.settings import Settings
+from agents_orchestrator.tokens import derive_tokens
+from agents_orchestrator.wrapper.client import WrapperClient
 
 KEY = "k" * 32
 SETTLE = 1.0
@@ -51,9 +51,9 @@ class Env:
 
     async def agent(self, session: str | None = None) -> dict:
         if session is None:
-            session = (await self.client.create_session("s", "/w")).session_id
+            session = (await self.client.create_session("s", "/w")).wrapper_session_id
         agent = await insert_agent(
-            self.pool, self.cid, ready=True, session_id=session, url=self.fake.base_url
+            self.pool, self.cid, ready=True, wrapper_session_id=session, url=self.fake.base_url
         )
         await set_agent_status(self.pool, agent["id"], state="idle")
         await self.exec(
@@ -113,7 +113,7 @@ async def env(pool, dsn):
     token = derive_tokens(KEY.encode(), cid).auth
     fake = FakeWrapper(token=token)
     await fake.start()
-    await insert_cluster(pool, id=cid, spec={})
+    await insert_session(pool, id=cid, spec={})
     e = Env(pool, dsn, cid, fake, token)
     yield e
     await e.client.aclose()
@@ -258,7 +258,7 @@ async def test_ambiguous_fail_keeps_newer_reservation(env):
 
 async def test_stale_dispatching_resolved_by_verifier(env):
     agent = await env.agent()
-    session = agent["session_id"]
+    session = agent["wrapper_session_id"]
     m = await insert_message(env.pool, env.cid, status="dispatching", agent_id=agent["id"])
     await env.exec(
         "UPDATE messages SET dispatched_at = now() - interval '1 hour', heartbeat_at = NULL"
@@ -279,7 +279,7 @@ async def test_stale_dispatching_resolved_by_verifier(env):
 
 async def test_two_verifiers_resolve_once(env):
     agent = await env.agent()
-    session = agent["session_id"]
+    session = agent["wrapper_session_id"]
     started = await env.verifying(agent, age=0)
     turn_id = await env.submit(session, {"orch_message_id": started["id"]})
     await env.fake.complete_turn(turn_id)
@@ -302,7 +302,7 @@ async def test_two_verifiers_resolve_once(env):
 
 async def test_matches_on_message_id_not_any_turn(env):
     agent = await env.agent()
-    session = agent["session_id"]
+    session = agent["wrapper_session_id"]
     m = await env.verifying(agent, age=SETTLE + 0.1)
     # older turns of other messages, then a peer turn running right now on this agent
     for other in (m["id"] + 100, m["id"] + 101):

@@ -199,11 +199,6 @@
       },
       "CheckView": {
         "properties": {
-          "cluster_id": {
-            "format": "uuid",
-            "title": "Cluster Id",
-            "type": "string"
-          },
           "command": {
             "title": "Command",
             "type": "string"
@@ -251,6 +246,11 @@
             ],
             "title": "Log Tail"
           },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
           "started_at": {
             "anyOf": [
               {
@@ -270,7 +270,7 @@
         },
         "required": [
           "id",
-          "cluster_id",
+          "session_id",
           "command",
           "status",
           "exit_code",
@@ -280,433 +280,6 @@
           "finished_at"
         ],
         "title": "CheckView",
-        "type": "object"
-      },
-      "ClusterSpec": {
-        "additionalProperties": false,
-        "properties": {
-          "any_mcp_config": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Any Mcp Config"
-          },
-          "auto_compact_pct": {
-            "anyOf": [
-              {
-                "maximum": 100.0,
-                "minimum": 1.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Auto Compact Pct"
-          },
-          "autoclose_after_seconds": {
-            "anyOf": [
-              {
-                "maximum": 2592000.0,
-                "minimum": 1.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Autoclose After Seconds"
-          },
-          "discard_hook_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Discard Hook Url"
-          },
-          "effort": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Effort"
-          },
-          "env": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "default": {},
-            "title": "Env",
-            "type": "object"
-          },
-          "image": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Image"
-          },
-          "init_scripts": {
-            "default": [],
-            "items": {
-              "type": "string"
-            },
-            "title": "Init Scripts",
-            "type": "array"
-          },
-          "leader_lease_seconds": {
-            "anyOf": [
-              {
-                "maximum": 604800.0,
-                "minimum": 60.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Leader Lease Seconds"
-          },
-          "max_attempts": {
-            "default": 5,
-            "maximum": 10.0,
-            "minimum": 1.0,
-            "title": "Max Attempts",
-            "type": "integer"
-          },
-          "max_replicas": {
-            "anyOf": [
-              {
-                "maximum": 16.0,
-                "minimum": 1.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Max Replicas"
-          },
-          "model": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Model"
-          },
-          "peers": {
-            "default": true,
-            "title": "Peers",
-            "type": "boolean"
-          },
-          "pvc_size": {
-            "anyOf": [
-              {
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Pvc Size"
-          },
-          "replicas": {
-            "default": 1,
-            "maximum": 16.0,
-            "minimum": 1.0,
-            "title": "Replicas",
-            "type": "integer"
-          },
-          "resources": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/Resources"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "reuse_running_agent": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reuse Running Agent"
-          },
-          "static": {
-            "default": false,
-            "title": "Static",
-            "type": "boolean"
-          },
-          "workdir": {
-            "default": "workdir",
-            "maxLength": 63,
-            "title": "Workdir",
-            "type": "string"
-          },
-          "wrapper": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/WrapperSettings"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "title": "ClusterSpec",
-        "type": "object"
-      },
-      "ClusterSummary": {
-        "properties": {
-          "auto_compact_pct": {
-            "title": "Auto Compact Pct",
-            "type": "integer"
-          },
-          "context_pct_max": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Context Pct Max"
-          },
-          "failed": {
-            "title": "Failed",
-            "type": "integer"
-          },
-          "queued": {
-            "title": "Queued",
-            "type": "integer"
-          },
-          "ready": {
-            "title": "Ready",
-            "type": "integer"
-          },
-          "replicas": {
-            "title": "Replicas",
-            "type": "integer"
-          },
-          "state": {
-            "enum": [
-              "working",
-              "waiting",
-              "booting",
-              "error",
-              "deleting"
-            ],
-            "title": "State",
-            "type": "string"
-          }
-        },
-        "required": [
-          "state",
-          "ready",
-          "replicas",
-          "context_pct_max",
-          "auto_compact_pct",
-          "queued",
-          "failed"
-        ],
-        "title": "ClusterSummary",
-        "type": "object"
-      },
-      "ClusterView": {
-        "properties": {
-          "closes_at": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Closes At"
-          },
-          "created_at": {
-            "format": "date-time",
-            "title": "Created At",
-            "type": "string"
-          },
-          "desired": {
-            "enum": [
-              "active",
-              "deleting"
-            ],
-            "title": "Desired",
-            "type": "string"
-          },
-          "generation": {
-            "title": "Generation",
-            "type": "integer"
-          },
-          "hive": {
-            "title": "Hive",
-            "type": "boolean"
-          },
-          "id": {
-            "format": "uuid",
-            "title": "Id",
-            "type": "string"
-          },
-          "init_edited_since_run": {
-            "title": "Init Edited Since Run",
-            "type": "boolean"
-          },
-          "leader_agent_id": {
-            "anyOf": [
-              {
-                "format": "uuid",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Leader Agent Id"
-          },
-          "leader_epoch": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Leader Epoch"
-          },
-          "leader_reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Leader Reason"
-          },
-          "leader_since": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Leader Since"
-          },
-          "max_replicas": {
-            "title": "Max Replicas",
-            "type": "integer"
-          },
-          "observed_generation": {
-            "title": "Observed Generation",
-            "type": "integer"
-          },
-          "preset_id": {
-            "anyOf": [
-              {
-                "format": "uuid",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Preset Id"
-          },
-          "preset_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Preset Name"
-          },
-          "slug": {
-            "title": "Slug",
-            "type": "string"
-          },
-          "spec": {
-            "$ref": "#/components/schemas/ClusterSpec"
-          },
-          "static": {
-            "title": "Static",
-            "type": "boolean"
-          },
-          "status": {
-            "additionalProperties": true,
-            "title": "Status",
-            "type": "object"
-          },
-          "summary": {
-            "$ref": "#/components/schemas/ClusterSummary"
-          }
-        },
-        "required": [
-          "id",
-          "slug",
-          "spec",
-          "desired",
-          "status",
-          "generation",
-          "observed_generation",
-          "created_at",
-          "preset_id",
-          "preset_name",
-          "summary",
-          "hive",
-          "max_replicas",
-          "static",
-          "leader_agent_id",
-          "leader_epoch",
-          "leader_since",
-          "leader_reason",
-          "closes_at",
-          "init_edited_since_run"
-        ],
-        "title": "ClusterView",
         "type": "object"
       },
       "CommandAccepted": {
@@ -923,7 +496,7 @@
         "title": "CopyPreset",
         "type": "object"
       },
-      "CreateCluster": {
+      "CreateSession": {
         "additionalProperties": false,
         "properties": {
           "preset_id": {
@@ -952,7 +525,7 @@
           "spec": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/ClusterSpec"
+                "$ref": "#/components/schemas/SessionSpec"
               },
               {
                 "type": "null"
@@ -960,7 +533,7 @@
             ]
           }
         },
-        "title": "CreateCluster",
+        "title": "CreateSession",
         "type": "object"
       },
       "CreateTerminal": {
@@ -1000,11 +573,6 @@
             "title": "Agent Id",
             "type": "string"
           },
-          "cluster_id": {
-            "format": "uuid",
-            "title": "Cluster Id",
-            "type": "string"
-          },
           "data": {
             "title": "Data"
           },
@@ -1017,6 +585,7 @@
             "type": "integer"
           },
           "session_id": {
+            "format": "uuid",
             "title": "Session Id",
             "type": "string"
           },
@@ -1039,13 +608,17 @@
           "type": {
             "title": "Type",
             "type": "string"
+          },
+          "wrapper_session_id": {
+            "title": "Wrapper Session Id",
+            "type": "string"
           }
         },
         "required": [
           "id",
-          "cluster_id",
-          "agent_id",
           "session_id",
+          "agent_id",
+          "wrapper_session_id",
           "seq",
           "ts",
           "type",
@@ -1095,11 +668,6 @@
             "title": "Agent Id",
             "type": "string"
           },
-          "cluster_id": {
-            "format": "uuid",
-            "title": "Cluster Id",
-            "type": "string"
-          },
           "content": {
             "anyOf": [
               {
@@ -1139,13 +707,18 @@
             "title": "Path",
             "type": "string"
           },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
           "size": {
             "title": "Size",
             "type": "integer"
           }
         },
         "required": [
-          "cluster_id",
+          "session_id",
           "agent_id",
           "path",
           "size",
@@ -1205,11 +778,6 @@
             "title": "Agent Id",
             "type": "string"
           },
-          "cluster_id": {
-            "format": "uuid",
-            "title": "Cluster Id",
-            "type": "string"
-          },
           "entries": {
             "items": {
               "$ref": "#/components/schemas/FileEntry"
@@ -1235,10 +803,15 @@
           "root": {
             "title": "Root",
             "type": "string"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
           }
         },
         "required": [
-          "cluster_id",
+          "session_id",
           "agent_id",
           "root",
           "path",
@@ -1311,11 +884,6 @@
       },
       "InitScriptsView": {
         "properties": {
-          "cluster_id": {
-            "format": "uuid",
-            "title": "Cluster Id",
-            "type": "string"
-          },
           "edited_since_run": {
             "title": "Edited Since Run",
             "type": "boolean"
@@ -1362,6 +930,11 @@
             "title": "Scripts",
             "type": "array"
           },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
           "status": {
             "anyOf": [
               {
@@ -1374,7 +947,7 @@
           }
         },
         "required": [
-          "cluster_id",
+          "session_id",
           "scripts",
           "preset_id",
           "preset_name",
@@ -1799,11 +1372,6 @@
             "title": "Agent Id",
             "type": "string"
           },
-          "cluster_id": {
-            "format": "uuid",
-            "title": "Cluster Id",
-            "type": "string"
-          },
           "epoch": {
             "anyOf": [
               {
@@ -1845,13 +1413,18 @@
             "title": "Pod Name",
             "type": "string"
           },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
           "static": {
             "title": "Static",
             "type": "boolean"
           }
         },
         "required": [
-          "cluster_id",
+          "session_id",
           "agent_id",
           "pod_name",
           "ordinal",
@@ -1941,11 +1514,6 @@
             "title": "Attempts",
             "type": "integer"
           },
-          "cluster_id": {
-            "format": "uuid",
-            "title": "Cluster Id",
-            "type": "string"
-          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -1993,6 +1561,11 @@
               }
             ],
             "title": "Next Attempt At"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
           },
           "status": {
             "enum": [
@@ -2046,7 +1619,7 @@
         },
         "required": [
           "id",
-          "cluster_id",
+          "session_id",
           "text",
           "status",
           "target_agent_id",
@@ -2120,10 +1693,6 @@
       },
       "MetaCaps": {
         "properties": {
-          "max_clusters": {
-            "title": "Max Clusters",
-            "type": "integer"
-          },
           "max_pvc_size": {
             "title": "Max Pvc Size",
             "type": "string"
@@ -2131,12 +1700,16 @@
           "max_replicas": {
             "title": "Max Replicas",
             "type": "integer"
+          },
+          "max_sessions": {
+            "title": "Max Sessions",
+            "type": "integer"
           }
         },
         "required": [
           "max_replicas",
           "max_pvc_size",
-          "max_clusters"
+          "max_sessions"
         ],
         "title": "MetaCaps",
         "type": "object"
@@ -2394,7 +1967,7 @@
             "type": "string"
           },
           "spec": {
-            "$ref": "#/components/schemas/ClusterSpec",
+            "$ref": "#/components/schemas/SessionSpec",
             "default": {
               "env": {},
               "init_scripts": [],
@@ -2494,11 +2067,6 @@
       },
       "ScaleResult": {
         "properties": {
-          "cluster_id": {
-            "format": "uuid",
-            "title": "Cluster Id",
-            "type": "string"
-          },
           "max_replicas": {
             "title": "Max Replicas",
             "type": "integer"
@@ -2510,15 +2078,447 @@
           "replicas": {
             "title": "Replicas",
             "type": "integer"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
           }
         },
         "required": [
-          "cluster_id",
+          "session_id",
           "replicas",
           "previous_replicas",
           "max_replicas"
         ],
         "title": "ScaleResult",
+        "type": "object"
+      },
+      "SessionSpec": {
+        "additionalProperties": false,
+        "properties": {
+          "any_mcp_config": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Any Mcp Config"
+          },
+          "auto_compact_pct": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auto Compact Pct"
+          },
+          "autoclose_after_seconds": {
+            "anyOf": [
+              {
+                "maximum": 2592000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Autoclose After Seconds"
+          },
+          "discard_hook_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discard Hook Url"
+          },
+          "effort": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effort"
+          },
+          "env": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "title": "Env",
+            "type": "object"
+          },
+          "image": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image"
+          },
+          "init_scripts": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Init Scripts",
+            "type": "array"
+          },
+          "leader_lease_seconds": {
+            "anyOf": [
+              {
+                "maximum": 604800.0,
+                "minimum": 60.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leader Lease Seconds"
+          },
+          "max_attempts": {
+            "default": 5,
+            "maximum": 10.0,
+            "minimum": 1.0,
+            "title": "Max Attempts",
+            "type": "integer"
+          },
+          "max_replicas": {
+            "anyOf": [
+              {
+                "maximum": 16.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Replicas"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "peers": {
+            "default": true,
+            "title": "Peers",
+            "type": "boolean"
+          },
+          "pvc_size": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pvc Size"
+          },
+          "replicas": {
+            "default": 1,
+            "maximum": 16.0,
+            "minimum": 1.0,
+            "title": "Replicas",
+            "type": "integer"
+          },
+          "resources": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Resources"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reuse_running_agent": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reuse Running Agent"
+          },
+          "static": {
+            "default": false,
+            "title": "Static",
+            "type": "boolean"
+          },
+          "workdir": {
+            "default": "workdir",
+            "maxLength": 63,
+            "title": "Workdir",
+            "type": "string"
+          },
+          "wrapper": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WrapperSettings"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "SessionSpec",
+        "type": "object"
+      },
+      "SessionSummary": {
+        "properties": {
+          "auto_compact_pct": {
+            "title": "Auto Compact Pct",
+            "type": "integer"
+          },
+          "context_pct_max": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Pct Max"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "queued": {
+            "title": "Queued",
+            "type": "integer"
+          },
+          "ready": {
+            "title": "Ready",
+            "type": "integer"
+          },
+          "replicas": {
+            "title": "Replicas",
+            "type": "integer"
+          },
+          "state": {
+            "enum": [
+              "working",
+              "waiting",
+              "booting",
+              "error",
+              "deleting"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "ready",
+          "replicas",
+          "context_pct_max",
+          "auto_compact_pct",
+          "queued",
+          "failed"
+        ],
+        "title": "SessionSummary",
+        "type": "object"
+      },
+      "SessionView": {
+        "properties": {
+          "closes_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closes At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "desired": {
+            "enum": [
+              "active",
+              "deleting"
+            ],
+            "title": "Desired",
+            "type": "string"
+          },
+          "generation": {
+            "title": "Generation",
+            "type": "integer"
+          },
+          "hive": {
+            "title": "Hive",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "init_edited_since_run": {
+            "title": "Init Edited Since Run",
+            "type": "boolean"
+          },
+          "leader_agent_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leader Agent Id"
+          },
+          "leader_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leader Epoch"
+          },
+          "leader_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leader Reason"
+          },
+          "leader_since": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leader Since"
+          },
+          "max_replicas": {
+            "title": "Max Replicas",
+            "type": "integer"
+          },
+          "observed_generation": {
+            "title": "Observed Generation",
+            "type": "integer"
+          },
+          "preset_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preset Id"
+          },
+          "preset_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preset Name"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/SessionSpec"
+          },
+          "static": {
+            "title": "Static",
+            "type": "boolean"
+          },
+          "status": {
+            "additionalProperties": true,
+            "title": "Status",
+            "type": "object"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/SessionSummary"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "spec",
+          "desired",
+          "status",
+          "generation",
+          "observed_generation",
+          "created_at",
+          "preset_id",
+          "preset_name",
+          "summary",
+          "hive",
+          "max_replicas",
+          "static",
+          "leader_agent_id",
+          "leader_epoch",
+          "leader_since",
+          "leader_reason",
+          "closes_at",
+          "init_edited_since_run"
+        ],
+        "title": "SessionView",
         "type": "object"
       },
       "TerminalList": {
@@ -2561,11 +2561,6 @@
             "title": "Attached",
             "type": "boolean"
           },
-          "cluster_id": {
-            "format": "uuid",
-            "title": "Cluster Id",
-            "type": "string"
-          },
           "cols": {
             "title": "Cols",
             "type": "integer"
@@ -2594,6 +2589,11 @@
             "title": "Rows",
             "type": "integer"
           },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
           "terminal_id": {
             "title": "Terminal Id",
             "type": "string"
@@ -2601,7 +2601,7 @@
         },
         "required": [
           "agent_id",
-          "cluster_id",
+          "session_id",
           "pod_name",
           "terminal_id",
           "created_at",
@@ -2852,7 +2852,7 @@
       },
       "WrapperSettings": {
         "additionalProperties": false,
-        "description": "Typed claude-code-wrapper settings a cluster may carry (create-time only).",
+        "description": "Typed claude-code-wrapper settings a session may carry (create-time only).",
         "properties": {
           "agent_commands": {
             "anyOf": [
@@ -3032,7 +3032,7 @@
     }
   },
   "info": {
-    "title": "agent-orchestrator",
+    "title": "agents-orchestrator",
     "version": "0.1.0"
   },
   "openapi": "3.1.0",
@@ -3059,7 +3059,7 @@
           },
           {
             "in": "header",
-            "name": "x-orch-cluster",
+            "name": "x-orch-session",
             "required": false,
             "schema": {
               "anyOf": [
@@ -3070,7 +3070,7 @@
                   "type": "null"
                 }
               ],
-              "title": "X-Orch-Cluster"
+              "title": "X-Orch-Session"
             }
           }
         ],
@@ -3096,7 +3096,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Init scripts and last init run of the caller's cluster",
+        "summary": "Init scripts and last init run of the caller's session",
         "tags": [
           "agent"
         ]
@@ -3122,7 +3122,7 @@
           },
           {
             "in": "header",
-            "name": "x-orch-cluster",
+            "name": "x-orch-session",
             "required": false,
             "schema": {
               "anyOf": [
@@ -3133,7 +3133,7 @@
                   "type": "null"
                 }
               ],
-              "title": "X-Orch-Cluster"
+              "title": "X-Orch-Session"
             }
           }
         ],
@@ -3169,7 +3169,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Replace the init scripts of the caller's cluster and its source preset",
+        "summary": "Replace the init scripts of the caller's session and its source preset",
         "tags": [
           "agent"
         ]
@@ -3198,7 +3198,7 @@
           },
           {
             "in": "header",
-            "name": "x-orch-cluster",
+            "name": "x-orch-session",
             "required": false,
             "schema": {
               "anyOf": [
@@ -3209,7 +3209,7 @@
                   "type": "null"
                 }
               ],
-              "title": "X-Orch-Cluster"
+              "title": "X-Orch-Session"
             }
           }
         ],
@@ -3273,7 +3273,7 @@
           },
           {
             "in": "header",
-            "name": "x-orch-cluster",
+            "name": "x-orch-session",
             "required": false,
             "schema": {
               "anyOf": [
@@ -3284,7 +3284,7 @@
                   "type": "null"
                 }
               ],
-              "title": "X-Orch-Cluster"
+              "title": "X-Orch-Session"
             }
           }
         ],
@@ -3339,7 +3339,7 @@
           },
           {
             "in": "header",
-            "name": "x-orch-cluster",
+            "name": "x-orch-session",
             "required": false,
             "schema": {
               "anyOf": [
@@ -3350,7 +3350,7 @@
                   "type": "null"
                 }
               ],
-              "title": "X-Orch-Cluster"
+              "title": "X-Orch-Session"
             }
           }
         ],
@@ -3404,7 +3404,7 @@
           },
           {
             "in": "header",
-            "name": "x-orch-cluster",
+            "name": "x-orch-session",
             "required": false,
             "schema": {
               "anyOf": [
@@ -3415,7 +3415,7 @@
                   "type": "null"
                 }
               ],
-              "title": "X-Orch-Cluster"
+              "title": "X-Orch-Session"
             }
           }
         ],
@@ -3479,7 +3479,7 @@
           },
           {
             "in": "header",
-            "name": "x-orch-cluster",
+            "name": "x-orch-session",
             "required": false,
             "schema": {
               "anyOf": [
@@ -3490,7 +3490,7 @@
                   "type": "null"
                 }
               ],
-              "title": "X-Orch-Cluster"
+              "title": "X-Orch-Session"
             }
           }
         ],
@@ -3554,7 +3554,7 @@
           },
           {
             "in": "header",
-            "name": "x-orch-cluster",
+            "name": "x-orch-session",
             "required": false,
             "schema": {
               "anyOf": [
@@ -3565,7 +3565,7 @@
                   "type": "null"
                 }
               ],
-              "title": "X-Orch-Cluster"
+              "title": "X-Orch-Session"
             }
           }
         ],
@@ -3629,7 +3629,7 @@
           },
           {
             "in": "header",
-            "name": "x-orch-cluster",
+            "name": "x-orch-session",
             "required": false,
             "schema": {
               "anyOf": [
@@ -3640,7 +3640,7 @@
                   "type": "null"
                 }
               ],
-              "title": "X-Orch-Cluster"
+              "title": "X-Orch-Session"
             }
           }
         ],
@@ -3694,7 +3694,7 @@
           },
           {
             "in": "header",
-            "name": "x-orch-cluster",
+            "name": "x-orch-session",
             "required": false,
             "schema": {
               "anyOf": [
@@ -3705,7 +3705,7 @@
                   "type": "null"
                 }
               ],
-              "title": "X-Orch-Cluster"
+              "title": "X-Orch-Session"
             }
           }
         ],
@@ -3741,7 +3741,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Scale the caller's cluster (leader only)",
+        "summary": "Scale the caller's session (leader only)",
         "tags": [
           "agent"
         ]
@@ -4005,944 +4005,6 @@
           }
         },
         "summary": "Get Check"
-      }
-    },
-    "/api/v1/clusters": {
-      "get": {
-        "operationId": "list_clusters_api_v1_clusters_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/ClusterView"
-                  },
-                  "title": "Response List Clusters Api V1 Clusters Get",
-                  "type": "array"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "List Clusters"
-      },
-      "post": {
-        "operationId": "create_cluster_api_v1_clusters_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateCluster"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ClusterView"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Create Cluster"
-      }
-    },
-    "/api/v1/clusters/{cluster_id}": {
-      "delete": {
-        "operationId": "discard_cluster_api_v1_clusters__cluster_id__delete",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "cluster_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Cluster Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ClusterView"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Discard Cluster"
-      },
-      "get": {
-        "operationId": "get_cluster_api_v1_clusters__cluster_id__get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "cluster_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Cluster Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ClusterView"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Get Cluster"
-      }
-    },
-    "/api/v1/clusters/{cluster_id}/agents": {
-      "get": {
-        "operationId": "list_agents_api_v1_clusters__cluster_id__agents_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "cluster_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Cluster Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/AgentView"
-                  },
-                  "title": "Response List Agents Api V1 Clusters  Cluster Id  Agents Get",
-                  "type": "array"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "List Agents"
-      }
-    },
-    "/api/v1/clusters/{cluster_id}/checks": {
-      "post": {
-        "operationId": "post_check_api_v1_clusters__cluster_id__checks_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "cluster_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Cluster Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PostCheck"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CheckAccepted"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Post Check"
-      }
-    },
-    "/api/v1/clusters/{cluster_id}/events": {
-      "get": {
-        "operationId": "list_events_api_v1_clusters__cluster_id__events_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "cluster_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Cluster Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "before_id",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Before Id"
-            }
-          },
-          {
-            "in": "query",
-            "name": "after_id",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "After Id"
-            }
-          },
-          {
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 200,
-              "maximum": 500,
-              "minimum": 1,
-              "title": "Limit",
-              "type": "integer"
-            }
-          },
-          {
-            "in": "query",
-            "name": "agent_id",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "format": "uuid",
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Agent Id"
-            }
-          },
-          {
-            "in": "query",
-            "name": "types",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Types"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/EventsPage"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "List Events"
-      }
-    },
-    "/api/v1/clusters/{cluster_id}/events/stream": {
-      "get": {
-        "operationId": "stream_events_api_v1_clusters__cluster_id__events_stream_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "cluster_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Cluster Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "after_id",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "After Id"
-            }
-          },
-          {
-            "in": "header",
-            "name": "last-event-id",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Last-Event-Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "text/event-stream": {
-                "itemSchema": {
-                  "properties": {
-                    "data": {
-                      "type": "string"
-                    },
-                    "event": {
-                      "type": "string"
-                    },
-                    "id": {
-                      "type": "string"
-                    },
-                    "retry": {
-                      "minimum": 0,
-                      "type": "integer"
-                    }
-                  },
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Stream Events"
-      }
-    },
-    "/api/v1/clusters/{cluster_id}/files": {
-      "get": {
-        "description": "One directory of the cluster workdir, read by the first ready agent (or `agent_id`).",
-        "operationId": "list_files_api_v1_clusters__cluster_id__files_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "cluster_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Cluster Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "path",
-            "required": false,
-            "schema": {
-              "default": "",
-              "title": "Path",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "offset",
-            "required": false,
-            "schema": {
-              "default": 0,
-              "minimum": 0,
-              "title": "Offset",
-              "type": "integer"
-            }
-          },
-          {
-            "in": "query",
-            "name": "agent_id",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "format": "uuid",
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Agent Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/FileListing"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "List Files"
-      }
-    },
-    "/api/v1/clusters/{cluster_id}/files/content": {
-      "get": {
-        "description": "One file of the cluster workdir: text, or kind binary / too_large without content.",
-        "operationId": "file_content_api_v1_clusters__cluster_id__files_content_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "cluster_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Cluster Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "path",
-            "required": false,
-            "schema": {
-              "default": "",
-              "title": "Path",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "agent_id",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "format": "uuid",
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Agent Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/FileContent"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "File Content"
-      }
-    },
-    "/api/v1/clusters/{cluster_id}/init-scripts": {
-      "get": {
-        "operationId": "get_init_scripts_api_v1_clusters__cluster_id__init_scripts_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "cluster_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Cluster Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/InitScriptsView"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Get Init Scripts"
-      },
-      "put": {
-        "operationId": "put_init_scripts_api_v1_clusters__cluster_id__init_scripts_put",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "cluster_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Cluster Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/InitScriptsIn"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/InitScriptsView"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Put Init Scripts"
-      }
-    },
-    "/api/v1/clusters/{cluster_id}/leader": {
-      "post": {
-        "description": "Queue a user leadership override; the dispatcher decides at apply time.",
-        "operationId": "make_leader_api_v1_clusters__cluster_id__leader_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "cluster_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Cluster Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/MakeLeaderIn"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LeadershipRequested"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Make Leader"
-      }
-    },
-    "/api/v1/clusters/{cluster_id}/messages": {
-      "get": {
-        "operationId": "list_messages_api_v1_clusters__cluster_id__messages_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "cluster_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Cluster Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "status",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Status"
-            }
-          },
-          {
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 100,
-              "maximum": 500,
-              "minimum": 1,
-              "title": "Limit",
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/MessageView"
-                  },
-                  "title": "Response List Messages Api V1 Clusters  Cluster Id  Messages Get",
-                  "type": "array"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "List Messages"
-      },
-      "post": {
-        "operationId": "post_message_api_v1_clusters__cluster_id__messages_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "cluster_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Cluster Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PostMessage"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/MessageAccepted"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Post Message"
-      }
-    },
-    "/api/v1/clusters/{cluster_id}/scale": {
-      "post": {
-        "description": "Set spec.replicas in place (no caller agent: the public route has no leader check).",
-        "operationId": "scale_cluster_api_v1_clusters__cluster_id__scale_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "cluster_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Cluster Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ScaleRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ScaleResult"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Scale Cluster"
-      }
-    },
-    "/api/v1/clusters/{cluster_id}/terminals": {
-      "get": {
-        "description": "Every ready agent's shells, queried concurrently; failing agents are reported, not fatal.",
-        "operationId": "list_terminals_api_v1_clusters__cluster_id__terminals_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "cluster_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Cluster Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TerminalList"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "List Terminals"
       }
     },
     "/api/v1/commands/{command_id}": {
@@ -5342,6 +4404,944 @@
           }
         },
         "summary": "Copy Preset"
+      }
+    },
+    "/api/v1/sessions": {
+      "get": {
+        "operationId": "list_sessions_api_v1_sessions_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SessionView"
+                  },
+                  "title": "Response List Sessions Api V1 Sessions Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Sessions"
+      },
+      "post": {
+        "operationId": "create_session_api_v1_sessions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSession"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Session"
+      }
+    },
+    "/api/v1/sessions/{session_id}": {
+      "delete": {
+        "operationId": "discard_session_api_v1_sessions__session_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Discard Session"
+      },
+      "get": {
+        "operationId": "get_session_api_v1_sessions__session_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Session"
+      }
+    },
+    "/api/v1/sessions/{session_id}/agents": {
+      "get": {
+        "operationId": "list_agents_api_v1_sessions__session_id__agents_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AgentView"
+                  },
+                  "title": "Response List Agents Api V1 Sessions  Session Id  Agents Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Agents"
+      }
+    },
+    "/api/v1/sessions/{session_id}/checks": {
+      "post": {
+        "operationId": "post_check_api_v1_sessions__session_id__checks_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PostCheck"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckAccepted"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Post Check"
+      }
+    },
+    "/api/v1/sessions/{session_id}/events": {
+      "get": {
+        "operationId": "list_events_api_v1_sessions__session_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "agent_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Agent Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "types",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Types"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventsPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Events"
+      }
+    },
+    "/api/v1/sessions/{session_id}/events/stream": {
+      "get": {
+        "operationId": "stream_events_api_v1_sessions__session_id__events_stream_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "last-event-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Last-Event-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "itemSchema": {
+                  "properties": {
+                    "data": {
+                      "type": "string"
+                    },
+                    "event": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "retry": {
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream Events"
+      }
+    },
+    "/api/v1/sessions/{session_id}/files": {
+      "get": {
+        "description": "One directory of the session workdir, read by the first ready agent (or `agent_id`).",
+        "operationId": "list_files_api_v1_sessions__session_id__files_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "path",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "agent_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Agent Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileListing"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Files"
+      }
+    },
+    "/api/v1/sessions/{session_id}/files/content": {
+      "get": {
+        "description": "One file of the session workdir: text, or kind binary / too_large without content.",
+        "operationId": "file_content_api_v1_sessions__session_id__files_content_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "path",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "agent_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Agent Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileContent"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "File Content"
+      }
+    },
+    "/api/v1/sessions/{session_id}/init-scripts": {
+      "get": {
+        "operationId": "get_init_scripts_api_v1_sessions__session_id__init_scripts_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InitScriptsView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Init Scripts"
+      },
+      "put": {
+        "operationId": "put_init_scripts_api_v1_sessions__session_id__init_scripts_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InitScriptsIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InitScriptsView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Init Scripts"
+      }
+    },
+    "/api/v1/sessions/{session_id}/leader": {
+      "post": {
+        "description": "Queue a user leadership override; the dispatcher decides at apply time.",
+        "operationId": "make_leader_api_v1_sessions__session_id__leader_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MakeLeaderIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeadershipRequested"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Make Leader"
+      }
+    },
+    "/api/v1/sessions/{session_id}/messages": {
+      "get": {
+        "operationId": "list_messages_api_v1_sessions__session_id__messages_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/MessageView"
+                  },
+                  "title": "Response List Messages Api V1 Sessions  Session Id  Messages Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Messages"
+      },
+      "post": {
+        "operationId": "post_message_api_v1_sessions__session_id__messages_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PostMessage"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageAccepted"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Post Message"
+      }
+    },
+    "/api/v1/sessions/{session_id}/scale": {
+      "post": {
+        "description": "Set spec.replicas in place (no caller agent: the public route has no leader check).",
+        "operationId": "scale_session_api_v1_sessions__session_id__scale_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScaleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScaleResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Scale Session"
+      }
+    },
+    "/api/v1/sessions/{session_id}/terminals": {
+      "get": {
+        "description": "Every ready agent's shells, queried concurrently; failing agents are reported, not fatal.",
+        "operationId": "list_terminals_api_v1_sessions__session_id__terminals_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TerminalList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Terminals"
       }
     },
     "/api/v1/stream": {

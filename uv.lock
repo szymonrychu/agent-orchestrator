@@ -8,7 +8,7 @@ resolution-markers = [
 ]
 
 [[package]]
-name = "agent-orchestrator"
+name = "agents-orchestrator"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
@@ -35,7 +35,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "any-mcp", git = "https://github.com/szymonrychu/any-mcp?rev=v0.2.0" },
+    { name = "any-mcp", git = "https://github.com/szymonrychu/any-mcp?rev=v0.3.0" },
     { name = "fastapi", specifier = "==0.160.0" },
     { name = "httpx" },
     { name = "lightkube", specifier = "==1.0.1" },
@@ -88,8 +88,8 @@ wheels = [
 
 [[package]]
 name = "any-mcp"
-version = "0.2.0"
-source = { git = "https://github.com/szymonrychu/any-mcp?rev=v0.2.0#3322386b33927ef4b35f9befde6b6552edad4d48" }
+version = "0.3.0"
+source = { git = "https://github.com/szymonrychu/any-mcp?rev=v0.3.0#fa03c365759b7fcd0b122e600db59b3a2e5999cd" }
 dependencies = [
     { name = "fastmcp" },
     { name = "httpx" },

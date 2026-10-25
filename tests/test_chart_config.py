@@ -11,7 +11,7 @@ import pytest
 import yaml
 from helm_render import CHART, LINT_VALUES, render, render_error
 
-FULL = "agent-orchestrator"
+FULL = "agents-orchestrator"
 BASE: dict[str, Any] = {
     "agentImage": "registry.example/wrapper:1",
     "masterKey": {"value": "mk"},
@@ -23,12 +23,12 @@ URL = "postgresql://u:p@db:5432/app"
 @pytest.fixture
 def env_chart(tmp_path: Path) -> Path:
     """A chart copy with a probe template that renders the shared container env."""
-    dst = tmp_path / "agent-orchestrator"
+    dst = tmp_path / "agents-orchestrator"
     shutil.copytree(CHART, dst)
     (dst / "templates" / "env-probe.yaml").write_text(
         "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: env-probe\ndata:\n"
         "  env: |\n"
-        '    {{- include "agent-orchestrator.env" . | nindent 4 }}\n'
+        '    {{- include "agents-orchestrator.env" . | nindent 4 }}\n'
     )
     return dst
 
@@ -46,7 +46,7 @@ def by_kind(docs: list[dict], kind: str) -> dict[str, dict]:
 def test_requires_postgres_connection():
     err = render_error(values())
     assert (
-        "agent-orchestrator: a Postgres connection is required: set postgres.url, "
+        "agents-orchestrator: a Postgres connection is required: set postgres.url, "
         "postgres.host/user/database/password, postgres.existingSecret, or cnpg.enabled=true" in err
     )
 
@@ -116,9 +116,12 @@ def test_multiple_postgres_sources_rejected():
     assert "postgres.url" in err and "postgres.host/user/database" in err and "cnpg.enabled" in err
 
 
+CNPG_KIND = "Cluster"  # the CloudNativePG database resource
+
+
 def test_cnpg_optional_with_backup_passthrough(env_chart):
     docs = render(values(postgres={"url": URL}))
-    assert "Cluster" not in {d["kind"] for d in docs}
+    assert CNPG_KIND not in {d["kind"] for d in docs}
 
     backup = {
         "retentionPolicy": "30d",
@@ -134,18 +137,18 @@ def test_cnpg_optional_with_backup_passthrough(env_chart):
         "backup": backup,
     }
     docs = render(values(cnpg=cnpg), chart=env_chart)
-    (cluster,) = [d for d in docs if d["kind"] == "Cluster"]
-    assert cluster["apiVersion"] == "postgresql.cnpg.io/v1"
-    assert cluster["metadata"]["name"] == f"{FULL}-db"
-    spec = cluster["spec"]
+    (database,) = [d for d in docs if d["kind"] == CNPG_KIND]
+    assert database["apiVersion"] == "postgresql.cnpg.io/v1"
+    assert database["metadata"]["name"] == f"{FULL}-db"
+    spec = database["spec"]
     assert spec["instances"] == 3
     assert spec["imageName"] == "ghcr.io/cloudnative-pg/postgresql:17"
     assert spec["storage"] == {"size": "20Gi", "storageClass": "fast"}
     assert spec["walStorage"] == {"size": "4Gi", "storageClass": "wal"}
     assert spec["resources"] == {"limits": {"memory": "1Gi"}}
     assert spec["bootstrap"]["initdb"] == {
-        "database": "agent_orchestrator",
-        "owner": "agent_orchestrator",
+        "database": "agents_orchestrator",
+        "owner": "agents_orchestrator",
     }
     assert spec["backup"] == backup
     assert f"{FULL}-database" not in by_kind(docs, "Secret")
@@ -156,11 +159,11 @@ def test_cnpg_optional_with_backup_passthrough(env_chart):
     assert db["valueFrom"]["secretKeyRef"] == {"name": f"{FULL}-db-app", "key": "uri"}
 
     minimal = render(values(cnpg={"enabled": True}))
-    (cluster,) = [d for d in minimal if d["kind"] == "Cluster"]
-    assert "backup" not in cluster["spec"]
-    assert "walStorage" not in cluster["spec"]
-    assert "imageName" not in cluster["spec"]
-    assert "storageClass" not in cluster["spec"]["storage"]
+    (database,) = [d for d in minimal if d["kind"] == CNPG_KIND]
+    assert "backup" not in database["spec"]
+    assert "walStorage" not in database["spec"]
+    assert "imageName" not in database["spec"]
+    assert "storageClass" not in database["spec"]["storage"]
 
 
 def test_settings_configmap():

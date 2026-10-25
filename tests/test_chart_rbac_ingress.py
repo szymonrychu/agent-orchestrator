@@ -8,7 +8,7 @@ from typing import Any
 import yaml
 from helm_render import CHART, render
 
-FULL = "agent-orchestrator"
+FULL = "agents-orchestrator"
 BASE: dict[str, Any] = {
     "agentImage": "registry.example/wrapper:1",
     "masterKey": {"value": "mk"},

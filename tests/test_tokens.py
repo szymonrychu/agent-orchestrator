@@ -5,8 +5,8 @@ from uuid import UUID
 
 import pytest
 
-from agent_orchestrator.settings import Settings, SettingsError
-from agent_orchestrator.tokens import ClusterTokens, derive_tokens, tokens_for
+from agents_orchestrator.settings import Settings, SettingsError
+from agents_orchestrator.tokens import SessionTokens, derive_tokens, tokens_for
 
 KEY = b"k" * 32
 CID = UUID("11111111-1111-1111-1111-111111111111")
@@ -22,7 +22,7 @@ def test_auth_and_peer_differ():
     assert t.auth != t.peer
 
 
-def test_depends_on_cluster_and_master():
+def test_depends_on_session_and_master():
     t = derive_tokens(KEY, CID)
     assert derive_tokens(KEY, OTHER) != t
     assert derive_tokens(b"z" * 32, CID) != t
@@ -51,7 +51,7 @@ def test_tokens_for_uses_master_key(monkeypatch):
 
 
 def test_frozen():
-    assert isinstance(derive_tokens(KEY, CID), ClusterTokens)
+    assert isinstance(derive_tokens(KEY, CID), SessionTokens)
     with pytest.raises(dataclasses.FrozenInstanceError):
         derive_tokens(KEY, CID).auth = "x"  # type: ignore[misc]
 

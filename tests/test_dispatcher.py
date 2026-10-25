@@ -9,19 +9,19 @@ import uuid
 import pytest_asyncio
 from factories import (
     insert_agent,
-    insert_cluster,
     insert_command,
     insert_message,
+    insert_session,
     set_agent_status,
 )
 from fakes.fake_wrapper import FakeWrapper
 from psycopg.rows import dict_row
 
-from agent_orchestrator.db import queue as q
-from agent_orchestrator.dispatcher import Dispatcher
-from agent_orchestrator.settings import Settings
-from agent_orchestrator.tokens import derive_tokens
-from agent_orchestrator.wrapper.client import WrapperClient
+from agents_orchestrator.db import queue as q
+from agents_orchestrator.dispatcher import Dispatcher
+from agents_orchestrator.settings import Settings
+from agents_orchestrator.tokens import derive_tokens
+from agents_orchestrator.wrapper.client import WrapperClient
 
 KEY = "k" * 32
 
@@ -33,9 +33,9 @@ def make_settings(dsn: str, **kw) -> Settings:
 
 
 class Env:
-    def __init__(self, pool, dsn, cluster, fake, token):
-        self.pool, self.dsn, self.cluster, self.fake, self.token = pool, dsn, cluster, fake, token
-        self.cid = cluster["id"]
+    def __init__(self, pool, dsn, session, fake, token):
+        self.pool, self.dsn, self.session, self.fake, self.token = pool, dsn, session, fake, token
+        self.cid = session["id"]
 
     def dispatcher(self, **kw) -> Dispatcher:
         return Dispatcher(self.pool, make_settings(self.dsn, **kw))
@@ -57,9 +57,11 @@ class Env:
         fake = fake or self.fake
         if session is None:
             client = WrapperClient(fake.base_url, self.token)
-            session = (await client.create_session(f"s{uuid.uuid4().hex[:4]}", "/w")).session_id
+            session = (
+                await client.create_session(f"s{uuid.uuid4().hex[:4]}", "/w")
+            ).wrapper_session_id
         agent = await insert_agent(
-            self.pool, self.cid, ready=True, session_id=session, url=fake.base_url
+            self.pool, self.cid, ready=True, wrapper_session_id=session, url=fake.base_url
         )
         await set_agent_status(self.pool, agent["id"], state=state)
         await self.set_free(agent["id"], free_ago, state)
@@ -97,8 +99,8 @@ async def make_env(pool, dsn, spec=None, token=None) -> Env:
     auth = derive_tokens(KEY.encode(), cid).auth
     fake = FakeWrapper(token=token or auth)
     await fake.start()
-    cluster = await insert_cluster(pool, id=cid, spec=spec or {})
-    return Env(pool, dsn, cluster, fake, auth)
+    session = await insert_session(pool, id=cid, spec=spec or {})
+    return Env(pool, dsn, session, fake, auth)
 
 
 @pytest_asyncio.fixture
@@ -223,7 +225,7 @@ async def test_notify_loss_recovered_by_poll(env):
 async def test_interrupt_and_compact_commands(env):
     agent = await env.agent()
     client = WrapperClient(env.fake.base_url, env.token)
-    session = (await env.agent_row(agent["id"]))["session_id"]
+    session = (await env.agent_row(agent["id"]))["wrapper_session_id"]
     await client.submit_turn(session, "work")  # a running turn to interrupt
     ci = await insert_command(env.pool, agent["id"], kind="interrupt")
     cc = await insert_command(env.pool, agent["id"], kind="compact")
@@ -235,7 +237,7 @@ async def test_interrupt_and_compact_commands(env):
     assert (await client.get_session(session)).state == "ready"
     # a command the wrapper refuses completes as failed with the error
     bad = await insert_agent(
-        env.pool, env.cid, ready=True, session_id="nope", url=env.fake.base_url
+        env.pool, env.cid, ready=True, wrapper_session_id="nope", url=env.fake.base_url
     )
     cf = await insert_command(env.pool, bad["id"], kind="interrupt")
     await d.drain()
@@ -346,7 +348,7 @@ async def test_agent_not_wedged_after_failed_send(env):
     assert (row["status"], row["agent_id"]) == ("sent", agent["id"])
 
 
-async def test_two_dispatchers_keep_fifo_per_cluster(env):
+async def test_two_dispatchers_keep_fifo_per_session(env):
     for _ in range(2):
         await env.agent()
     ms = [await env.msg(text=f"m{i}") for i in range(5)]

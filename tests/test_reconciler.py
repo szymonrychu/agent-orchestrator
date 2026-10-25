@@ -26,21 +26,21 @@ from lightkube import AsyncClient, KubeConfig
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from agent_orchestrator.db import agents as agents_repo
-from agent_orchestrator.db import clusters, queue
-from agent_orchestrator.db.pool import listen
-from agent_orchestrator.k8s.kube import (
+from agents_orchestrator.db import agents as agents_repo
+from agents_orchestrator.db import queue, sessions
+from agents_orchestrator.db.pool import listen
+from agents_orchestrator.k8s.kube import (
     FIELD_MANAGER,
     Forbidden,
     KubeError,
     LightkubeApi,
 )
-from agent_orchestrator.k8s.labels import CLUSTER_LABEL, MANAGED_BY_LABEL, cluster_labels
-from agent_orchestrator.k8s.render import render_cluster
-from agent_orchestrator.reconciler import Reconciler
-from agent_orchestrator.settings import Settings, SettingsError
-from agent_orchestrator.spec import ClusterSpec
-from agent_orchestrator.tokens import tokens_for
+from agents_orchestrator.k8s.labels import MANAGED_BY_LABEL, SESSION_LABEL, session_labels
+from agents_orchestrator.k8s.render import render_session
+from agents_orchestrator.reconciler import Reconciler
+from agents_orchestrator.settings import Settings, SettingsError
+from agents_orchestrator.spec import SessionSpec
+from agents_orchestrator.tokens import tokens_for
 
 KEY = "k" * 32
 IMAGE = "harbor.example/containers/claude-code-wrapper:ca2ddf3"
@@ -59,29 +59,29 @@ class Env:
         self.settings = make_settings(dsn)
         self.rec = Reconciler(pool, self.kube, self.settings, wrapper_factory=None)
 
-    async def cluster(self, slug: str = "alpha", **spec) -> clusters.Cluster:
+    async def session(self, slug: str = "alpha", **spec) -> sessions.Session:
         async with self.pool.connection() as conn:
-            return await clusters.create(conn, slug, ClusterSpec(**spec))
+            return await sessions.create(conn, slug, SessionSpec(**spec))
 
-    async def get(self, cluster_id) -> clusters.Cluster | None:
+    async def get(self, session_id) -> sessions.Session | None:
         async with self.pool.connection() as conn:
-            return await clusters.get(conn, cluster_id)
+            return await sessions.get(conn, session_id)
 
-    async def update(self, cluster_id, **spec) -> None:
+    async def update(self, session_id, **spec) -> None:
         """Change a stored spec the way an out-of-band write would: new spec, generation + 1."""
         async with self.pool.connection() as conn:
             await conn.execute(
-                "UPDATE clusters SET spec = %s, generation = generation + 1 WHERE id = %s",
-                (Jsonb(ClusterSpec(**spec).model_dump(mode="json", exclude_none=True)), cluster_id),
+                "UPDATE sessions SET spec = %s, generation = generation + 1 WHERE id = %s",
+                (Jsonb(SessionSpec(**spec).model_dump(mode="json", exclude_none=True)), session_id),
             )
 
-    async def delete(self, cluster_id) -> clusters.Cluster:
+    async def delete(self, session_id) -> sessions.Session:
         async with self.pool.connection() as conn:
-            return await clusters.request_delete(conn, cluster_id)
+            return await sessions.request_delete(conn, session_id)
 
-    async def agents(self, cluster_id) -> list[agents_repo.Agent]:
+    async def agents(self, session_id) -> list[agents_repo.Agent]:
         async with self.pool.connection() as conn:
-            return await agents_repo.list_agents(conn, cluster_id)
+            return await agents_repo.list_agents(conn, session_id)
 
     async def rows(self, query: str, params: tuple = ()) -> list[dict]:
         async with self.pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -98,7 +98,7 @@ def labelled(kind: str, name: str, slug: str, *, api: str = "v1") -> dict:
     return {
         "apiVersion": api,
         "kind": kind,
-        "metadata": {"name": name, "labels": cluster_labels(slug)},
+        "metadata": {"name": name, "labels": session_labels(slug)},
         "data": {"stale": "yes"},
     }
 
@@ -106,21 +106,21 @@ def labelled(kind: str, name: str, slug: str, *, api: str = "v1") -> dict:
 # ---------------------------------------------------------------- create, apply, guard
 
 
-async def test_no_agent_url_warns_once_per_cluster(env, caplog):
-    await env.cluster("alpha")
-    with caplog.at_level("WARNING", logger="agent_orchestrator.reconciler.loop"):
+async def test_no_agent_url_warns_once_per_session(env, caplog):
+    await env.session("alpha")
+    with caplog.at_level("WARNING", logger="agents_orchestrator.reconciler.loop"):
         await env.rec.reconcile_once()
         await env.rec.reconcile_once()
         warned = [r for r in caplog.records if "ORCH_AGENT_URL" in r.getMessage()]
         assert len(warned) == 1 and "alpha" in warned[0].getMessage()
-        await env.cluster("beta")
+        await env.session("beta")
         await env.rec.reconcile_once()
     warned = [r for r in caplog.records if "ORCH_AGENT_URL" in r.getMessage()]
     assert len(warned) == 2 and "beta" in warned[1].getMessage()
 
 
 async def test_create_applies_five_objects(env):
-    c = await env.cluster("alpha", replicas=2)
+    c = await env.session("alpha", replicas=2)
     await env.rec.reconcile_once()
 
     applied = env.kube.applied()
@@ -132,9 +132,9 @@ async def test_create_applies_five_objects(env):
         "agent-alpha",
     }
     for a in applied:
-        assert (a.field_manager, a.force) == (FIELD_MANAGER, True) == ("agent-orchestrator", True)
+        assert (a.field_manager, a.force) == (FIELD_MANAGER, True) == ("agents-orchestrator", True)
         assert a.obj["metadata"]["namespace"] == "agents"
-        assert a.obj["metadata"]["labels"] == cluster_labels("alpha")
+        assert a.obj["metadata"]["labels"] == session_labels("alpha")
     pvc = env.kube.applied("PersistentVolumeClaim")[0].obj
     assert pvc["spec"]["accessModes"] == ["ReadWriteMany"]
     assert pvc["spec"]["storageClassName"] == "rook-ceph-rwx"
@@ -166,14 +166,14 @@ async def test_unlabelled_foreign_object_not_applied_over(env):
         {
             "apiVersion": "v1",
             "kind": "Service",
-            "metadata": {"name": "agent-alpha", "labels": {CLUSTER_LABEL: "alpha"}},
+            "metadata": {"name": "agent-alpha", "labels": {SESSION_LABEL: "alpha"}},
         }
     )
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     await env.rec.reconcile_once()
 
     assert env.kube.applied("ConfigMap") == [] and env.kube.applied("Service") == []
-    assert env.kube.applied() == []  # nothing of the cluster is applied next to a foreign one
+    assert env.kube.applied() == []  # nothing of the session is applied next to a foreign one
     assert env.kube.get("ConfigMap", "agent-alpha-config")["data"] == {"theirs": "keep"}
     assert env.kube.deletes == []
     got = await env.get(c.id)
@@ -183,9 +183,9 @@ async def test_unlabelled_foreign_object_not_applied_over(env):
     assert got.observed_generation == 0
 
 
-async def test_error_in_one_cluster_does_not_block_others(env):
-    a = await env.cluster("alpha")
-    b = await env.cluster("bravo", replicas=2)
+async def test_error_in_one_session_does_not_block_others(env):
+    a = await env.session("alpha")
+    b = await env.session("bravo", replicas=2)
     env.kube.fail("StatefulSet", "agent-alpha", KubeError("admission webhook denied"))
     await env.rec.reconcile_once()
 
@@ -208,16 +208,16 @@ async def test_error_in_one_cluster_does_not_block_others(env):
 
 
 async def test_observe_pods_upserts_agents(env):
-    c = await env.cluster("alpha", replicas=2)
+    c = await env.session("alpha", replicas=2)
     await env.rec.reconcile_once()
     env.kube.set_pod("agent-alpha-0", ready=True, phase="Running")
     env.kube.set_pod("agent-alpha-1", ready=False, phase="Pending")
-    # a check Job pod carries the cluster labels too, but is not an agent
+    # a check Job pod carries the session labels too, but is not an agent
     env.kube.seed(
         {
             "apiVersion": "v1",
             "kind": "Pod",
-            "metadata": {"name": "agent-alpha-check-7-abcde", "labels": cluster_labels("alpha")},
+            "metadata": {"name": "agent-alpha-check-7-abcde", "labels": session_labels("alpha")},
             "status": {"phase": "Running"},
         }
     )
@@ -230,7 +230,7 @@ async def test_observe_pods_upserts_agents(env):
     ]
     assert agents[0].url == "http://agent-alpha-0.agent-alpha.agents.svc.cluster.local:8080"
     assert agents[1].url == "http://agent-alpha-1.agent-alpha.agents.svc.cluster.local:8080"
-    assert all(a.gone_at is None and a.session_id is None for a in agents)
+    assert all(a.gone_at is None and a.wrapper_session_id is None for a in agents)
     states = await env.rows(
         "SELECT state FROM agent_status WHERE agent_id = ANY(%s)", ([a.id for a in agents],)
     )
@@ -244,7 +244,7 @@ async def test_observe_pods_upserts_agents(env):
 
 
 async def test_observe_stores_pod_ip(env):
-    c = await env.cluster("alpha", replicas=2)
+    c = await env.session("alpha", replicas=2)
     await env.rec.reconcile_once()
     env.kube.set_pod("agent-alpha-0", pod_ip="10.1.2.3")
     del env.kube.objects[("Pod", "agents", "agent-alpha-1")]["status"]["podIP"]  # no IP yet
@@ -256,7 +256,7 @@ async def test_observe_stores_pod_ip(env):
 
 
 async def test_observe_updates_pod_ip(env):
-    c = await env.cluster("alpha", replicas=1)
+    c = await env.session("alpha", replicas=1)
     await env.rec.reconcile_once()
     env.kube.set_pod("agent-alpha-0", pod_ip="10.1.2.3")
     await env.rec.reconcile_once()
@@ -267,7 +267,7 @@ async def test_observe_updates_pod_ip(env):
 
 
 async def test_gone_agent_clears_pod_ip(env):
-    c = await env.cluster("alpha", replicas=2)
+    c = await env.session("alpha", replicas=2)
     await env.rec.reconcile_once()
     env.kube.set_pod("agent-alpha-1", pod_ip="10.1.2.4")
     await env.rec.reconcile_once()
@@ -280,7 +280,7 @@ async def test_gone_agent_clears_pod_ip(env):
 
 
 async def test_scale_down_marks_gone(env):
-    c = await env.cluster("alpha", replicas=3)
+    c = await env.session("alpha", replicas=3)
     await env.rec.reconcile_once()
     before = {a.ordinal: a.id for a in await env.agents(c.id)}
     assert sorted(before) == [0, 1, 2]
@@ -311,9 +311,9 @@ def sts_replicas(env) -> int:
 
 
 async def scaled_down(env, *, start: int = 3, target: int = 1, busy=(), messages=()):
-    """A cluster of `start` agents scaled to `target`; `busy` ordinals report state busy and
+    """A session of `start` agents scaled to `target`; `busy` ordinals report state busy and
     `messages` maps ordinals to the status of a message dispatched to them."""
-    c = await env.cluster("alpha", replicas=start, max_replicas=start)
+    c = await env.session("alpha", replicas=start, max_replicas=start)
     await env.rec.reconcile_once()
     agents = {a.ordinal: a for a in await env.agents(c.id)}
     for ordinal in busy:
@@ -357,7 +357,7 @@ async def test_scale_down_removes_idle_agents_at_once(env):
     assert now[1].gone_at is None and now[0].gone_at is None
 
     # a message being verified keeps the agent just the same
-    c2 = await env.cluster("bravo", replicas=3, max_replicas=3)
+    c2 = await env.session("bravo", replicas=3, max_replicas=3)
     await env.rec.reconcile_once()
     bravo = {a.ordinal: a for a in await env.agents(c2.id)}
     await insert_message(env.pool, c2.id, status="verifying", agent_id=bravo[2].id)
@@ -367,7 +367,7 @@ async def test_scale_down_removes_idle_agents_at_once(env):
     assert env.kube.get("StatefulSet", "agent-bravo")["spec"]["replicas"] == 3
 
     # nothing busy: every draining agent goes in the first tick
-    c3 = await env.cluster("charlie", replicas=3, max_replicas=3)
+    c3 = await env.session("charlie", replicas=3, max_replicas=3)
     await env.rec.reconcile_once()
     await env.update(c3.id, replicas=1, max_replicas=3)
     await env.rec.reconcile_once()
@@ -382,7 +382,7 @@ async def test_scale_down_drain_deadline(env):
     # the deadline counts from status.drain.since, so it survives a reconciler failover
     async with env.pool.connection() as conn:
         await conn.execute(
-            "UPDATE clusters SET status = jsonb_set(status, '{drain,since}',"
+            "UPDATE sessions SET status = jsonb_set(status, '{drain,since}',"
             " to_jsonb((now() - make_interval(secs => %s))::text)) WHERE id = %s",
             (env.settings.scale_drain_seconds + 1, c.id),
         )
@@ -422,10 +422,10 @@ async def test_drain_changes_only_statefulset_replicas(env):
     c, _ = await scaled_down(env, busy=(2,))
     env.kube.reset_records()
     await env.rec.reconcile_once()
-    cluster = await env.get(c.id)
+    session = await env.get(c.id)
     target = {
         (o["kind"], o["metadata"]["name"]): o
-        for o in render_cluster(cluster, env.settings, tokens_for(env.settings, c.id))
+        for o in render_session(session, env.settings, tokens_for(env.settings, c.id))
     }
     applied = {(a.kind, a.name): copy.deepcopy(a.obj) for a in env.kube.applied()}
     assert applied.keys() == target.keys()
@@ -459,7 +459,7 @@ async def test_drain_status_reported(env):
 
 
 async def test_vanished_pod_below_replicas_is_unready_not_gone(env):
-    c = await env.cluster("alpha", replicas=2)
+    c = await env.session("alpha", replicas=2)
     env.kube.pods_ready = True
     await env.rec.reconcile_once()
     assert all(a.ready for a in await env.agents(c.id))
@@ -472,7 +472,7 @@ async def test_vanished_pod_below_replicas_is_unready_not_gone(env):
 
 
 async def test_restart_command_deletes_pod(env):
-    c = await env.cluster("alpha", replicas=2)
+    c = await env.session("alpha", replicas=2)
     await env.rec.reconcile_once()
     agents = await env.agents(c.id)
     old_uid = env.kube.get("Pod", "agent-alpha-1")["metadata"]["uid"]
@@ -484,16 +484,16 @@ async def test_restart_command_deletes_pod(env):
     row = (await env.rows("SELECT status, result FROM commands WHERE id = %s", (cmd["id"],)))[0]
     assert row["status"] == "done" and row["result"]["pod"] == "agent-alpha-1"
 
-    # an agent row pointing at a pod without the cluster labels never gets it deleted
+    # an agent row pointing at a pod without the session labels never gets it deleted
     env.kube.seed_orchestrator_objects()
     stray = await insert_agent(
-        env.pool, c.id, ordinal=9, pod_name="agent-orchestrator-api-7d9f8c-x2k4q"
+        env.pool, c.id, ordinal=9, pod_name="agents-orchestrator-api-7d9f8c-x2k4q"
     )
     cmd2 = await insert_command(env.pool, stray["id"], kind="restart")
     env.kube.reset_records()
     await env.rec.reconcile_once()
     assert env.kube.deleted("Pod") == []
-    assert env.kube.has("Pod", "agent-orchestrator-api-7d9f8c-x2k4q")
+    assert env.kube.has("Pod", "agents-orchestrator-api-7d9f8c-x2k4q")
     row = (await env.rows("SELECT status, result FROM commands WHERE id = %s", (cmd2["id"],)))[0]
     assert row["status"] == "failed" and row["result"]["error"] == "pod_not_found"
 
@@ -502,15 +502,15 @@ async def test_restart_command_deletes_pod(env):
 
 
 async def test_prune_removes_undesired_labelled_only(env):
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     env.kube.seed(
         labelled("ConfigMap", "agent-alpha-old", "alpha"),
         labelled("Service", "agent-alpha-legacy", "alpha"),
-        # only the cluster label: not ours to delete
+        # only the session label: not ours to delete
         {
             "apiVersion": "v1",
             "kind": "ConfigMap",
-            "metadata": {"name": "agent-alpha-half", "labels": {CLUSTER_LABEL: "alpha"}},
+            "metadata": {"name": "agent-alpha-half", "labels": {SESSION_LABEL: "alpha"}},
         },
         # only the managed-by label
         {
@@ -518,11 +518,11 @@ async def test_prune_removes_undesired_labelled_only(env):
             "kind": "ConfigMap",
             "metadata": {
                 "name": "agent-alpha-other",
-                "labels": {MANAGED_BY_LABEL: "agent-orchestrator"},
+                "labels": {MANAGED_BY_LABEL: "agents-orchestrator"},
             },
         },
         {"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "agent-alpha-plain"}},
-        # another cluster's objects are not this cluster's to prune
+        # another session's objects are not this session's to prune
         labelled("ConfigMap", "agent-bravo-config", "bravo"),
     )
     await env.rec.reconcile_once()
@@ -536,7 +536,7 @@ async def test_prune_removes_undesired_labelled_only(env):
 
 
 async def test_delete_removes_everything_including_pvc_then_purges_row(env):
-    c = await env.cluster("alpha", replicas=2)
+    c = await env.session("alpha", replicas=2)
     await env.rec.reconcile_once()
     agent = (await env.agents(c.id))[0]
     await insert_message(env.pool, c.id)
@@ -555,24 +555,24 @@ async def test_delete_removes_everything_including_pvc_then_purges_row(env):
         assert env.kube.names(kind) == [], kind
     assert await env.get(c.id) is None
     for table in ("agents", "messages", "events", "checks"):
-        rows = await env.rows(f"SELECT count(*) AS n FROM {table} WHERE cluster_id = %s", (c.id,))
+        rows = await env.rows(f"SELECT count(*) AS n FROM {table} WHERE session_id = %s", (c.id,))
         assert rows[0]["n"] == 0, table
     for table in ("turns", "commands", "agent_status"):
         rows = await env.rows(f"SELECT count(*) AS n FROM {table} WHERE agent_id = %s", (agent.id,))
         assert rows[0]["n"] == 0, table
 
 
-async def test_purge_notifies_cluster_changed_and_status(env):
-    c = await env.cluster("alpha")
+async def test_purge_notifies_session_changed_and_status(env):
+    c = await env.session("alpha")
     await env.rec.reconcile_once()
     await env.delete(c.id)
     got: list = []
     ready = asyncio.Event()
 
     async def reader():
-        async for ch, payload in listen(env.dsn, ["cluster_changed", "status"], on_ready=ready.set):
+        async for ch, payload in listen(env.dsn, ["session_changed", "status"], on_ready=ready.set):
             got.append((ch, payload))
-            if {x[0] for x in got} == {"cluster_changed", "status"}:
+            if {x[0] for x in got} == {"session_changed", "status"}:
                 return
 
     task = asyncio.create_task(reader())
@@ -580,12 +580,12 @@ async def test_purge_notifies_cluster_changed_and_status(env):
     await env.rec.reconcile_once()
     await asyncio.wait_for(task, 5)
     assert await env.get(c.id) is None
-    assert ("cluster_changed", {"cluster_id": str(c.id)}) in got
-    assert ("status", {"cluster_id": str(c.id)}) in got
+    assert ("session_changed", {"session_id": str(c.id)}) in got
+    assert ("status", {"session_id": str(c.id)}) in got
 
 
 async def test_delete_waits_while_objects_remain(env):
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     await env.rec.reconcile_once()
     await env.delete(c.id)
     env.kube.fail("PersistentVolumeClaim", "agent-alpha-workspace", verbs=["delete"])
@@ -601,8 +601,8 @@ async def test_delete_waits_while_objects_remain(env):
 
 
 async def test_delete_removes_secret_by_name(env):
-    a = await env.cluster("alpha")
-    b = await env.cluster("bravo")
+    a = await env.session("alpha")
+    b = await env.session("bravo")
     await env.rec.reconcile_once()
     assert env.kube.has("Secret", "agent-alpha-ccw")
     # bravo's Secret is already gone (deleted by hand): the discard still completes
@@ -624,13 +624,13 @@ async def test_delete_removes_secret_by_name(env):
 
 
 async def test_pre_discard_false_blocks_deletion(env):
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     await env.rec.reconcile_once()
     seen: list = []
     allow = False
 
-    async def pre_discard(cluster):
-        seen.append(cluster.id)
+    async def pre_discard(session):
+        seen.append(session.id)
         return allow
 
     env.rec.pre_discard = pre_discard
@@ -653,7 +653,7 @@ async def test_pre_discard_false_blocks_deletion(env):
 
 
 async def test_default_pre_discard_allows(env):
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     assert await env.rec.pre_discard(c) is True
 
 
@@ -663,15 +663,15 @@ async def test_default_pre_discard_allows(env):
 async def test_secrets_only_created_patched_deleted(env):
     # FakeKube enforces the Role: reading Secrets is refused
     for call in (
-        env.kube.get_object("Secret", "agents", "agent-orchestrator-claude"),
-        env.kube.list_objects("Secret", "agents", cluster_labels("alpha")),
+        env.kube.get_object("Secret", "agents", "agents-orchestrator-claude"),
+        env.kube.list_objects("Secret", "agents", session_labels("alpha")),
     ):
         with pytest.raises(Forbidden):
             await call
     assert len(env.kube.forbidden) == 2
     env.kube.reset_records()
 
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     await env.rec.reconcile_once()
     await env.update(c.id, replicas=2)
     await env.rec.reconcile_once()
@@ -700,7 +700,7 @@ async def test_shared_namespace_never_touches_orchestrator_objects(env):
     seeded = env.kube.seed_orchestrator_objects()
     snapshot = {key: json.dumps(obj, sort_keys=True) for key, obj in env.kube.objects.items()}
 
-    c = await env.cluster("alpha", replicas=2)
+    c = await env.session("alpha", replicas=2)
     await env.rec.reconcile_once()  # create
     env.kube.seed(labelled("ConfigMap", "agent-alpha-stale", "alpha"))
     await env.update(c.id, replicas=1)
@@ -719,18 +719,18 @@ async def test_shared_namespace_never_touches_orchestrator_objects(env):
     for call in env.kube.calls:
         assert call.namespace == "agents", call
         if call.verb == "list":
-            assert call.selector == cluster_labels("alpha"), call
+            assert call.selector == session_labels("alpha"), call
         else:
             assert call.name.startswith("agent-alpha"), call
 
 
 async def test_calls_outside_namespace_are_forbidden(env):
     with pytest.raises(Forbidden):
-        await env.kube.list_pods("default", cluster_labels("alpha"))
+        await env.kube.list_pods("default", session_labels("alpha"))
     other = Env(env.pool, env.dsn)
     other.settings = make_settings(env.dsn, namespace="elsewhere")
     other.rec = Reconciler(env.pool, other.kube, other.settings, wrapper_factory=None)
-    c = await other.cluster("alpha")
+    c = await other.session("alpha")
     await other.rec.reconcile_once()
     got = await other.get(c.id)
     assert got.status["phase"] == "error" and "outside the Role" in got.status["message"]
@@ -747,12 +747,12 @@ async def test_notify_triggers_immediate_reconcile(env):
         await asyncio.sleep(0.5)  # first pass done, listening
         # inserted by SQL: no NOTIFY, and the poll is a minute away
         await env.rows(
-            "INSERT INTO clusters (id, slug, spec) VALUES (%s, 'quiet', '{}') RETURNING id",
+            "INSERT INTO sessions (id, slug, spec) VALUES (%s, 'quiet', '{}') RETURNING id",
             (uuid.uuid4(),),
         )
         await asyncio.sleep(0.5)
         assert not env.kube.has("StatefulSet", "agent-quiet")
-        await env.rows("SELECT pg_notify('cluster_changed', '{}') AS n")
+        await env.rows("SELECT pg_notify('session_changed', '{}') AS n")
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline and not env.kube.has("StatefulSet", "agent-quiet"):
             await asyncio.sleep(0.05)
@@ -769,7 +769,7 @@ async def test_poll_reconciles_without_notify(env):
     try:
         await asyncio.sleep(0.3)
         await env.rows(
-            "INSERT INTO clusters (id, slug, spec) VALUES (%s, 'polled', '{}') RETURNING id",
+            "INSERT INTO sessions (id, slug, spec) VALUES (%s, 'polled', '{}') RETURNING id",
             (uuid.uuid4(),),
         )
         deadline = time.monotonic() + 5
@@ -783,13 +783,13 @@ async def test_poll_reconciles_without_notify(env):
 
 async def test_unchanged_status_is_not_rewritten(env):
     """A steady state writes nothing, so the reconciler's own NOTIFY cannot wake it forever."""
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     await env.rec.reconcile_once()
     got: list = []
     ready = asyncio.Event()
 
     async def reader():
-        async for ch, payload in listen(env.dsn, ["cluster_changed", "status"], on_ready=ready.set):
+        async for ch, payload in listen(env.dsn, ["session_changed", "status"], on_ready=ready.set):
             got.append((ch, payload))
 
     task = asyncio.create_task(reader())
@@ -801,8 +801,8 @@ async def test_unchanged_status_is_not_rewritten(env):
         env.kube.set_pod("agent-alpha-0", ready=True, phase="Running")
         await env.rec.reconcile_once()
         await asyncio.sleep(0.5)
-        assert ("cluster_changed", {"cluster_id": str(c.id)}) in got
-        assert ("status", {"cluster_id": str(c.id)}) in got
+        assert ("session_changed", {"session_id": str(c.id)}) in got
+        assert ("status", {"session_id": str(c.id)}) in got
     finally:
         task.cancel()
 
@@ -811,7 +811,7 @@ async def test_unchanged_status_is_not_rewritten(env):
 
 
 async def test_agents_repo_writes(env):
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     async with env.pool.connection() as conn:
         a = await agents_repo.upsert_agent(
             conn, c.id, 0, "agent-alpha-0", "http://x", "Pending", False
@@ -820,12 +820,12 @@ async def test_agents_repo_writes(env):
             conn, c.id, 0, "agent-alpha-0", "http://x", "Running", True
         )
         assert again.id == a.id and again.ready and again.pod_phase == "Running"
-        assert await agents_repo.set_session(conn, a.id, "s-1", None) is True
+        assert await agents_repo.set_wrapper_session(conn, a.id, "s-1", None) is True
         got = await agents_repo.get_agent(conn, a.id)
-        assert got.session_id == "s-1" and got.session_created_at is not None
-        assert await agents_repo.clear_session(conn, a.id) is True
+        assert got.wrapper_session_id == "s-1" and got.wrapper_session_created_at is not None
+        assert await agents_repo.clear_wrapper_session(conn, a.id) is True
         got = await agents_repo.get_agent(conn, a.id)
-        assert got.session_id is None and got.session_created_at is None
+        assert got.wrapper_session_id is None and got.wrapper_session_created_at is None
         assert await agents_repo.mark_gone(conn, a.id) is True
         assert await agents_repo.mark_gone(conn, a.id) is False  # already gone
         listed = await agents_repo.list_agents(conn, c.id)
@@ -836,8 +836,8 @@ async def test_agents_repo_writes(env):
     assert [r["state"] for r in rows] == ["unknown"]
 
 
-async def test_restart_of_deleting_cluster_fails(env):
-    c = await env.cluster("alpha")
+async def test_restart_of_deleting_session_fails(env):
+    c = await env.session("alpha")
     await env.rec.reconcile_once()
     agent = (await env.agents(c.id))[0]
     env.rec.pre_discard = _never
@@ -847,11 +847,11 @@ async def test_restart_of_deleting_cluster_fails(env):
     async with env.pool.connection() as conn:
         assert await queue.claim_command(conn, ["restart"]) is None
     row = (await env.rows("SELECT status, result FROM commands WHERE id = %s", (cmd["id"],)))[0]
-    assert row["status"] == "failed" and row["result"]["error"] == "cluster_deleting"
+    assert row["status"] == "failed" and row["result"]["error"] == "session_deleting"
     assert env.kube.deleted("Pod") == []
 
 
-async def _never(cluster) -> bool:
+async def _never(session) -> bool:
     return False
 
 
@@ -905,7 +905,7 @@ async def test_lightkube_apply_is_server_side_with_field_manager_and_force():
     req = seen[0]
     assert req.method == "PATCH"
     assert req.url.path == "/api/v1/namespaces/agents/configmaps/agent-alpha-config"
-    assert req.url.params["fieldManager"] == "agent-orchestrator"
+    assert req.url.params["fieldManager"] == "agents-orchestrator"
     assert req.url.params["force"] == "true"
     assert req.headers["content-type"] == "application/apply-patch+yaml"
     assert out["metadata"]["uid"] == "u-1" and out["data"] == {"k": "v"}
@@ -967,12 +967,12 @@ async def test_lightkube_get_list_delete_and_errors():
     assert await kube.delete("PersistentVolumeClaim", "agents", "missing") is False
     assert await kube.delete("Service", "agents", "agent-alpha") is True
     assert seen[-1].url.path == "/api/v1/namespaces/agents/services/agent-alpha"
-    pods = await kube.list_pods("agents", cluster_labels("alpha"))
+    pods = await kube.list_pods("agents", session_labels("alpha"))
     assert [p["metadata"]["name"] for p in pods] == ["agent-alpha-0"]
     selector = seen[-1].url.params["labelSelector"]
     assert set(selector.split(",")) == {
-        "agents.szymonrichert.pl/cluster=alpha",
-        "app.kubernetes.io/managed-by=agent-orchestrator",
+        "agents.szymonrichert.pl/session=alpha",
+        "app.kubernetes.io/managed-by=agents-orchestrator",
     }
     with pytest.raises(Forbidden):
         await kube.delete("Secret", "agents", "agent-alpha-ccw")

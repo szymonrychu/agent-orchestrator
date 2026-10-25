@@ -1,6 +1,6 @@
 import pytest
 
-from agent_orchestrator import __version__, cli
+from agents_orchestrator import __version__, cli
 
 
 @pytest.fixture(autouse=True)
@@ -38,7 +38,7 @@ def test_unknown_command_exits_2(argv, capsys):
 
 
 def test_uvicorn_config_caps_websocket_frames():
-    from agent_orchestrator.settings import Settings
+    from agents_orchestrator.settings import Settings
 
     config = cli.build_uvicorn_config(Settings(database_url="postgresql://u:p@localhost/db"))
     assert config.ws_max_size == 65536

@@ -20,11 +20,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-CLUSTER=agent-orchestrator-e2e
+KIND_CLUSTER=agents-orchestrator-e2e
 NS=agents
-RELEASE=agent-orchestrator
-ORCH_IMAGE=agent-orchestrator:e2e
-AGENT_IMAGE=agent-orchestrator-agent-test:e2e
+RELEASE=agents-orchestrator
+ORCH_IMAGE=agents-orchestrator:e2e
+AGENT_IMAGE=agents-orchestrator-agent-test:e2e
 PORT="${E2E_PORT:-18080}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/orch-e2e.XXXXXX")"
 export KUBECONFIG="$WORK/kubeconfig"
@@ -42,8 +42,8 @@ diagnostics() {
     echo "--- $RELEASE-$c"
     kubectl -n "$NS" logs "deployment/$RELEASE-$c" --all-containers --tail=120 || true
   done
-  kubectl -n "$NS" describe pods -l app.kubernetes.io/managed-by=agent-orchestrator || true
-  kubectl -n "$NS" logs -l app.kubernetes.io/managed-by=agent-orchestrator --tail=120 || true
+  kubectl -n "$NS" describe pods -l app.kubernetes.io/managed-by=agents-orchestrator || true
+  kubectl -n "$NS" logs -l app.kubernetes.io/managed-by=agents-orchestrator --tail=120 || true
   [ -f "$WORK/port-forward.log" ] && cat "$WORK/port-forward.log" || true
 }
 
@@ -53,10 +53,10 @@ cleanup() {
   [ -n "$PF_PID" ] && kill "$PF_PID" 2>/dev/null
   if [ "$rc" -ne 0 ] && [ -f "$KUBECONFIG" ]; then diagnostics; fi
   if [ "${E2E_KEEP:-}" = 1 ]; then
-    log "keeping kind cluster $CLUSTER (KUBECONFIG=$KUBECONFIG)"
+    log "keeping kind cluster $KIND_CLUSTER (KUBECONFIG=$KUBECONFIG)"
   else
-    log "deleting kind cluster $CLUSTER"
-    kind delete cluster --name "$CLUSTER" >/dev/null 2>&1
+    log "deleting kind cluster $KIND_CLUSTER"
+    kind delete cluster --name "$KIND_CLUSTER" >/dev/null 2>&1
     rm -rf "$WORK"
   fi
   exit "$rc"
@@ -91,7 +91,7 @@ agent_base_image() {
     return
   fi
   echo "cannot pull $base for $PLATFORM; building the wrapper at $sha from source" >&2
-  local local_base="agent-orchestrator-e2e-wrapper-base:${sha:0:7}"
+  local local_base="agents-orchestrator-e2e-wrapper-base:${sha:0:7}"
   docker build --quiet -t "$local_base" \
     "https://github.com/szymonrychu/claude-code-wrapper.git#$sha" >&2
   echo "$local_base"
@@ -105,7 +105,7 @@ load_image() {
   # Older daemons have no --platform; their single-platform images save as they are.
   docker save --platform "$PLATFORM" -o "$tar" "$image" 2>/dev/null \
     || docker save -o "$tar" "$image"
-  kind load image-archive --name "$CLUSTER" "$tar"
+  kind load image-archive --name "$KIND_CLUSTER" "$tar"
   rm -f "$tar"
 }
 
@@ -164,7 +164,7 @@ EOF
 # ReadWriteMany). One node, so a node directory is a shared filesystem.
 setup_local_path_shared() {
   local node shared=/var/local-path-provisioner-shared
-  for node in $(kind get nodes --name "$CLUSTER"); do
+  for node in $(kind get nodes --name "$KIND_CLUSTER"); do
     docker exec "$node" mkdir -p "$shared"
     docker exec "$node" chmod 0777 "$shared"
   done
@@ -185,7 +185,7 @@ EOF
 # Option 2: a no-provisioner StorageClass with pre-created world-writable hostPath PVs.
 setup_hostpath() {
   local node i
-  for node in $(kind get nodes --name "$CLUSTER"); do
+  for node in $(kind get nodes --name "$KIND_CLUSTER"); do
     for i in 0 1 2 3; do
       docker exec "$node" mkdir -p "/var/e2e-rwx/pv$i"
       docker exec "$node" chmod 0777 "/var/e2e-rwx/pv$i"
@@ -223,7 +223,7 @@ choose_rwx_storage_class() {
   echo "local-path shared-filesystem mode did not provide RWX; using hostPath PVs" >&2
   setup_hostpath >&2
   probe_rwx e2e-rwx-hostpath >&2
-  # the probe claim consumed one Retain PV; free it for the agent clusters
+  # the probe claim consumed one Retain PV; free it for the agent sessions
   kubectl get pv -o name | while read -r pv; do
     if [ "$(kubectl get "$pv" -o jsonpath='{.status.phase}')" = Released ]; then
       kubectl patch "$pv" --type json -p '[{"op":"remove","path":"/spec/claimRef"}]' >/dev/null
@@ -232,8 +232,8 @@ choose_rwx_storage_class() {
   echo e2e-rwx-hostpath
 }
 
-log "creating kind cluster $CLUSTER"
-kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true
+log "creating kind cluster $KIND_CLUSTER"
+kind delete cluster --name "$KIND_CLUSTER" >/dev/null 2>&1 || true
 kind create cluster --config e2e/kind-config.yaml --kubeconfig "$KUBECONFIG" --wait 180s
 
 log "building $ORCH_IMAGE"
@@ -267,7 +267,7 @@ kubectl -n "$NS" apply -f e2e/manifests/postgres.yaml
 kubectl -n "$NS" rollout status deployment/postgres --timeout=300s
 
 log "helm install $RELEASE"
-helm install "$RELEASE" chart/agent-orchestrator -n "$NS" -f e2e/values-kind.yaml \
+helm install "$RELEASE" chart/agents-orchestrator -n "$NS" -f e2e/values-kind.yaml \
   --set-string "env.ORCH_PVC_STORAGE_CLASS=$STORAGE_CLASS" \
   --set-string "postgres.url=postgresql://orch:$PG_PASSWORD@postgres:5432/orch" \
   --set-string "masterKey.value=$MASTER_KEY" \
@@ -289,7 +289,7 @@ E2E_ENV=(
   "ORCH_E2E_API_URL=http://127.0.0.1:$PORT"
   "ORCH_E2E_NAMESPACE=$NS"
   "ORCH_E2E_RELEASE=$RELEASE"
-  "ORCH_E2E_KUBE_CONTEXT=kind-$CLUSTER"
+  "ORCH_E2E_KUBE_CONTEXT=kind-$KIND_CLUSTER"
 )
 
 if [ -n "${E2E_HOLD_FILE:-}" ]; then

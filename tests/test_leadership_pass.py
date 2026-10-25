@@ -12,18 +12,18 @@ from pathlib import Path
 import psycopg
 from factories import (
     insert_agent,
-    insert_cluster,
     insert_event,
     insert_message,
+    insert_session,
     set_agent_status,
 )
 from psycopg.rows import dict_row
 
-from agent_orchestrator.db import leadership
-from agent_orchestrator.db.queue import _CLAIM_LOCK_NAMESPACE
-from agent_orchestrator.dispatcher import Dispatcher
-from agent_orchestrator.dispatcher.loop import CHANNELS
-from agent_orchestrator.settings import Settings
+from agents_orchestrator.db import leadership
+from agents_orchestrator.db.queue import _CLAIM_LOCK_NAMESPACE
+from agents_orchestrator.dispatcher import Dispatcher
+from agents_orchestrator.dispatcher.loop import CHANNELS
+from agents_orchestrator.settings import Settings
 
 README = Path(__file__).resolve().parents[1] / "README.md"
 
@@ -32,11 +32,11 @@ README = Path(__file__).resolve().parents[1] / "README.md"
 
 
 async def hive(pool, n: int = 3, *, ready: bool = True, max_replicas: int = 4) -> tuple:
-    """A hive cluster with `n` agents, each ready (or not) with a session, free `ordinal` s ago."""
-    c = await insert_cluster(pool, spec={"replicas": n, "max_replicas": max_replicas})
+    """A hive session with `n` agents, each ready (or not) with a session, free `ordinal` s ago."""
+    c = await insert_session(pool, spec={"replicas": n, "max_replicas": max_replicas})
     agents = []
     for i in range(n):
-        a = await insert_agent(pool, c["id"], ordinal=i, ready=ready, session_id=f"s{i}")
+        a = await insert_agent(pool, c["id"], ordinal=i, ready=ready, wrapper_session_id=f"s{i}")
         await set_agent_status(pool, a["id"], state="idle")
         agents.append(a)
     return c, agents
@@ -53,17 +53,17 @@ async def rows(pool, sql: str, params: tuple = ()) -> list[dict]:
         return await cur.fetchall()
 
 
-async def leader_row(pool, cluster_id) -> dict | None:
-    got = await rows(pool, "SELECT * FROM cluster_leaders WHERE cluster_id = %s", (cluster_id,))
+async def leader_row(pool, session_id) -> dict | None:
+    got = await rows(pool, "SELECT * FROM session_leaders WHERE session_id = %s", (session_id,))
     return got[0] if got else None
 
 
-async def set_leader(pool, cluster_id, agent_id, epoch: int = 3) -> None:
+async def set_leader(pool, session_id, agent_id, epoch: int = 3) -> None:
     await run(
         pool,
-        "INSERT INTO cluster_leaders (cluster_id, agent_id, epoch, since, reason)"
+        "INSERT INTO session_leaders (session_id, agent_id, epoch, since, reason)"
         " VALUES (%s, %s, %s, now(), 'initial')",
-        (cluster_id, agent_id, epoch),
+        (session_id, agent_id, epoch),
     )
 
 
@@ -76,9 +76,9 @@ async def free_ago(pool, agent_id, seconds: float, state: str = "idle") -> None:
     )
 
 
-async def request(pool, cluster_id, kind, frm=None, to=None, reason="full", epoch=None) -> int:
+async def request(pool, session_id, kind, frm=None, to=None, reason="full", epoch=None) -> int:
     async with pool.connection() as conn:
-        return await leadership.insert_request(conn, cluster_id, kind, frm, to, reason, epoch)
+        return await leadership.insert_request(conn, session_id, kind, frm, to, reason, epoch)
 
 
 async def decided(pool, request_id: int) -> tuple:
@@ -93,9 +93,9 @@ async def decided(pool, request_id: int) -> tuple:
     return (r["status"], r["reject_reason"])
 
 
-async def lpass(pool, cluster_id):
+async def lpass(pool, session_id):
     async with pool.connection() as conn:
-        return await leadership.leadership_pass(conn, cluster_id)
+        return await leadership.leadership_pass(conn, session_id)
 
 
 class Notes:
@@ -128,7 +128,7 @@ async def test_initial_leader(pool):
     last = await insert_event(pool, c["id"], a1["id"])
     change = await lpass(pool, c["id"])
     assert change is not None
-    assert (change.cluster_id, change.agent_id, change.epoch, change.reason) == (
+    assert (change.session_id, change.agent_id, change.epoch, change.reason) == (
         c["id"],
         a0["id"],
         1,
@@ -148,7 +148,9 @@ async def test_initial_leader_needs_ready_agent_with_session(pool):
     c, (a0, a1, _a2) = await hive(pool, ready=False)
     assert await lpass(pool, c["id"]) is None
     assert await leader_row(pool, c["id"]) is None
-    await run(pool, "UPDATE agents SET ready = true, session_id = NULL WHERE id = %s", (a0["id"],))
+    await run(
+        pool, "UPDATE agents SET ready = true, wrapper_session_id = NULL WHERE id = %s", (a0["id"],)
+    )
     assert await lpass(pool, c["id"]) is None  # ready but no session yet
     await run(pool, "UPDATE agents SET ready = true WHERE id = %s", (a1["id"],))
     change = await lpass(pool, c["id"])
@@ -304,8 +306,8 @@ async def test_lost_leader_fallback(pool):
     # past the grace: the ready agent free the longest takes over
     await run(
         pool,
-        "UPDATE cluster_leaders SET unready_since = now() - make_interval(secs => %s)"
-        " WHERE cluster_id = %s",
+        "UPDATE session_leaders SET unready_since = now() - make_interval(secs => %s)"
+        " WHERE session_id = %s",
         (leadership.LEADER_GRACE_SECONDS + 1, c["id"]),
     )
     change = await lpass(pool, c["id"])
@@ -314,11 +316,11 @@ async def test_lost_leader_fallback(pool):
     row = await leader_row(pool, c["id"])
     assert row["unready_since"] is None
     # with no ready agent left, the row stays
-    await run(pool, "UPDATE agents SET ready = false WHERE cluster_id = %s", (c["id"],))
+    await run(pool, "UPDATE agents SET ready = false WHERE session_id = %s", (c["id"],))
     await run(
         pool,
-        "UPDATE cluster_leaders SET unready_since = now() - interval '1 hour'"
-        " WHERE cluster_id = %s",
+        "UPDATE session_leaders SET unready_since = now() - interval '1 hour'"
+        " WHERE session_id = %s",
         (c["id"],),
     )
     assert await lpass(pool, c["id"]) is None
@@ -336,8 +338,8 @@ async def test_unready_since_cleared_when_ready(pool):
         assert await lpass(pool, c["id"]) is None  # first sight
         await run(
             pool,
-            "UPDATE cluster_leaders SET unready_since = unready_since"
-            " - make_interval(secs => %s) WHERE cluster_id = %s",
+            "UPDATE session_leaders SET unready_since = unready_since"
+            " - make_interval(secs => %s) WHERE session_id = %s",
             (seconds, c["id"]),
         )
         assert await lpass(pool, c["id"]) is None  # still inside the grace
@@ -358,7 +360,7 @@ async def test_unready_since_cleared_when_ready(pool):
 
 async def test_concurrent_passes_single_change(pool, dsn):
     c, (a0, a1, _a2) = await hive(pool)
-    # a pass that cannot take the cluster lock is skipped
+    # a pass that cannot take the session lock is skipped
     async with await psycopg.AsyncConnection.connect(dsn) as holder:
         await holder.execute(
             "SELECT pg_advisory_xact_lock(%s, hashtext(%s::text))",
@@ -391,10 +393,10 @@ async def test_concurrent_passes_single_change(pool, dsn):
 
 
 async def test_alone_untouched_and_notify(pool, dsn):
-    alone = await insert_cluster(pool, spec={"replicas": 1})
-    solo = await insert_agent(pool, alone["id"], ordinal=0, ready=True, session_id="s0")
-    capped = await insert_cluster(pool, spec={"replicas": 1, "max_replicas": 1})
-    await insert_agent(pool, capped["id"], ordinal=0, ready=True, session_id="s0")
+    alone = await insert_session(pool, spec={"replicas": 1})
+    solo = await insert_agent(pool, alone["id"], ordinal=0, ready=True, wrapper_session_id="s0")
+    capped = await insert_session(pool, spec={"replicas": 1, "max_replicas": 1})
+    await insert_agent(pool, capped["id"], ordinal=0, ready=True, wrapper_session_id="s0")
     rid = await request(pool, alone["id"], "user", None, solo["id"], "user", None)
     for cl in (alone, capped):
         assert await lpass(pool, cl["id"]) is None
@@ -416,10 +418,10 @@ async def test_alone_untouched_and_notify(pool, dsn):
         await lpass(pool, c["id"])  # leader lost
         payloads = await notes.drain()
     assert payloads == [
-        {"cluster_id": str(c["id"]), "agent_id": str(a0["id"]), "epoch": 1},
-        {"cluster_id": str(c["id"]), "agent_id": str(a1["id"]), "epoch": 2},
-        {"cluster_id": str(c["id"]), "agent_id": str(a2["id"]), "epoch": 3},
-        {"cluster_id": str(c["id"]), "agent_id": str(a0["id"]), "epoch": 4},
+        {"session_id": str(c["id"]), "agent_id": str(a0["id"]), "epoch": 1},
+        {"session_id": str(c["id"]), "agent_id": str(a1["id"]), "epoch": 2},
+        {"session_id": str(c["id"]), "agent_id": str(a2["id"]), "epoch": 3},
+        {"session_id": str(c["id"]), "agent_id": str(a0["id"]), "epoch": 4},
     ]
 
 
@@ -485,7 +487,7 @@ async def test_leadership_requested_wakes_dispatcher(pool, dsn):
         await asyncio.wait_for(task, 5)
 
 
-async def test_unknown_cluster_is_a_no_op(pool):
+async def test_unknown_session_is_a_no_op(pool):
     assert await lpass(pool, uuid.uuid4()) is None
 
 
@@ -494,12 +496,12 @@ async def test_unknown_cluster_is_a_no_op(pool):
 
 async def lease_hive(pool, *, lease: int = 60, n: int = 3, age: int = 120) -> tuple:
     """A hive whose spec sets `leader_lease_seconds`; a0 leads with a term `age` s old."""
-    c = await insert_cluster(
+    c = await insert_session(
         pool, spec={"replicas": n, "max_replicas": 4, "leader_lease_seconds": lease}
     )
     agents = []
     for i in range(n):
-        a = await insert_agent(pool, c["id"], ordinal=i, ready=True, session_id=f"s{i}")
+        a = await insert_agent(pool, c["id"], ordinal=i, ready=True, wrapper_session_id=f"s{i}")
         await set_agent_status(pool, a["id"], state="idle")
         agents.append(a)
     await set_leader(pool, c["id"], agents[0]["id"], epoch=3)
@@ -507,12 +509,12 @@ async def lease_hive(pool, *, lease: int = 60, n: int = 3, age: int = 120) -> tu
     return c, agents
 
 
-async def age_term(pool, cluster_id, seconds: int) -> None:
+async def age_term(pool, session_id, seconds: int) -> None:
     await run(
         pool,
-        "UPDATE cluster_leaders SET since = now() - make_interval(secs => %s)"
-        " WHERE cluster_id = %s",
-        (seconds, cluster_id),
+        "UPDATE session_leaders SET since = now() - make_interval(secs => %s)"
+        " WHERE session_id = %s",
+        (seconds, session_id),
     )
 
 
@@ -529,7 +531,7 @@ async def test_lease_expiry_hands_over_idle_leader(pool, dsn):
     row = await leader_row(pool, c["id"])
     assert (row["agent_id"], row["epoch"], row["reason"]) == (a1["id"], 4, "lease_expired")
     assert row["since"] > before
-    assert got == [{"cluster_id": str(c["id"]), "agent_id": str(a1["id"]), "epoch": 4}]
+    assert got == [{"session_id": str(c["id"]), "agent_id": str(a1["id"]), "epoch": 4}]
     # the fresh term is not expired: the next pass changes nothing
     assert await lpass(pool, c["id"]) is None
 

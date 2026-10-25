@@ -1,4 +1,4 @@
-"""Init scripts run once per cluster as one Job, recorded in clusters.status.init (D2, D3)."""
+"""Init scripts run once per session as one Job, recorded in sessions.status.init (D2, D3)."""
 
 from __future__ import annotations
 
@@ -15,18 +15,18 @@ from fakes.fake_wrapper import FakeWrapper
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from agent_orchestrator.db import agents as agents_repo
-from agent_orchestrator.db import clusters
-from agent_orchestrator.k8s.kube import KubeError
-from agent_orchestrator.k8s.labels import cluster_labels
-from agent_orchestrator.k8s.render import workdir_mount, workdir_path
-from agent_orchestrator.reconciler import Reconciler
-from agent_orchestrator.reconciler.checks import (
+from agents_orchestrator.db import agents as agents_repo
+from agents_orchestrator.db import sessions
+from agents_orchestrator.k8s.kube import KubeError
+from agents_orchestrator.k8s.labels import session_labels
+from agents_orchestrator.k8s.render import workdir_mount, workdir_path
+from agents_orchestrator.reconciler import Reconciler
+from agents_orchestrator.reconciler.checks import (
     DEADLINE_GRACE_SECONDS,
     DEADLINE_SECONDS,
     TAIL_LINES,
 )
-from agent_orchestrator.reconciler.init import (
+from agents_orchestrator.reconciler.init import (
     INIT_LABEL,
     WORKDIR_ENV,
     InitGate,
@@ -34,10 +34,10 @@ from agent_orchestrator.reconciler.init import (
     render_init_job,
     render_init_sh,
 )
-from agent_orchestrator.settings import Settings
-from agent_orchestrator.spec import INIT_DIR, INIT_SCRIPTS_MAX, ClusterSpec, init_scripts_hash
-from agent_orchestrator.tokens import tokens_for
-from agent_orchestrator.wrapper.client import WrapperClient
+from agents_orchestrator.settings import Settings
+from agents_orchestrator.spec import INIT_DIR, INIT_SCRIPTS_MAX, SessionSpec, init_scripts_hash
+from agents_orchestrator.tokens import tokens_for
+from agents_orchestrator.wrapper.client import WrapperClient
 
 pytestmark = pytest.mark.asyncio
 
@@ -56,9 +56,9 @@ class Env:
     def _factory(self, url: str, token: str):
         return WrapperClient(self.fake.base_url, token)
 
-    async def cluster(self, slug: str = "alpha", **spec) -> clusters.Cluster:
+    async def session(self, slug: str = "alpha", **spec) -> sessions.Session:
         async with self.pool.connection() as conn:
-            c = await clusters.create(conn, slug, ClusterSpec(**spec))
+            c = await sessions.create(conn, slug, SessionSpec(**spec))
         if self.fake is not None:
             self.fake.token = tokens_for(self.settings, c.id).auth
         return c
@@ -67,37 +67,37 @@ class Env:
         for _ in range(times):
             await self.rec.reconcile_once()
 
-    async def status(self, cluster_id) -> dict:
+    async def status(self, session_id) -> dict:
         async with self.pool.connection() as conn:
-            return (await clusters.get(conn, cluster_id)).status
+            return (await sessions.get(conn, session_id)).status
 
-    async def init(self, cluster_id) -> dict | None:
-        return (await self.status(cluster_id)).get("init")
+    async def init(self, session_id) -> dict | None:
+        return (await self.status(session_id)).get("init")
 
-    async def set_scripts(self, cluster_id, scripts: list[str]) -> None:
+    async def set_scripts(self, session_id, scripts: list[str]) -> None:
         """An edit of spec.init_scripts the way the init scripts API writes it."""
         async with self.pool.connection() as conn:
             await conn.execute(
-                "UPDATE clusters SET spec = jsonb_set(spec, '{init_scripts}', %s) WHERE id = %s",
-                (Jsonb(scripts), cluster_id),
+                "UPDATE sessions SET spec = jsonb_set(spec, '{init_scripts}', %s) WHERE id = %s",
+                (Jsonb(scripts), session_id),
             )
 
-    async def patch_init(self, cluster_id, **fields) -> None:
+    async def patch_init(self, session_id, **fields) -> None:
         async with self.pool.connection() as conn:
-            c = await clusters.get(conn, cluster_id)
+            c = await sessions.get(conn, session_id)
             status = dict(c.status)
             status["init"] = {**status.get("init", {}), **fields}
-            await clusters.set_status(conn, cluster_id, status, c.observed_generation)
+            await sessions.set_status(conn, session_id, status, c.observed_generation)
 
-    async def drop_init(self, cluster_id) -> None:
+    async def drop_init(self, session_id) -> None:
         async with self.pool.connection() as conn:
-            c = await clusters.get(conn, cluster_id)
+            c = await sessions.get(conn, session_id)
             status = {k: v for k, v in c.status.items() if k != "init"}
-            await clusters.set_status(conn, cluster_id, status, c.observed_generation)
+            await sessions.set_status(conn, session_id, status, c.observed_generation)
 
-    async def agents(self, cluster_id) -> list[agents_repo.Agent]:
+    async def agents(self, session_id) -> list[agents_repo.Agent]:
         async with self.pool.connection() as conn:
-            return await agents_repo.list_agents(conn, cluster_id)
+            return await agents_repo.list_agents(conn, session_id)
 
     def creates(self, name: str) -> int:
         return sum(
@@ -125,7 +125,7 @@ async def wenv(pool, dsn, fake) -> Env:
 
 async def test_runs_once_and_records_success(env):
     scripts = ["echo hello", "touch done"]
-    c = await env.cluster("alpha", init_scripts=scripts)
+    c = await env.session("alpha", init_scripts=scripts)
     job = init_job_name("alpha")
     assert job == "agent-alpha-init"
 
@@ -161,7 +161,7 @@ async def test_runs_once_and_records_success(env):
 
 
 async def test_failure_records_and_releases_sessions(wenv, fake):
-    c = await wenv.cluster("alpha", init_scripts=["exit 3"])
+    c = await wenv.session("alpha", init_scripts=["exit 3"])
     job = init_job_name("alpha")
     await wenv.tick()
     assert not fake.sessions
@@ -175,7 +175,7 @@ async def test_failure_records_and_releases_sessions(wenv, fake):
     assert not wenv.kube.has("Job", job)
 
     (agent,) = await wenv.agents(c.id)
-    assert agent.session_id is not None
+    assert agent.wrapper_session_id is not None
     assert len(fake.sessions) == 1
     status = await wenv.status(c.id)
     assert status["phase"] == "degraded"
@@ -188,7 +188,7 @@ async def test_failure_records_and_releases_sessions(wenv, fake):
 
 
 async def test_skipped_never_runs_after_edit(env):
-    c = await env.cluster("alpha")
+    c = await env.session("alpha")
     job = init_job_name("alpha")
     await env.tick()
     assert await env.init(c.id) == {"state": "skipped", "scripts_hash": init_scripts_hash([])}
@@ -204,7 +204,7 @@ async def test_skipped_never_runs_after_edit(env):
 
 async def test_edit_after_run_never_reruns(env):
     scripts = ["echo one"]
-    c = await env.cluster("alpha", init_scripts=scripts)
+    c = await env.session("alpha", init_scripts=scripts)
     job = init_job_name("alpha")
     await env.tick()
 
@@ -228,7 +228,7 @@ async def test_edit_after_run_never_reruns(env):
 
 async def test_crash_and_failure_reasons(env):
     # crashed between the running write and the create: the next tick creates the Job
-    a = await env.cluster("alpha", init_scripts=["echo a"])
+    a = await env.session("alpha", init_scripts=["echo a"])
     await env.tick()
     env.kube.objects.pop(("Job", "agents", "agent-alpha-init"))
     await env.patch_init(a.id, job=None)
@@ -239,7 +239,7 @@ async def test_crash_and_failure_reasons(env):
     assert env.creates("agent-alpha-init") == 2
 
     # a created Job vanished: job_missing
-    b = await env.cluster("beta", init_scripts=["echo b"])
+    b = await env.session("beta", init_scripts=["echo b"])
     await env.tick()
     env.kube.objects.pop(("Job", "agents", "agent-beta-init"))
     await env.tick()
@@ -255,7 +255,7 @@ async def test_crash_and_failure_reasons(env):
             "metadata": {"name": "agent-gamma-init", "labels": {"app": "other"}},
         }
     )
-    g = await env.cluster("gamma", init_scripts=["echo g"])
+    g = await env.session("gamma", init_scripts=["echo g"])
     await env.tick(2)
     init = await env.init(g.id)
     assert (init["state"], init["reason"]) == ("failed", "foreign_object")
@@ -264,7 +264,7 @@ async def test_crash_and_failure_reasons(env):
     assert "agent-gamma-init" not in env.kube.deleted("Job")
 
     # a Job that turns foreign while running: foreign_object as well
-    f = await env.cluster("phi", init_scripts=["echo f"])
+    f = await env.session("phi", init_scripts=["echo f"])
     await env.tick()
     env.kube.get("Job", "agent-phi-init")["metadata"]["labels"] = {"app": "other"}
     await env.tick()
@@ -274,7 +274,7 @@ async def test_crash_and_failure_reasons(env):
 
     # the create fails: job_create_failed with the message cut to 2000 chars
     env.kube.fail("Job", "agent-delta-init", KubeError("quota " + "x" * 3000), verbs=["create"])
-    d = await env.cluster("delta", init_scripts=["echo d"])
+    d = await env.session("delta", init_scripts=["echo d"])
     await env.tick()
     init = await env.init(d.id)
     assert init["state"] == "failed"
@@ -287,7 +287,7 @@ async def test_crash_and_failure_reasons(env):
     assert not env.kube.has("Job", "agent-delta-init")
 
     # overdue with no outcome: timeout, and the Job is deleted
-    e = await env.cluster("eps", init_scripts=["sleep 9999"])
+    e = await env.session("eps", init_scripts=["sleep 9999"])
     await env.tick()
     started = datetime.fromisoformat((await env.init(e.id))["started_at"])
     await env.patch_init(
@@ -303,7 +303,7 @@ async def test_crash_and_failure_reasons(env):
     assert not env.kube.has("Job", "agent-eps-init")
 
     # the Job's own deadline fired: timeout
-    z = await env.cluster("zeta", init_scripts=["sleep 9999"])
+    z = await env.session("zeta", init_scripts=["sleep 9999"])
     await env.tick()
     env.kube.finish_job("agent-zeta-init", deadline_exceeded=True, log="slow")
     await env.tick()
@@ -314,11 +314,11 @@ async def test_crash_and_failure_reasons(env):
 
 
 async def test_sessions_held_while_running(wenv, fake):
-    c = await wenv.cluster("alpha", init_scripts=["echo a"])
+    c = await wenv.session("alpha", init_scripts=["echo a"])
     await wenv.tick()
     assert (await wenv.init(c.id))["state"] == "running"
     (agent,) = await wenv.agents(c.id)
-    assert agent.ready and agent.session_id is None
+    assert agent.ready and agent.wrapper_session_id is None
     assert not fake.sessions
     status = await wenv.status(c.id)
     assert status["phase"] == "pending"
@@ -365,7 +365,7 @@ async def test_init_gate_shapes():
 async def test_render_init_job(pool, dsn, tmp_path):
     env = Env(pool, dsn, image_pull_secret="harbor-pull")
     scripts = ["echo first > first.txt", 'echo "second $FOO"\necho err >&2']
-    c = await env.cluster(
+    c = await env.session(
         "alpha",
         workdir="repo",
         env={"FOO": "bar", "A": "b"},
@@ -376,7 +376,7 @@ async def test_render_init_job(pool, dsn, tmp_path):
     assert obj["apiVersion"] == "batch/v1" and obj["kind"] == "Job"
     meta = obj["metadata"]
     assert (meta["name"], meta["namespace"]) == ("agent-alpha-init", "agents")
-    labels = {**cluster_labels("alpha"), INIT_LABEL: "true"}
+    labels = {**session_labels("alpha"), INIT_LABEL: "true"}
     assert INIT_LABEL == "agents.szymonrichert.pl/init"
     assert meta["labels"] == labels
     spec = obj["spec"]
@@ -405,13 +405,13 @@ async def test_render_init_job(pool, dsn, tmp_path):
     assert cmd[:2] == ["sh", "-c"] and cmd[3] == "agent-init" and len(cmd) == 5
     init_sh = cmd[4]
     assert "alpha" in init_sh.splitlines()[0]
-    assert "run once at cluster start by agent-orchestrator" in init_sh
-    assert "orchestrator_init_scripts_edit" in init_sh and "next cluster" in init_sh
+    assert "run once at session start by agents-orchestrator" in init_sh
+    assert "orchestrator_init_scripts_edit" in init_sh and "next session" in init_sh
     assert f"# --- script 1 ---\n{scripts[0]}\n" in init_sh
     assert f"# --- script 2 ---\n{scripts[1]}" in init_sh
 
     # spec.image wins over the settings image; no pull secret when unset
-    c2 = await Env(pool, dsn).cluster("beta", image="img/agent:2", init_scripts=["true"])
+    c2 = await Env(pool, dsn).session("beta", image="img/agent:2", init_scripts=["true"])
     no_secret = Settings(database_url=dsn, master_key=KEY, agent_image=IMAGE, image_pull_secret="")
     plain = render_init_job(c2, no_secret)
     assert plain["spec"]["template"]["spec"]["containers"][0]["image"] == "img/agent:2"
@@ -438,7 +438,7 @@ async def test_render_init_job(pool, dsn, tmp_path):
     assert (target / "first.txt").read_text() == "first\n"
 
     failing = render_init_job(
-        await env.cluster("gamma", init_scripts=["echo before", "exit 7", "echo never"]),
+        await env.session("gamma", init_scripts=["echo before", "exit 7", "echo never"]),
         env.settings,
     )["spec"]["template"]["spec"]["containers"][0]["command"]
     work = tmp_path / "w2"
@@ -454,7 +454,7 @@ async def test_render_init_job(pool, dsn, tmp_path):
     assert "before" in log and "never" not in log
 
     unset = render_init_job(
-        await env.cluster("delta", init_scripts=['echo "$NOT_SET"', "echo never"]),
+        await env.session("delta", init_scripts=['echo "$NOT_SET"', "echo never"]),
         env.settings,
     )["spec"]["template"]["spec"]["containers"][0]["command"]
     work = tmp_path / "w3"
@@ -467,7 +467,7 @@ async def test_render_init_job(pool, dsn, tmp_path):
 
     # the largest allowed set passes in argv chunks below the 128 KiB per-argument limit
     big = ["# " + "\u00e9" * 16000 + f"\necho big {n}" for n in range(INIT_SCRIPTS_MAX)]
-    big_cmd = render_init_job(await env.cluster("eta", init_scripts=big), env.settings)["spec"][
+    big_cmd = render_init_job(await env.session("eta", init_scripts=big), env.settings)["spec"][
         "template"
     ]["spec"]["containers"][0]["command"]
     assert len(big_cmd) > 5
@@ -487,7 +487,7 @@ async def test_render_init_job(pool, dsn, tmp_path):
 
 
 async def test_job_lifecycle_and_not_an_agent(env):
-    a = await env.cluster("alpha", replicas=1, init_scripts=["echo a"])
+    a = await env.session("alpha", replicas=1, init_scripts=["echo a"])
     await env.tick()
     pods = env.kube.names("Pod")
     assert "agent-alpha-init-x7k2p" in pods and "agent-alpha-0" in pods
@@ -506,7 +506,7 @@ async def test_job_lifecycle_and_not_an_agent(env):
     assert (await env.init(a.id))["state"] == "succeeded"
 
     # crashed after the outcome was recorded but before the delete: the next tick deletes it
-    b = await env.cluster("beta", init_scripts=["echo b"])
+    b = await env.session("beta", init_scripts=["echo b"])
     await env.tick()
     env.kube.finish_job("agent-beta-init", exit_code=0, log="ok")
     env.kube.fail("Job", "agent-beta-init", verbs=["delete"], times=1)
@@ -518,13 +518,13 @@ async def test_job_lifecycle_and_not_an_agent(env):
     assert (await env.init(b.id))["state"] == "succeeded"
 
     # a discard deletes a running init Job
-    g = await env.cluster("gamma", init_scripts=["sleep 100"])
+    g = await env.session("gamma", init_scripts=["sleep 100"])
     await env.tick()
     assert env.kube.has("Job", "agent-gamma-init")
     async with env.pool.connection() as conn:
-        await clusters.request_delete(conn, g.id)
+        await sessions.request_delete(conn, g.id)
     await env.tick(2)
     assert "agent-gamma-init" in env.kube.deleted("Job")
     assert not env.kube.has("Job", "agent-gamma-init")
     async with env.pool.connection() as conn:
-        assert await clusters.get(conn, g.id) is None
+        assert await sessions.get(conn, g.id) is None

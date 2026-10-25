@@ -8,18 +8,18 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 import pytest_asyncio
-from factories import insert_cluster
+from factories import insert_session
 from fakes.fake_wrapper import FakeWrapper
-from test_api_clusters import assert_error, client_for, make_settings
 from test_api_files import KEY, Rig, token_of
+from test_api_sessions import assert_error, client_for, make_settings
 
-from agent_orchestrator.api import workspace
-from agent_orchestrator.api.app import create_app
+from agents_orchestrator.api import workspace
+from agents_orchestrator.api.app import create_app
 
 GOOD_ORIGIN = "https://orch.example"
 VIEW_FIELDS = {
     "agent_id",
-    "cluster_id",
+    "session_id",
     "pod_name",
     "terminal_id",
     "created_at",
@@ -41,16 +41,16 @@ class TermRig(Rig):
     def item_url(self, row: dict, terminal_id: str) -> str:
         return f"/api/v1/agents/{row['id']}/terminals/{terminal_id}"
 
-    def list_url(self, cluster: dict | None = None) -> str:
-        return f"/api/v1/clusters/{(cluster or self.cluster)['id']}/terminals"
+    def list_url(self, session: dict | None = None) -> str:
+        return f"/api/v1/sessions/{(session or self.session)['id']}/terminals"
 
 
 @pytest_asyncio.fixture
 async def rig(pool, dsn) -> AsyncIterator[TermRig]:
     settings = make_settings(dsn, master_key=KEY, allowed_origins=GOOD_ORIGIN)
     app = create_app(settings, pool)
-    cluster = await insert_cluster(pool)
-    state = TermRig(None, pool, cluster, [], app)
+    session = await insert_session(pool)
+    state = TermRig(None, pool, session, [], app)
     async with client_for(app) as http:  # no lifespan runs: ASGITransport never starts it
         state.http = http
         try:
@@ -74,7 +74,7 @@ async def test_create_on_agent(rig):
     body = r.json()
     assert set(body) == VIEW_FIELDS
     assert body["agent_id"] == str(row["id"])
-    assert body["cluster_id"] == str(rig.cluster["id"])
+    assert body["session_id"] == str(rig.session["id"])
     assert body["pod_name"] == row["pod_name"]
     assert body["terminal_id"].startswith("term_") and len(body["terminal_id"]) == 17
     assert body["alive"] is True and body["exit_code"] is None and body["attached"] is False
@@ -108,7 +108,7 @@ async def test_create_errors(rig):
     await fake.set_unreachable(False)
 
 
-async def test_cluster_list_fans_out(rig):
+async def test_session_list_fans_out(rig):
     first, _, row1 = await rig.agent(0)
     second, _, row2 = await rig.agent(1)
     broken, _, row3 = await rig.agent(2)
@@ -137,13 +137,13 @@ async def test_cluster_list_fans_out(rig):
     assert terminal_calls(idle) == []
     await broken.set_unreachable(False)
 
-    # a healthy cluster reports nobody unavailable; an unknown cluster is 404
+    # a healthy session reports nobody unavailable; an unknown session is 404
     again = (await rig.http.get(rig.list_url())).json()
     assert again["unavailable_agents"] == [] and len(again["terminals"]) == 4
-    assert_error(await rig.http.get(f"/api/v1/clusters/{uuid.uuid4()}/terminals"), 404, "not_found")
+    assert_error(await rig.http.get(f"/api/v1/sessions/{uuid.uuid4()}/terminals"), 404, "not_found")
 
 
-async def test_cluster_list_without_ready_agent_is_empty(rig):
+async def test_session_list_without_ready_agent_is_empty(rig):
     await rig.agent(0, ready=False)
     r = await rig.http.get(rig.list_url())
     assert r.status_code == 200 and r.json() == {"terminals": [], "unavailable_agents": []}
@@ -240,7 +240,7 @@ async def test_origin_guard(rig):
 
 async def test_token_not_in_logs_or_responses(rig, caplog):
     fake, _, row = await rig.agent(0)
-    token = token_of(rig.cluster["id"])
+    token = token_of(rig.session["id"])
     caplog.set_level(logging.DEBUG)
     responses = []
     created = await rig.http.post(rig.create_url(row), json={"rows": 10, "cols": 20})

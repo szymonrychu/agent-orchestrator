@@ -7,13 +7,13 @@ from pathlib import Path
 
 from fastapi.routing import APIRoute
 
-from agent_orchestrator.api import openapi
-from agent_orchestrator.api.app import create_app
-from agent_orchestrator.settings import Settings
+from agents_orchestrator.api import openapi
+from agents_orchestrator.api.app import create_app
+from agents_orchestrator.settings import Settings
 
 ROOT = Path(__file__).resolve().parent.parent
 README = (ROOT / "README.md").read_text(encoding="utf-8")
-STREAMS = (ROOT / "src" / "agent_orchestrator" / "api" / "streams.py").read_text(encoding="utf-8")
+STREAMS = (ROOT / "src" / "agents_orchestrator" / "api" / "streams.py").read_text(encoding="utf-8")
 
 
 def section(title: str) -> str:
@@ -65,7 +65,7 @@ def test_no_stale_route_in_readme() -> None:
 def test_openapi_json_matches_app() -> None:
     committed = (ROOT / "openapi.json").read_text(encoding="utf-8")
     assert committed == openapi.export(), (
-        "run: uv run python -m agent_orchestrator.api.openapi > openapi.json"
+        "run: uv run python -m agents_orchestrator.api.openapi > openapi.json"
     )
     assert committed.endswith("\n")
 
@@ -74,10 +74,10 @@ def test_sse_event_types_documented() -> None:
     emitted = set(re.findall(r'event="([a-z_]+)"', STREAMS))
     assert {
         "snapshot",
-        "cluster_status",
+        "session_status",
         "agent_status",
         "message_status",
-        "cluster_removed",
+        "session_removed",
         "leader_changed",
     } <= emitted
     events = section("API").split("### Events", 1)
@@ -91,7 +91,7 @@ def test_readme_documents_allowlist_and_limits() -> None:
     api = section("API")
     for needle in (
         "forbidden",
-        "cluster_limit",
+        "session_limit",
         "ORCH_ALLOWED_CIDRS",
         "caps",
         "max_replicas",
@@ -105,7 +105,7 @@ def test_architecture_documents_single_writer() -> None:
     for needle in (
         "single-writer",
         "one writer per table",
-        "cluster_changed",
+        "session_changed",
         "agent_free",
         "polling",
     ):
@@ -123,17 +123,17 @@ SERVICE_ROUTES = (
     "GET /api/v1/meta",
     "GET /api/v1/presets",
     "GET /api/v1/presets/{preset_id}",
-    "GET /api/v1/clusters",
-    "POST /api/v1/clusters",
-    "GET /api/v1/clusters/{cluster_id}",
-    "GET /api/v1/clusters/{cluster_id}/messages",
-    "POST /api/v1/clusters/{cluster_id}/messages",
+    "GET /api/v1/sessions",
+    "POST /api/v1/sessions",
+    "GET /api/v1/sessions/{session_id}",
+    "GET /api/v1/sessions/{session_id}/messages",
+    "POST /api/v1/sessions/{session_id}/messages",
     "GET /api/v1/messages/{message_id}",
 )
 
 
 def test_service_port_documented() -> None:
-    from agent_orchestrator.api.service_auth import ALLOWED_ROUTES
+    from agents_orchestrator.api.service_auth import ALLOWED_ROUTES
 
     assert len(SERVICE_ROUTES) == len(ALLOWED_ROUTES)
     config = section("Configuration")

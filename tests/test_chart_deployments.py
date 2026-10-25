@@ -6,7 +6,7 @@ from typing import Any
 
 from helm_render import render, render_text
 
-FULL = "agent-orchestrator"
+FULL = "agents-orchestrator"
 COMPONENTS = ["api", "dispatcher", "ingester", "reconciler"]
 BASE: dict[str, Any] = {
     "agentImage": "registry.example/wrapper:1",
@@ -114,7 +114,7 @@ def test_api_service_and_probes() -> None:
 
 
 def test_image_tag_defaults_to_app_version() -> None:
-    repo = "harbor.szymonrichert.pl/containers/agent-orchestrator"
+    repo = "harbor.szymonrichert.pl/containers/agents-orchestrator"
     for dep in _deployments().values():
         assert _container(dep)["image"] == f"{repo}:dev"
     for dep in _deployments({"image": {"tag": "9.9.9"}}).values():
@@ -193,7 +193,9 @@ def test_ingress_excludes_agents_service() -> None:
         p["backend"]["service"]["name"] for r in ing["spec"]["rules"] for p in r["http"]["paths"]
     ]
     assert backends and all(b == FULL for b in backends)
-    assert "agents" not in str(ing)
+    # neither the agents Service nor its "agents" port is reachable through the Ingress
+    assert f"{FULL}-agents" not in str(ing)
+    assert "'agents'" not in str(ing)
 
 
 def test_agent_api_settings() -> None:

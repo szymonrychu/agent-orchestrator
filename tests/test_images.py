@@ -7,10 +7,10 @@ from pathlib import Path
 
 import yaml
 
-from agent_orchestrator.settings import Settings
+from agents_orchestrator.settings import Settings
 
 ROOT = Path(__file__).resolve().parent.parent
-IMAGE = "harbor.szymonrichert.pl/containers/agent-orchestrator"
+IMAGE = "harbor.szymonrichert.pl/containers/agents-orchestrator"
 
 
 def _ci() -> dict:
@@ -56,14 +56,14 @@ def test_no_derived_agent_image():
     ci = (ROOT / ".github/workflows/ci.yaml").read_text()
     assert "agent-image" not in ci
     # CI builds and pushes no agent image; the e2e job may still pull the wrapper image.
-    assert "containers/agent-orchestrator-agent" not in ci
+    assert "containers/agents-orchestrator-agent" not in ci
     imports = [
         s["run"]
         for j in _ci()["jobs"].values()
         for s in j["steps"]
         if "regctl image import" in s.get("run", "")
     ]
-    assert len(imports) == 1 and "agent-orchestrator-agent" not in imports[0]
+    assert len(imports) == 1 and "agents-orchestrator-agent" not in imports[0]
     # No production Dockerfile derives from the wrapper image. The only derived image is the
     # test-only e2e/agent-test.Dockerfile, which is never pushed.
     derived = []

@@ -21,7 +21,7 @@ async def _one(pool, query: str, params: tuple) -> dict[str, Any]:
         return dict(zip(cols, row, strict=True))
 
 
-async def insert_cluster(
+async def insert_session(
     pool,
     *,
     slug: str | None = None,
@@ -35,11 +35,11 @@ async def insert_cluster(
     n = next(_counter)
     return await _one(
         pool,
-        "INSERT INTO clusters (id, slug, spec, generation, observed_generation, desired, status)"
+        "INSERT INTO sessions (id, slug, spec, generation, observed_generation, desired, status)"
         " VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING *",
         (
             id or uuid.uuid4(),
-            slug or f"cluster-{n}",
+            slug or f"session-{n}",
             Jsonb(spec if spec is not None else {}),
             generation,
             observed_generation,
@@ -51,15 +51,15 @@ async def insert_cluster(
 
 async def insert_agent(
     pool,
-    cluster_id: uuid.UUID,
+    session_id: uuid.UUID,
     *,
     ordinal: int | None = None,
     pod_name: str | None = None,
     url: str | None = None,
     pod_phase: str | None = None,
     ready: bool = False,
-    session_id: str | None = None,
-    session_created_at: datetime | None = None,
+    wrapper_session_id: str | None = None,
+    wrapper_session_created_at: datetime | None = None,
     gone_at: datetime | None = None,
     last_dispatched_at: datetime | None = None,
     id: uuid.UUID | None = None,
@@ -67,24 +67,24 @@ async def insert_agent(
     if ordinal is None:
         async with pool.connection() as conn:
             cur = await conn.execute(
-                "SELECT COALESCE(MAX(ordinal)+1, 0) FROM agents WHERE cluster_id=%s", (cluster_id,)
+                "SELECT COALESCE(MAX(ordinal)+1, 0) FROM agents WHERE session_id=%s", (session_id,)
             )
             ordinal = (await cur.fetchone())[0]
     return await _one(
         pool,
-        "INSERT INTO agents (id, cluster_id, ordinal, pod_name, url, pod_phase, ready, session_id,"
-        " session_created_at, gone_at, last_dispatched_at)"
+        "INSERT INTO agents (id, session_id, ordinal, pod_name, url, pod_phase, ready,"
+        " wrapper_session_id, wrapper_session_created_at, gone_at, last_dispatched_at)"
         " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
         (
             id or uuid.uuid4(),
-            cluster_id,
+            session_id,
             ordinal,
             pod_name or f"agent-{ordinal}",
             url,
             pod_phase,
             ready,
-            session_id,
-            session_created_at,
+            wrapper_session_id,
+            wrapper_session_created_at,
             gone_at,
             last_dispatched_at,
         ),
@@ -142,7 +142,7 @@ async def set_agent_status(
 
 async def insert_message(
     pool,
-    cluster_id: uuid.UUID,
+    session_id: uuid.UUID,
     *,
     text: str = "hello",
     status: str = "queued",
@@ -158,11 +158,11 @@ async def insert_message(
 ) -> dict[str, Any]:
     return await _one(
         pool,
-        "INSERT INTO messages (cluster_id, target_agent_id, text, status, agent_id, turn_id,"
+        "INSERT INTO messages (session_id, target_agent_id, text, status, agent_id, turn_id,"
         " attempts, error, heartbeat_at, dispatched_at, not_before, ambiguous_at)"
         " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
         (
-            cluster_id,
+            session_id,
             target_agent_id,
             text,
             status,
@@ -180,10 +180,10 @@ async def insert_message(
 
 async def insert_event(
     pool,
-    cluster_id: uuid.UUID,
+    session_id: uuid.UUID,
     agent_id: uuid.UUID,
     *,
-    session_id: str = "s1",
+    wrapper_session_id: str = "s1",
     seq: int | None = None,
     type: str = "message",
     turn_id: str | None = None,
@@ -194,19 +194,20 @@ async def insert_event(
     if seq is None:
         async with pool.connection() as conn:
             cur = await conn.execute(
-                "SELECT COALESCE(MAX(seq)+1, 1) FROM events WHERE agent_id=%s AND session_id=%s",
-                (agent_id, session_id),
+                "SELECT COALESCE(MAX(seq)+1, 1) FROM events"
+                " WHERE agent_id=%s AND wrapper_session_id=%s",
+                (agent_id, wrapper_session_id),
             )
             seq = (await cur.fetchone())[0]
     return await _one(
         pool,
-        "INSERT INTO events (cluster_id, agent_id, session_id, seq, ts, type, turn_id, data,"
-        " created_at) VALUES (%s,%s,%s,%s,COALESCE(%s, now()),%s,%s,%s,"
+        "INSERT INTO events (session_id, agent_id, wrapper_session_id, seq, ts, type, turn_id,"
+        " data, created_at) VALUES (%s,%s,%s,%s,COALESCE(%s, now()),%s,%s,%s,"
         " COALESCE(%s, clock_timestamp())) RETURNING *",
         (
-            cluster_id,
-            agent_id,
             session_id,
+            agent_id,
+            wrapper_session_id,
             seq,
             ts,
             type,
@@ -244,7 +245,7 @@ async def insert_command(
 
 async def insert_check(
     pool,
-    cluster_id: uuid.UUID,
+    session_id: uuid.UUID,
     *,
     command: str = "true",
     status: str = "queued",
@@ -256,9 +257,9 @@ async def insert_check(
 ) -> dict[str, Any]:
     return await _one(
         pool,
-        "INSERT INTO checks (cluster_id, command, status, job_name, exit_code, log_tail,"
+        "INSERT INTO checks (session_id, command, status, job_name, exit_code, log_tail,"
         " started_at, finished_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
-        (cluster_id, command, status, job_name, exit_code, log_tail, started_at, finished_at),
+        (session_id, command, status, job_name, exit_code, log_tail, started_at, finished_at),
     )
 
 

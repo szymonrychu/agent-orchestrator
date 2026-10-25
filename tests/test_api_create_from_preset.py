@@ -1,4 +1,4 @@
-"""POST /clusters from a preset: slug generation, snapshot, revalidation and the raw spec path."""
+"""POST /sessions from a preset: slug generation, snapshot, revalidation and the raw spec path."""
 
 from __future__ import annotations
 
@@ -6,13 +6,13 @@ import re
 import uuid
 
 import pytest
-from test_api_clusters import assert_error, client_for, make_settings
+from test_api_sessions import assert_error, client_for, make_settings
 
-from agent_orchestrator.api import clusters as api_clusters
-from agent_orchestrator.api.app import create_app
+from agents_orchestrator.api import sessions as api_sessions
+from agents_orchestrator.api.app import create_app
 
 DEFAULT_ID = "00000000-0000-0000-0000-000000000001"
-C = "/api/v1/clusters"
+C = "/api/v1/sessions"
 P = "/api/v1/presets"
 
 
@@ -58,7 +58,7 @@ async def test_explicit_slug_and_generated_retry(pool, dsn, monkeypatch):
             "invalid_request",
         )
         taken = iter(["default-aaaa", "default-aaaa", "default-bbbb"])
-        monkeypatch.setattr(api_clusters, "generated_slug", lambda name: next(taken))
+        monkeypatch.setattr(api_sessions, "generated_slug", lambda name: next(taken))
         first = await http.post(C, json={"preset_id": DEFAULT_ID, "slug": "default-aaaa"})
         assert first.status_code == 201
         retried = await http.post(C, json={"preset_id": DEFAULT_ID})
@@ -77,7 +77,7 @@ async def test_generated_slug_exhausted_409(pool, dsn, monkeypatch):
             calls.append(name)
             return "default-aaaa"
 
-        monkeypatch.setattr(api_clusters, "generated_slug", always_taken)
+        monkeypatch.setattr(api_sessions, "generated_slug", always_taken)
         assert_error(await http.post(C, json={"preset_id": DEFAULT_ID}), 409, "conflict")
         assert len(calls) == 5
         assert len((await http.get(C)).json()) == 1
@@ -156,7 +156,7 @@ async def test_defaults_filled_at_schedule(pool, dsn):
             "requests": {"cpu": "250m", "memory": "2Gi"},
             "limits": {"cpu": "2", "memory": "8Gi"},
         }
-        # the earlier cluster keeps what it was created with
+        # the earlier session keeps what it was created with
         again = (await http.get(f"{C}/{first['id']}")).json()
         assert again["spec"] == first["spec"]
 

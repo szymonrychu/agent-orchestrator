@@ -1,0 +1,30 @@
+{{- if not .Values.agentImage }}
+{{- fail "agents-orchestrator: agentImage is required (the claude-code-wrapper image of the agent pods)" }}
+{{- end }}
+{{- range $k, $_ := .Values.env }}
+{{- if not (hasPrefix "ORCH_" $k) }}
+{{- fail (printf "agents-orchestrator: env key %q must start with ORCH_" $k) }}
+{{- end }}
+{{- end }}
+{{- /* Validates Postgres and Secret inputs even when no Deployment includes the env. */ -}}
+{{- $_ := include "agents-orchestrator.databaseUrlEnv" . }}
+{{- $_ := include "agents-orchestrator.masterKeySecretName" . }}
+{{- $claude := include "agents-orchestrator.claudeSecretName" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agents-orchestrator.fullname" . }}-settings
+  labels:
+    {{- include "agents-orchestrator.labels" . | nindent 4 }}
+data:
+  ORCH_NAMESPACE: {{ .Release.Namespace | quote }}
+  ORCH_AGENT_IMAGE: {{ .Values.agentImage | quote }}
+  ORCH_CLAUDE_SECRET_NAME: {{ $claude | quote }}
+  ORCH_AGENT_PORT: {{ .Values.agentApi.port | toString | quote }}
+  ORCH_SERVICE_PORT: {{ .Values.serviceApi.port | toString | quote }}
+  ORCH_AGENT_API_URL: {{ include "agents-orchestrator.agentApiUrl" . | quote }}
+  {{- range $k, $v := .Values.env }}
+  {{- if ne $k "ORCH_AGENT_API_URL" }}
+  {{ $k }}: {{ $v | toString | quote }}
+  {{- end }}
+  {{- end }}

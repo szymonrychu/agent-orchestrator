@@ -8,8 +8,8 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from agent_orchestrator.settings import Settings, SettingsError
-from agent_orchestrator.spec import ClusterSpec, SpecInvalid, validate_spec
+from agents_orchestrator.settings import Settings, SettingsError
+from agents_orchestrator.spec import SessionSpec, SpecInvalid, validate_spec
 
 WRAPPER: dict[str, Any] = {
     "hooks": {
@@ -70,12 +70,12 @@ def wrapper(**changes: Any) -> dict[str, Any]:
 
 def refused(raw: dict[str, Any]) -> str:
     with pytest.raises(ValidationError) as exc:
-        ClusterSpec.model_validate(raw)
+        SessionSpec.model_validate(raw)
     return str(exc.value)
 
 
 def test_wrapper_block_round_trips() -> None:
-    spec = ClusterSpec.model_validate({"wrapper": WRAPPER})
+    spec = SessionSpec.model_validate({"wrapper": WRAPPER})
     assert spec.wrapper is not None
     assert spec.wrapper.model_dump(exclude_none=True) == WRAPPER
     assert spec.model_dump(exclude_none=True)["wrapper"] == WRAPPER
@@ -155,10 +155,10 @@ def _settings(monkeypatch: pytest.MonkeyPatch, **env: str) -> Settings:
 
 def test_lease_and_autoclose_bounds(monkeypatch: pytest.MonkeyPatch) -> None:
     for ok in (60, 604800):
-        assert ClusterSpec(replicas=1, max_replicas=2, leader_lease_seconds=ok)
+        assert SessionSpec(replicas=1, max_replicas=2, leader_lease_seconds=ok)
     for bad in (59, 604801):
         assert "leader_lease_seconds" in refused({"max_replicas": 2, "leader_lease_seconds": bad})
-    message = "leader_lease_seconds requires a hive cluster (max_replicas > 1)"
+    message = "leader_lease_seconds requires a hive session (max_replicas > 1)"
     assert message in refused({"leader_lease_seconds": 60})
     assert message in refused({"replicas": 1, "max_replicas": 1, "leader_lease_seconds": 60})
 
@@ -167,32 +167,32 @@ def test_lease_and_autoclose_bounds(monkeypatch: pytest.MonkeyPatch) -> None:
 
     settings = _settings(monkeypatch)
     assert settings.autoclose_min_seconds == 300
-    validate_spec(ClusterSpec(autoclose_after_seconds=300), settings)
+    validate_spec(SessionSpec(autoclose_after_seconds=300), settings)
     with pytest.raises(SpecInvalid) as exc:
-        validate_spec(ClusterSpec(autoclose_after_seconds=299), settings)
+        validate_spec(SessionSpec(autoclose_after_seconds=299), settings)
     assert exc.value.errors == ["autoclose_after_seconds 299 is below the minimum 300"]
 
     lowered = _settings(monkeypatch, ORCH_AUTOCLOSE_MIN_SECONDS="30")
-    validate_spec(ClusterSpec(autoclose_after_seconds=30), lowered)
+    validate_spec(SessionSpec(autoclose_after_seconds=30), lowered)
     with pytest.raises(SettingsError):
         _settings(monkeypatch, ORCH_AUTOCLOSE_MIN_SECONDS="0")
 
 
 def test_unset_fields_stay_sparse() -> None:
-    dumped = ClusterSpec().model_dump(exclude_none=True)
+    dumped = SessionSpec().model_dump(exclude_none=True)
     for key in ("wrapper", "leader_lease_seconds", "autoclose_after_seconds"):
         assert key not in dumped
-    only = ClusterSpec.model_validate({"wrapper": {"max_restarts": 2}})
+    only = SessionSpec.model_validate({"wrapper": {"max_restarts": 2}})
     assert only.model_dump(exclude_none=True)["wrapper"] == {"max_restarts": 2}
 
 
 def test_reuse_running_agent_sparse_bool() -> None:
-    assert ClusterSpec(reuse_running_agent=True).reuse_running_agent is True
-    assert ClusterSpec(reuse_running_agent=False).reuse_running_agent is False
-    assert ClusterSpec().reuse_running_agent is None
+    assert SessionSpec(reuse_running_agent=True).reuse_running_agent is True
+    assert SessionSpec(reuse_running_agent=False).reuse_running_agent is False
+    assert SessionSpec().reuse_running_agent is None
     assert "reuse_running_agent" in refused({"reuse_running_agent": "yes"})
     assert "reuse_running_agent" in refused({"reuse_running_agent": 2})
-    assert "reuse_running_agent" not in ClusterSpec().model_dump(exclude_none=True)
-    assert "reuse_running_agent" not in ClusterSpec().model_dump(exclude_unset=True)
-    kept = ClusterSpec(reuse_running_agent=False).model_dump(exclude_none=True)
+    assert "reuse_running_agent" not in SessionSpec().model_dump(exclude_none=True)
+    assert "reuse_running_agent" not in SessionSpec().model_dump(exclude_unset=True)
+    kept = SessionSpec(reuse_running_agent=False).model_dump(exclude_none=True)
     assert kept["reuse_running_agent"] is False

@@ -25,12 +25,12 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from agent_orchestrator.k8s.kube import FIELD_MANAGER, Forbidden, KubeError
+from agents_orchestrator.k8s.kube import FIELD_MANAGER, Forbidden, KubeError
 
 READ_VERBS = frozenset({"get", "list", "watch"})
 ORCHESTRATOR_LABELS = {
-    "app.kubernetes.io/name": "agent-orchestrator",
-    "app.kubernetes.io/instance": "agent-orchestrator",
+    "app.kubernetes.io/name": "agents-orchestrator",
+    "app.kubernetes.io/instance": "agents-orchestrator",
     "app.kubernetes.io/managed-by": "Helm",
 }
 
@@ -96,18 +96,18 @@ class FakeKube:
         objs: list[dict[str, Any]] = []
         for component in ("api", "dispatcher", "ingester", "reconciler"):
             labels = {**ORCHESTRATOR_LABELS, "app.kubernetes.io/component": component}
-            objs.append(_obj("apps/v1", "Deployment", f"agent-orchestrator-{component}", labels))
-            objs.append(_pod(f"agent-orchestrator-{component}-7d9f8c-x2k4q", labels, ready=True))
+            objs.append(_obj("apps/v1", "Deployment", f"agents-orchestrator-{component}", labels))
+            objs.append(_pod(f"agents-orchestrator-{component}-7d9f8c-x2k4q", labels, ready=True))
         objs.append(
-            _obj("v1", "ConfigMap", "agent-orchestrator-settings", dict(ORCHESTRATOR_LABELS))
+            _obj("v1", "ConfigMap", "agents-orchestrator-settings", dict(ORCHESTRATOR_LABELS))
         )
-        for secret in ("agent-orchestrator-claude", "agent-orchestrator-master-key"):
+        for secret in ("agents-orchestrator-claude", "agents-orchestrator-master-key"):
             objs.append(_obj("v1", "Secret", secret, dict(ORCHESTRATOR_LABELS)))
-        objs.append(_obj("v1", "Service", "agent-orchestrator", dict(ORCHESTRATOR_LABELS)))
-        cnpg = {"cnpg.io/cluster": "agent-orchestrator-db"}
+        objs.append(_obj("v1", "Service", "agents-orchestrator", dict(ORCHESTRATOR_LABELS)))
+        cnpg = {"cnpg.io/cluster": "agents-orchestrator-db"}
         for i in (1, 2):
-            objs.append(_obj("v1", "PersistentVolumeClaim", f"agent-orchestrator-db-{i}", cnpg))
-            objs.append(_pod(f"agent-orchestrator-db-{i}", cnpg, ready=True))
+            objs.append(_obj("v1", "PersistentVolumeClaim", f"agents-orchestrator-db-{i}", cnpg))
+            objs.append(_pod(f"agents-orchestrator-db-{i}", cnpg, ready=True))
         self.seed(*objs)
         return [(o["kind"], o["metadata"]["name"]) for o in objs]
 

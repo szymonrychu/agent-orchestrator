@@ -8,18 +8,18 @@ import uuid
 
 import psycopg
 import pytest
-from factories import insert_agent, insert_cluster
+from factories import insert_agent, insert_session
 from test_api_agent import IP0, IP1, client_for, headers, make_settings, set_ip
-from test_api_clusters import PEER
-from test_api_clusters import client_for as public_client
-from test_api_clusters import make_settings as public_settings
+from test_api_sessions import PEER
+from test_api_sessions import client_for as public_client
+from test_api_sessions import make_settings as public_settings
 
-from agent_orchestrator.api.app import create_app
-from agent_orchestrator.db import leadership
+from agents_orchestrator.api.app import create_app
+from agents_orchestrator.db import leadership
 
 
 async def hive(pool, replicas: int = 2, leader: int | None = 0):
-    c = await insert_cluster(pool, spec={"replicas": replicas, "max_replicas": 4})
+    c = await insert_session(pool, spec={"replicas": replicas, "max_replicas": 4})
     a0 = await insert_agent(pool, c["id"], ordinal=0, ready=True)
     a1 = await insert_agent(pool, c["id"], ordinal=1, ready=True)
     await set_ip(pool, a0["id"], IP0)
@@ -28,19 +28,19 @@ async def hive(pool, replicas: int = 2, leader: int | None = 0):
         led = (a0, a1)[leader]
         async with pool.connection() as conn:
             await conn.execute(
-                "INSERT INTO cluster_leaders (cluster_id, agent_id, epoch, since, reason)"
+                "INSERT INTO session_leaders (session_id, agent_id, epoch, since, reason)"
                 " VALUES (%s, %s, 3, now(), 'start')",
                 (c["id"], led["id"]),
             )
     return c, a0, a1
 
 
-async def requests(pool, cluster_id):
+async def requests(pool, session_id):
     async with pool.connection() as conn:
         cur = await conn.execute(
             "SELECT kind, from_agent_id, to_agent_id, reason, epoch, status"
-            " FROM leadership_requests WHERE cluster_id = %s ORDER BY id",
-            (cluster_id,),
+            " FROM leadership_requests WHERE session_id = %s ORDER BY id",
+            (session_id,),
         )
         return await cur.fetchall()
 
@@ -69,7 +69,7 @@ async def test_handover_queued(pool, dsn):
     assert r.status_code == 202, r.text
     request_id = r.json()["request_id"]
     assert isinstance(request_id, int)
-    assert got == [{"cluster_id": str(c["id"])}]
+    assert got == [{"session_id": str(c["id"])}]
     assert await requests(pool, c["id"]) == [
         ("handover", a0["id"], a1["id"], "context is full", 3, "queued")
     ]
@@ -95,8 +95,8 @@ async def test_handover_prechecks(pool, dsn):
     c2, _, _ = await hive(pool, leader=None)
     r = await post_handover(dsn, pool, c2)
     assert (r.status_code, r.json()["error"]["code"]) == (409, "not_leader")
-    # alone: a non-hive cluster
-    solo = await insert_cluster(pool, spec={"replicas": 1})
+    # alone: a non-hive session
+    solo = await insert_session(pool, spec={"replicas": 1})
     s0 = await insert_agent(pool, solo["id"], ordinal=0, ready=True)
     await set_ip(pool, s0["id"], "10.9.0.50")
     r = await post_handover(dsn, pool, solo, ip="10.9.0.50")
@@ -105,10 +105,10 @@ async def test_handover_prechecks(pool, dsn):
         assert await requests(pool, cid) == []
 
 
-async def post_leader(dsn, pool, cluster_id, agent_id):
+async def post_leader(dsn, pool, session_id, agent_id):
     async with public_client(create_app(public_settings(dsn), pool), PEER) as http:
         return await http.post(
-            f"/api/v1/clusters/{cluster_id}/leader", json={"agent_id": str(agent_id)}
+            f"/api/v1/sessions/{session_id}/leader", json={"agent_id": str(agent_id)}
         )
 
 
@@ -125,7 +125,7 @@ async def test_user_make_leader(pool, dsn):
     assert r.status_code == 404
     r = await post_leader(dsn, pool, c["id"], uuid.uuid4())
     assert r.status_code == 404
-    solo = await insert_cluster(pool, spec={"replicas": 1})
+    solo = await insert_session(pool, spec={"replicas": 1})
     s0 = await insert_agent(pool, solo["id"], ordinal=0, ready=True)
     r = await post_leader(dsn, pool, solo["id"], s0["id"])
     assert (r.status_code, r.json()["error"]["code"]) == (409, "alone")

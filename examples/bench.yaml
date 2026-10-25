@@ -7,7 +7,7 @@ arms:
   - {name: rr3, replicas: 3, peers: off}
   - {name: rr3-peers, replicas: 3, peers: on}
   - {name: hive3, replicas: 3, peers: true}
-cluster:
+session:
   model: claude-sonnet-5-5
   effort: medium
 tasks:
