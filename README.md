@@ -344,6 +344,18 @@ NOTIFY payloads are wake-up hints that carry ids only. Every loop also polls, be
 
 Polling fallbacks: dispatcher `ORCH_DISPATCH_POLL_SECONDS` (2 s), reconciler `ORCH_RECONCILE_POLL_SECONDS` (10 s), ingester stream refresh `ORCH_INGEST_REFRESH_SECONDS` (5 s); the api SSE streams re-read on a 5 s poll when no NOTIFY arrives.
 
+### Hive
+
+A hive is a cluster that may run several agents. It is derived, not switched: `coalesce(spec.max_replicas, spec.replicas) > 1` (`spec.hive`). A cluster whose cap is 1 runs alone: no leader row, no `hive_state`, no peer notes, no orchestrator tools, and routing is the usual agent free the longest.
+
+- Leader and epoch. Each hive has at most one leader, recorded in `cluster_leaders` with an `epoch` that grows on every change. Untargeted messages go to the leader only (see Routing); an explicit `target_agent_id` always wins.
+- Handover only. The leader hands leadership away with `POST /agent/v1/leadership/handover` (or the `leadership_handover` tool), carrying the epoch it read; there is no takeover route. The one other way to change the leader is the user override `POST /api/v1/clusters/{cluster_id}/leader`. A lost leader (gone, or unready longer than `LEADER_GRACE_SECONDS`) is replaced automatically. Details are under Leadership.
+- `hive_state` and the feed. The dispatcher pushes each agent a keyed `hive_state` note (leader, epoch, members, handover hint) when it changes, and an appended feed note with the peers' activity, at most every `PUSH_INTERVAL_SECONDS` (10 s) per cluster. Both are wrapper notes, so they are peer data and not user instructions. The push runs in the dispatcher, never the ingester.
+- Advisory locks. Agents claim files through the lock tools; the `onAgentToolCall` check hook warns about a file another live agent holds and never denies a write. See File locks.
+- Tool gating is fixed at render time. The orchestrator any-mcp plugin and its tool allowlist (`me`, `leadership_handover`, `lock_claim`, `lock_release`, `lock_list`, `lock_reassign`) are rendered into the pod only when the cluster is a hive, from `max_replicas` and `static`; a later scale never changes what the agents see. The wrapper peer seeds are also rendered from the cap (`max_replicas`, else `replicas`), so agents added by scaling are already known peers.
+- The plugin name `orchestrator` is reserved in a cluster's any-mcp `plugins`. The entry rendered by `k8s/on_start.py` replaces any user entry of that name (and a spec that sets it is rejected 422 `invalid_request`).
+- Agents reach the orchestrator on the separate agent port (see Agent API), with a per-cluster token and the pod IP as identity.
+
 ### Leadership
 
 Every hive cluster (`coalesce(spec.max_replicas, spec.replicas) > 1`) has at most one leader row in `cluster_leaders`, written only by the dispatcher in `leadership_pass` (`db/leadership.py`). Alone clusters never get a leader row. The pass is one transaction under the per-cluster claim lock (`pg_try_advisory_xact_lock` with the claim namespace and `hashtext(cluster_id)`, the lock `claim_and_pick` takes), so a leader change and a message claim never interleave; a dispatcher that cannot take the lock skips the cluster for that wake. Each pass runs three steps in order:
@@ -435,6 +447,8 @@ Base path `/api/v1`. JSON in and out. There is no authentication; access is rest
 Versioning: `/api/v1` is additive only. New routes, new optional request fields and new response fields may appear; existing routes, fields and error codes are never removed or changed in meaning. A breaking change is a new `/api/v2`.
 
 Documented exception, 2026-10-23: `PATCH /api/v1/clusters/{cluster_id}` was removed (it now answers 405), and `POST /api/v1/clusters` requires exactly one of `spec` and `preset_id`. Why: a live spec edit rolled every agent pod of a running cluster; clusters now snapshot their preset at create and the spec is fixed from then on. To change it, discard the cluster and schedule again from a preset.
+
+In-place fields (amends the exception above): `spec.replicas` and `spec.init_scripts` are the only spec fields that change in place (no generation bump, no pod roll); PATCH stays 405.
 
 Source allowlist: the api checks the direct socket peer against `ORCH_ALLOWED_CIDRS` (default `192.168.1.0/24`). `Forwarded`, `X-Forwarded-For` and `X-Real-IP` are never read. A caller outside the list gets `403 forbidden`. `/healthz` and `/readyz` are exempt.
 
