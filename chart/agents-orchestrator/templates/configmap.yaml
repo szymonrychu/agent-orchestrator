@@ -23,6 +23,19 @@ data:
   ORCH_AGENT_PORT: {{ .Values.agentApi.port | toString | quote }}
   ORCH_SERVICE_PORT: {{ .Values.serviceApi.port | toString | quote }}
   ORCH_AGENT_API_URL: {{ include "agents-orchestrator.agentApiUrl" . | quote }}
+  {{- with .Values.cache }}
+  {{- if .s3.bucket }}
+  ORCH_CACHE_S3_ENDPOINT: {{ .s3.endpoint | quote }}
+  ORCH_CACHE_S3_REGION: {{ .s3.region | quote }}
+  ORCH_CACHE_S3_BUCKET: {{ .s3.bucket | quote }}
+  ORCH_CACHE_S3_PREFIX: {{ .s3.prefix | quote }}
+  ORCH_CACHE_S3_PATH_STYLE: {{ .s3.pathStyle | toString | quote }}
+  ORCH_CACHE_S3_VERIFY_TLS: {{ .s3.verifyTls | toString | quote }}
+  ORCH_CACHE_IMAGE: {{ .image | default (printf "%s:%s" $.Values.image.repository ($.Values.image.tag | default $.Chart.AppVersion)) | quote }}
+  ORCH_CACHE_MAX_BYTES: {{ .maxBytes | int64 | toString | quote }}
+  ORCH_CACHE_TIMEOUT_SECONDS: {{ .timeoutSeconds | int64 | toString | quote }}
+  {{- end }}
+  {{- end }}
   {{- range $k, $v := .Values.env }}
   {{- if ne $k "ORCH_AGENT_API_URL" }}
   {{ $k }}: {{ $v | toString | quote }}
