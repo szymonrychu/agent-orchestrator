@@ -58,6 +58,7 @@ Every process reads `ORCH_*` variables (the contract `agent-orchestrator-setting
 | `ORCH_MAX_REPLICAS` | `16` | api | cap on replicas per cluster |
 | `ORCH_MAX_PVC_SIZE` | `100Gi` | api | cap on PVC size |
 | `ORCH_MAX_CLUSTERS` | `20` | api | cap on cluster rows |
+| `ORCH_AUTOCLOSE_MIN_SECONDS` | `300` | api | smallest accepted `autoclose_after_seconds` of a cluster spec |
 | `ORCH_WRAPPER_SEND_TIMEOUT_SECONDS` | `15` | dispatcher, ingester | wrapper send timeout; at most half of dispatching_stale_seconds |
 | `ORCH_DISPATCHING_STALE_SECONDS` | `60` | dispatcher, ingester | dispatching row stale cutoff |
 | `ORCH_DISPATCHING_HEARTBEAT_SECONDS` | `5` | dispatcher, ingester | dispatching row heartbeat |
