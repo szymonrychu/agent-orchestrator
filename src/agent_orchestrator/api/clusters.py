@@ -321,6 +321,35 @@ async def list_agents(cluster_id: uuid.UUID, pool: Pool) -> list[schemas.AgentVi
     return [agent_view(r) for r in rows]
 
 
+_SCALE_STATUS = {
+    "static_cluster": 409,
+    "out_of_range": 422,
+    "leader_would_leave": 409,
+    "cluster_deleting": 409,
+}
+
+
+@router.post("/clusters/{cluster_id}/scale", status_code=202, response_model=schemas.ScaleResult)
+async def scale_cluster(
+    cluster_id: uuid.UUID, body: schemas.ScaleRequest, pool: Pool
+) -> schemas.ScaleResult:
+    """Set spec.replicas in place (no caller agent: the public route has no leader check)."""
+    async with pool.connection() as conn:
+        try:
+            out = await repo.set_replicas(conn, cluster_id, body.replicas)
+        except repo.ClusterNotFound:
+            raise not_found("cluster") from None
+        except repo.ScaleRefused as exc:
+            status = _SCALE_STATUS.get(exc.code, 409)
+            raise ApiError(status, exc.code, str(exc)) from None
+    return schemas.ScaleResult(
+        cluster_id=out.cluster_id,
+        replicas=out.replicas,
+        previous_replicas=out.previous_replicas,
+        max_replicas=out.max_replicas,
+    )
+
+
 @router.post(
     "/clusters/{cluster_id}/leader", status_code=202, response_model=schemas.LeadershipRequested
 )

@@ -455,6 +455,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/clusters/{cluster_id}/scale": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Scale Cluster
+         * @description Set spec.replicas in place (no caller agent: the public route has no leader check).
+         */
+        post: operations["scale_cluster_api_v1_clusters__cluster_id__scale_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/clusters/{cluster_id}/terminals": {
         parameters: {
             query?: never;
@@ -1338,6 +1358,25 @@ export interface components {
             requests: {
                 [key: string]: string;
             };
+        };
+        /** ScaleRequest */
+        ScaleRequest: {
+            /** Replicas */
+            replicas: number;
+        };
+        /** ScaleResult */
+        ScaleResult: {
+            /**
+             * Cluster Id
+             * Format: uuid
+             */
+            cluster_id: string;
+            /** Max Replicas */
+            max_replicas: number;
+            /** Previous Replicas */
+            previous_replicas: number;
+            /** Replicas */
+            replicas: number;
         };
         /** TerminalList */
         TerminalList: {
@@ -2394,6 +2433,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MessageAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    scale_cluster_api_v1_clusters__cluster_id__scale_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cluster_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScaleRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScaleResult"];
                 };
             };
             /** @description Validation Error */
