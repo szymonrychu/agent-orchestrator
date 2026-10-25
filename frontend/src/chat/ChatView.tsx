@@ -8,6 +8,7 @@ import { AgentsStrip } from './AgentsStrip'
 import { ChatLog } from './ChatLog'
 import { Composer } from './Composer'
 import { QueueStrip } from './QueueStrip'
+import { ScaleControl } from './ScaleControl'
 import { filterByAgents } from './chatModel'
 import { useClusterChat } from './useClusterChat'
 import { TOKENS } from '../theme'
@@ -35,6 +36,7 @@ export function ChatView({ cluster, agents, maxItems }: ChatViewProps) {
         <Typography variant="caption" sx={{ color: 'text.secondary' }}>
           {cluster.desired === 'deleting' ? 'deleting' : cluster.summary.state}
         </Typography>
+        <ScaleControl cluster={cluster} />
         <AgentsStrip
           agents={agents}
           selected={selected}

@@ -20,6 +20,8 @@ export type PostCheck = S['PostCheck'];
 export type PresetView = S['PresetView'];
 export type PresetIn = S['PresetIn'];
 export type CopyPreset = S['CopyPreset'];
+export type ScaleRequest = S['ScaleRequest'];
+export type ScaleResult = S['ScaleResult'];
 export type InitScriptsView = S['InitScriptsView'];
 
 export type AgentCommand = 'compact' | 'interrupt' | 'restart';
@@ -105,6 +107,9 @@ export const agentCommand = (agentId: string, command: AgentCommand) =>
   request<CommandAccepted>('POST', `/agents/${id(agentId)}/${command}`);
 export const makeLeader = (clusterId: string, agentId: string) =>
   request<S['LeadershipRequested']>('POST', `/clusters/${id(clusterId)}/leader`, { agent_id: agentId });
+/** Sets spec.replicas in place; the cluster view follows from the status stream. */
+export const scaleCluster = (clusterId: string, body: ScaleRequest) =>
+  request<ScaleResult>('POST', `/clusters/${id(clusterId)}/scale`, body);
 export const getCommand = (commandId: string) => request<CommandView>('GET', `/commands/${id(commandId)}`);
 export const postCheck = (clusterId: string, body: PostCheck) =>
   request<CheckAccepted>('POST', `/clusters/${id(clusterId)}/checks`, body);
