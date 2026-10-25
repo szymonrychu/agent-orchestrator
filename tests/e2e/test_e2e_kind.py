@@ -1242,10 +1242,12 @@ def test_scale_refusals(api: httpx.Client, baseline: dict) -> None:
         wait_for("the first election", lambda: leader_view(api, cid)[1] is not None, LEADER_TIMEOUT)
         current, epoch = leader_view(api, cid)
         assert current is not None and epoch is not None
-        top = next(a for a in live_agents(api, cid) if a["id"] != current["id"])
-        resp = api.post(f"/clusters/{cid}/leader", json={"agent_id": top["id"]})
-        assert resp.status_code == 202, resp.text
-        wait_leader(api, cid, epoch + 1, top["id"])
+        # The highest ordinal is the pod a 3->2 scale removes; it must be the leader.
+        top = max(live_agents(api, cid), key=lambda a: int(a["pod_name"].rsplit("-", 1)[1]))
+        if top["id"] != current["id"]:
+            resp = api.post(f"/clusters/{cid}/leader", json={"agent_id": top["id"]})
+            assert resp.status_code == 202, resp.text
+            wait_leader(api, cid, epoch + 1, top["id"])
         resp = scale_to(api, cid, 2)
         assert resp.status_code == 409, resp.text
         assert error_code(resp) == "leader_would_leave", resp.text
