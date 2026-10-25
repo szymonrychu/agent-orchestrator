@@ -74,6 +74,9 @@ const cluster = {
   slug: "alpha",
   desired: "active",
   summary: { state: "working" },
+  spec: { replicas: 1 },
+  max_replicas: 1,
+  static: false,
 } as unknown as ClusterView;
 const agent = (id: string, ordinal: number): AgentView =>
   ({
