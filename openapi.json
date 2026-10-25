@@ -450,6 +450,17 @@
               }
             ]
           },
+          "reuse_running_agent": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reuse Running Agent"
+          },
           "static": {
             "default": false,
             "title": "Static",

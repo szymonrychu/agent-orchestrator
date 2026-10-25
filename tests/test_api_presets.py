@@ -219,3 +219,28 @@ async def test_put_accepts_unchanged_out_of_list_value(pool, dsn):
             422,
             "invalid_request",
         )
+
+
+async def test_reuse_running_agent_round_trip(http):
+    made = await make(http, "reuse", {"replicas": 2, "reuse_running_agent": True})
+    assert made["spec"] == {"replicas": 2, "reuse_running_agent": True}
+    got = (await http.get(f"{P}/{made['id']}")).json()
+    assert got["spec"]["reuse_running_agent"] is True
+
+    plain = await make(http, "plain", {"replicas": 2})
+    assert "reuse_running_agent" not in (await http.get(f"{P}/{plain['id']}")).json()["spec"]
+
+    c = await http.post("/api/v1/clusters", json={"preset_id": made["id"], "slug": "reuse-c"})
+    assert c.status_code == 201, c.text
+    assert c.json()["spec"]["reuse_running_agent"] is True
+    p = await http.post("/api/v1/clusters", json={"preset_id": plain["id"], "slug": "plain-c"})
+    assert p.status_code == 201, p.text
+    assert "reuse_running_agent" not in p.json()["spec"]
+    assert {k: v for k, v in c.json()["spec"].items() if k != "reuse_running_agent"} == p.json()[
+        "spec"
+    ]
+
+    r = await http.put(f"{P}/{made['id']}", json={"name": "reuse", "spec": {"replicas": 2}})
+    assert r.status_code == 200, r.text
+    assert "reuse_running_agent" not in r.json()["spec"]
+    assert "reuse_running_agent" not in (await http.get(f"{P}/{made['id']}")).json()["spec"]

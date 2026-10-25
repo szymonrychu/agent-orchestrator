@@ -184,3 +184,15 @@ def test_unset_fields_stay_sparse() -> None:
         assert key not in dumped
     only = ClusterSpec.model_validate({"wrapper": {"max_restarts": 2}})
     assert only.model_dump(exclude_none=True)["wrapper"] == {"max_restarts": 2}
+
+
+def test_reuse_running_agent_sparse_bool() -> None:
+    assert ClusterSpec(reuse_running_agent=True).reuse_running_agent is True
+    assert ClusterSpec(reuse_running_agent=False).reuse_running_agent is False
+    assert ClusterSpec().reuse_running_agent is None
+    assert "reuse_running_agent" in refused({"reuse_running_agent": "yes"})
+    assert "reuse_running_agent" in refused({"reuse_running_agent": 2})
+    assert "reuse_running_agent" not in ClusterSpec().model_dump(exclude_none=True)
+    assert "reuse_running_agent" not in ClusterSpec().model_dump(exclude_unset=True)
+    kept = ClusterSpec(reuse_running_agent=False).model_dump(exclude_none=True)
+    assert kept["reuse_running_agent"] is False

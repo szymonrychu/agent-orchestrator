@@ -375,6 +375,10 @@ class ClusterSpec(BaseModel):
     wrapper: WrapperSettings | None = None
     leader_lease_seconds: int | None = Field(default=None, ge=60, le=604800)
     autoclose_after_seconds: int | None = Field(default=None, ge=1, le=2592000)
+    # Read only by trigger services (agents-webhook, agents-schedule): send a new event to
+    # the cluster still running for it. The orchestrator never acts on it, so a cluster a
+    # user creates ignores it. Sparse: unset is not stored or dumped in a preset.
+    reuse_running_agent: bool | None = Field(default=None, strict=True)
 
     @model_validator(mode="after")
     def _cap(self) -> ClusterSpec:
