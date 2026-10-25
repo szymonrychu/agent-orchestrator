@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
@@ -52,6 +53,11 @@ def _init_edited(cluster: repo.Cluster) -> bool:
     return init.get("scripts_hash") != init_scripts_hash(cluster.spec.init_scripts)
 
 
+def _closes_at(cluster: repo.Cluster) -> datetime | None:
+    after = cluster.spec.autoclose_after_seconds
+    return None if after is None else cluster.created_at + timedelta(seconds=after)
+
+
 def _view(cluster: repo.Cluster, agg: dict | None, settings: Settings) -> schemas.ClusterView:
     agg = agg or {}
     return schemas.ClusterView(
@@ -71,6 +77,9 @@ def _view(cluster: repo.Cluster, agg: dict | None, settings: Settings) -> schema
         static=cluster.spec.static,
         leader_agent_id=agg.get("leader_agent_id"),
         leader_epoch=agg.get("leader_epoch"),
+        leader_since=agg.get("leader_since"),
+        leader_reason=agg.get("leader_reason"),
+        closes_at=_closes_at(cluster),
         init_edited_since_run=_init_edited(cluster),
     )
 

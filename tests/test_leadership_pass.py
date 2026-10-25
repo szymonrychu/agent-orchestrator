@@ -10,7 +10,13 @@ import uuid
 from pathlib import Path
 
 import psycopg
-from factories import insert_agent, insert_cluster, insert_event, set_agent_status
+from factories import (
+    insert_agent,
+    insert_cluster,
+    insert_event,
+    insert_message,
+    set_agent_status,
+)
 from psycopg.rows import dict_row
 
 from agent_orchestrator.db import leadership
@@ -481,3 +487,105 @@ async def test_leadership_requested_wakes_dispatcher(pool, dsn):
 
 async def test_unknown_cluster_is_a_no_op(pool):
     assert await lpass(pool, uuid.uuid4()) is None
+
+
+# ---------------------------------------------------------------- leader lease
+
+
+async def lease_hive(pool, *, lease: int = 60, n: int = 3, age: int = 120) -> tuple:
+    """A hive whose spec sets `leader_lease_seconds`; a0 leads with a term `age` s old."""
+    c = await insert_cluster(
+        pool, spec={"replicas": n, "max_replicas": 4, "leader_lease_seconds": lease}
+    )
+    agents = []
+    for i in range(n):
+        a = await insert_agent(pool, c["id"], ordinal=i, ready=True, session_id=f"s{i}")
+        await set_agent_status(pool, a["id"], state="idle")
+        agents.append(a)
+    await set_leader(pool, c["id"], agents[0]["id"], epoch=3)
+    await age_term(pool, c["id"], age)
+    return c, agents
+
+
+async def age_term(pool, cluster_id, seconds: int) -> None:
+    await run(
+        pool,
+        "UPDATE cluster_leaders SET since = now() - make_interval(secs => %s)"
+        " WHERE cluster_id = %s",
+        (seconds, cluster_id),
+    )
+
+
+async def test_lease_expiry_hands_over_idle_leader(pool, dsn):
+    c, (a0, a1, a2) = await lease_hive(pool)
+    await free_ago(pool, a1["id"], 100)
+    await free_ago(pool, a2["id"], 10)
+    before = (await leader_row(pool, c["id"]))["since"]
+    async with Notes(dsn) as notes:
+        change = await lpass(pool, c["id"])
+        got = await notes.drain()
+    assert change is not None
+    assert (change.agent_id, change.epoch, change.reason) == (a1["id"], 4, "lease_expired")
+    row = await leader_row(pool, c["id"])
+    assert (row["agent_id"], row["epoch"], row["reason"]) == (a1["id"], 4, "lease_expired")
+    assert row["since"] > before
+    assert got == [{"cluster_id": str(c["id"]), "agent_id": str(a1["id"]), "epoch": 4}]
+    # the fresh term is not expired: the next pass changes nothing
+    assert await lpass(pool, c["id"]) is None
+
+
+async def test_lease_waits_for_turn_boundary(pool):
+    c, (a0, a1, _a2) = await lease_hive(pool)
+    await free_ago(pool, a0["id"], 0, state="busy")
+    assert await lpass(pool, c["id"]) is None
+    await free_ago(pool, a0["id"], 0, state="idle")
+    for status in ("dispatching", "verifying"):
+        msg = await insert_message(pool, c["id"], status=status, agent_id=a0["id"])
+        assert await lpass(pool, c["id"]) is None
+        assert (await leader_row(pool, c["id"]))["agent_id"] == a0["id"]
+        await run(pool, "UPDATE messages SET status = 'sent' WHERE id = %s", (msg["id"],))
+    change = await lpass(pool, c["id"])
+    assert change is not None
+    assert (change.epoch, change.reason) == (4, "lease_expired")
+    assert change.agent_id != a0["id"]
+
+
+async def test_lease_without_peer_keeps_leader(pool):
+    c, (a0, a1, a2) = await lease_hive(pool)
+    await run(pool, "UPDATE agents SET ready = false WHERE id IN (%s, %s)", (a1["id"], a2["id"]))
+    assert await lpass(pool, c["id"]) is None
+    row = await leader_row(pool, c["id"])
+    assert (row["agent_id"], row["epoch"], row["reason"]) == (a0["id"], 3, "initial")
+    # a peer turning ready is handed the lease on the next pass
+    await run(pool, "UPDATE agents SET ready = true WHERE id = %s", (a1["id"],))
+    change = await lpass(pool, c["id"])
+    assert change is not None and change.agent_id == a1["id"]
+
+
+async def test_lease_candidates(pool):
+    c_exp, _ = await lease_hive(pool)
+    c_fresh, _ = await lease_hive(pool, lease=3600, age=120)
+    c_none, (n0, _n1, _n2) = await hive(pool)
+    await set_leader(pool, c_none["id"], n0["id"])
+    await age_term(pool, c_none["id"], 10**6)
+    async with pool.connection() as conn:
+        got = set(await leadership.leadership_candidates(conn))
+    assert c_exp["id"] in got
+    assert c_fresh["id"] not in got and c_none["id"] not in got
+    assert await lpass(pool, c_none["id"]) is None
+    assert (await leader_row(pool, c_none["id"]))["agent_id"] == n0["id"]
+
+
+async def test_queued_handover_before_lease(pool):
+    c, (a0, a1, a2) = await lease_hive(pool)
+    await free_ago(pool, a1["id"], 100)
+    await free_ago(pool, a2["id"], 10)
+    rid = await request(pool, c["id"], "user", None, a2["id"])
+    change = await lpass(pool, c["id"])
+    assert change is not None
+    assert (change.agent_id, change.epoch, change.reason) == (a2["id"], 4, "user")
+    assert await decided(pool, rid) == ("applied", None)
+    row = await leader_row(pool, c["id"])
+    assert (row["agent_id"], row["epoch"], row["reason"]) == (a2["id"], 4, "user")
+    # the new leader started a fresh term, so the lease did not fire in the same pass
+    assert await lpass(pool, c["id"]) is None

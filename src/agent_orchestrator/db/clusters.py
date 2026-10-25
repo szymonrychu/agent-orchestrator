@@ -147,6 +147,21 @@ async def request_delete(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID) -
     return existing
 
 
+async def close_expired(conn: psycopg.AsyncConnection) -> list[uuid.UUID]:
+    """Flip active clusters past their autoclose time to deleting (the request_delete write)."""
+    async with conn.transaction():
+        cur = await conn.execute(
+            "UPDATE clusters SET desired = 'deleting', generation = generation + 1"
+            " WHERE desired = 'active' AND spec ? 'autoclose_after_seconds'"
+            " AND created_at + make_interval(secs => (spec->>'autoclose_after_seconds')::int)"
+            " <= now() RETURNING id"
+        )
+        ids = [row[0] for row in await cur.fetchall()]
+        for cluster_id in ids:
+            await _notify(conn, cluster_id)
+    return ids
+
+
 async def set_init_scripts(
     conn: psycopg.AsyncConnection, cluster_id: uuid.UUID, scripts: list[str]
 ) -> tuple[Cluster, bool]:

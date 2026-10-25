@@ -9,7 +9,7 @@ import secrets
 import string
 from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -132,6 +132,227 @@ def init_scripts_hash(scripts: list[str]) -> str:
     return hashlib.sha256(json.dumps(scripts, separators=(",", ":")).encode()).hexdigest()
 
 
+# The claude-code-wrapper 0.2.0 hook events (config.py:HOOK_EVENTS); the wrapper is only a dev
+# dependency, so the orchestrator keeps its own copy of the shapes it accepts.
+HOOK_EVENTS: tuple[str, ...] = (
+    "onCreate",
+    "onResume",
+    "onDestroy",
+    "onTurn",
+    "onTurnComplete",
+    "onStop",
+    "onTick",
+    "onAgentResponse",
+    "onAgentToolCall",
+    "onToolResult",
+    "onSubagentStart",
+    "onSubagentStop",
+    "onInterrupt",
+    "onCommand",
+    "onCommandComplete",
+    "onError",
+    "preJoin",
+    "postJoin",
+    "preLeave",
+    "postLeave",
+    "onStart",
+)
+TOOL_EVENTS: tuple[str, ...] = ("onAgentToolCall", "onToolResult")
+HOOK_ACTIONS_MAX = 20
+HOOK_RUN_MAX_CHARS = 16384
+INSTRUCTIONS_MAX = 2000
+SYSTEM_APPEND_MAX = 16384
+RESERVED_MCP_SERVERS = ("any-mcp", "ccw")
+WELL_KNOWN_MARKETPLACES = frozenset({"claude-plugins-official"})
+AGENT_COMMANDS = ("compact", "context", "mcp", "reload-plugins", "reload-skills")
+_MCP_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_PLUGIN_RE = re.compile(r"^[^@\s]+@[^@\s]+$")
+_INSTRUCTIONS_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+_HTTP_URL_RE = re.compile(r"^https?://[^/\s]+")
+
+
+class _Strict(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class _HookAction(_Strict):
+    timeout_seconds: float | None = Field(default=None, gt=0)
+    blocking: bool | None = None
+    on_error: Literal["allow", "deny"] | None = None
+    matcher: str | None = None
+    interval_seconds: float | None = Field(default=None, gt=0)
+    when: Literal["busy", "always"] | None = None
+
+    @field_validator("matcher")
+    @classmethod
+    def _compiles(cls, v: str | None) -> str | None:
+        if v is not None:
+            try:
+                re.compile(v)
+            except re.error as exc:
+                raise ValueError(f"invalid regex: {exc}") from exc
+        return v
+
+
+class CommandHook(_HookAction):
+    type: Literal["command"]
+    run: str = Field(min_length=1, max_length=HOOK_RUN_MAX_CHARS)
+    env: dict[str, str] | None = None
+
+    @field_validator("env")
+    @classmethod
+    def _env_keys(cls, v: dict[str, str] | None) -> dict[str, str] | None:
+        bad = [key for key in v or {} if not _ENV_KEY_RE.fullmatch(key)]
+        if bad:
+            raise ValueError("env keys must match [A-Z_][A-Z0-9_]*: " + ", ".join(sorted(bad)))
+        return v
+
+
+class WebhookHook(_HookAction):
+    type: Literal["webhook"]
+    url: str
+    secret: str | None = None
+    headers: dict[str, str] | None = None
+    retries: int | None = Field(default=None, ge=0)
+
+    @field_validator("url")
+    @classmethod
+    def _http(cls, v: str) -> str:
+        if not _HTTP_URL_RE.match(v):
+            raise ValueError("must be an http or https URL")
+        return v
+
+
+HookAction = Annotated[CommandHook | WebhookHook, Field(discriminator="type")]
+
+
+class McpStdio(_Strict):
+    type: Literal["stdio"]
+    command: str = Field(min_length=1)
+    args: list[str] | None = None
+    env: dict[str, str] | None = None
+
+
+class McpRemote(_Strict):
+    type: Literal["http", "sse"]
+    url: str
+    headers: dict[str, str] | None = None
+
+
+McpServer = Annotated[McpStdio | McpRemote, Field(discriminator="type")]
+
+
+class AutoCompact(_Strict):
+    idle_seconds: float | None = Field(default=None, ge=0)
+    instructions: str | None = None
+    min_context_tokens: int | None = Field(default=None, ge=0)
+
+    @field_validator("instructions")
+    @classmethod
+    def _one_line(cls, v: str | None) -> str | None:
+        if v is not None:
+            if _INSTRUCTIONS_CONTROL.search(v):
+                raise ValueError("must be one line without control characters")
+            if len(v) > INSTRUCTIONS_MAX:
+                raise ValueError(f"must not exceed {INSTRUCTIONS_MAX} characters")
+        return v
+
+
+class Permissions(_Strict):
+    allow: list[str] | None = None
+    deny: list[str] | None = None
+
+
+class Marketplace(_Strict):
+    name: str = Field(min_length=1)
+    source: str = Field(min_length=1)
+
+
+class PluginInstall(_Strict):
+    plugin: str
+    scope: Literal["user", "project", "local"] | None = None
+    required: bool | None = None
+
+    @field_validator("plugin")
+    @classmethod
+    def _shape(cls, v: str) -> str:
+        if not _PLUGIN_RE.match(v):
+            raise ValueError("must look like name@marketplace")
+        return v
+
+
+class Plugins(_Strict):
+    marketplaces: list[Marketplace] | None = None
+    install: list[PluginInstall] | None = None
+
+    @model_validator(mode="after")
+    def _marketplaces_known(self) -> Plugins:
+        known = {m.name for m in self.marketplaces or []} | WELL_KNOWN_MARKETPLACES
+        for i, entry in enumerate(self.install or []):
+            market = entry.plugin.rsplit("@", 1)[1]
+            if market not in known:
+                raise ValueError(
+                    f"wrapper.plugins.install.{i}.plugin: marketplace {market!r} is not listed in "
+                    "marketplaces or claude-plugins-official"
+                )
+        return self
+
+
+class WrapperSettings(_Strict):
+    """Typed claude-code-wrapper settings a cluster may carry (create-time only)."""
+
+    hooks: dict[str, list[HookAction]] | None = None
+    auto_compact: AutoCompact | None = None
+    system_append: str | None = Field(default=None, max_length=SYSTEM_APPEND_MAX)
+    permissions: Permissions | None = None
+    mcp_servers: dict[str, McpServer] | None = None
+    plugins: Plugins | None = None
+    turn_stall_seconds: float | None = Field(default=None, ge=0)
+    max_restarts: int | None = Field(default=None, ge=0, le=10)
+    restart_continue_prompt: str | None = None
+    turn_max_seconds: float | None = Field(default=None, ge=0)
+    agent_commands: (
+        list[Literal["compact", "context", "mcp", "reload-plugins", "reload-skills"]] | None
+    ) = None
+
+    @field_validator("hooks")
+    @classmethod
+    def _hooks(cls, v: dict[str, list[CommandHook | WebhookHook]] | None):
+        errors: list[str] = []
+        for event, actions in (v or {}).items():
+            if event not in HOOK_EVENTS:
+                errors.append(f"wrapper.hooks.{event}: unknown hook event")
+                continue
+            if len(actions) > HOOK_ACTIONS_MAX:
+                errors.append(
+                    f"wrapper.hooks.{event}: has {len(actions)} actions, at most {HOOK_ACTIONS_MAX}"
+                )
+            for i, action in enumerate(actions):
+                at = f"wrapper.hooks.{event}.{i}"
+                if action.matcher is not None and event not in TOOL_EVENTS:
+                    errors.append(f"{at}.matcher: only allowed on {', '.join(TOOL_EVENTS)}")
+                for key in ("interval_seconds", "when"):
+                    if event != "onTick" and getattr(action, key) is not None:
+                        errors.append(f"{at}.{key}: only allowed on onTick")
+                if event == "onTick" and action.interval_seconds is None:
+                    errors.append(f"{at}.interval_seconds: required on onTick")
+        if errors:
+            raise ValueError("; ".join(errors))
+        return v
+
+    @field_validator("mcp_servers")
+    @classmethod
+    def _mcp_names(cls, v: dict[str, McpServer] | None):
+        for name in v or {}:
+            if name in RESERVED_MCP_SERVERS:
+                raise ValueError(f"wrapper.mcp_servers.{name}: the name is reserved")
+            if not _MCP_NAME_RE.fullmatch(name):
+                raise ValueError(
+                    f"wrapper.mcp_servers.{name!r}: name must match [A-Za-z0-9_-]{{1,64}}"
+                )
+        return v
+
+
 class ClusterSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -151,6 +372,9 @@ class ClusterSpec(BaseModel):
     auto_compact_pct: int | None = Field(default=None, ge=1, le=100)
     discard_hook_url: str | None = None
     init_scripts: list[str] = []
+    wrapper: WrapperSettings | None = None
+    leader_lease_seconds: int | None = Field(default=None, ge=60, le=604800)
+    autoclose_after_seconds: int | None = Field(default=None, ge=1, le=2592000)
 
     @model_validator(mode="after")
     def _cap(self) -> ClusterSpec:
@@ -161,6 +385,12 @@ class ClusterSpec(BaseModel):
             raise ValueError(f"replicas {self.replicas} exceeds max_replicas {self.max_replicas}")
         if self.static and self.max_replicas != self.replicas:
             raise ValueError("static requires max_replicas to equal replicas")
+        return self
+
+    @model_validator(mode="after")
+    def _lease_needs_hive(self) -> ClusterSpec:
+        if self.leader_lease_seconds is not None and not self.hive:
+            raise ValueError("leader_lease_seconds requires a hive cluster (max_replicas > 1)")
         return self
 
     @property
@@ -318,6 +548,14 @@ def validate_spec(spec: ClusterSpec, settings: Settings, stored: ClusterSpec | N
                 errors.append(
                     f"pvc_size {spec.pvc_size} exceeds the maximum {settings.max_pvc_size}"
                 )
+    if (
+        spec.autoclose_after_seconds is not None
+        and spec.autoclose_after_seconds < settings.autoclose_min_seconds
+    ):
+        errors.append(
+            f"autoclose_after_seconds {spec.autoclose_after_seconds} is below the minimum "
+            f"{settings.autoclose_min_seconds}"
+        )
     if spec.any_mcp_config is not None:
         try:
             config = AnyMcpConfig.model_validate(spec.any_mcp_config)

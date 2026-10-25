@@ -58,6 +58,7 @@ Every process reads `ORCH_*` variables (the contract `agent-orchestrator-setting
 | `ORCH_MAX_REPLICAS` | `16` | api | cap on replicas per cluster |
 | `ORCH_MAX_PVC_SIZE` | `100Gi` | api | cap on PVC size |
 | `ORCH_MAX_CLUSTERS` | `20` | api | cap on cluster rows |
+| `ORCH_AUTOCLOSE_MIN_SECONDS` | `300` | api | smallest accepted `autoclose_after_seconds` of a cluster spec |
 | `ORCH_WRAPPER_SEND_TIMEOUT_SECONDS` | `15` | dispatcher, ingester | wrapper send timeout; at most half of dispatching_stale_seconds |
 | `ORCH_DISPATCHING_STALE_SECONDS` | `60` | dispatcher, ingester | dispatching row stale cutoff |
 | `ORCH_DISPATCHING_HEARTBEAT_SECONDS` | `5` | dispatcher, ingester | dispatching row heartbeat |
@@ -214,6 +215,10 @@ Browsers apply no CORS to WebSocket upgrades, so any web page opened on a LAN ma
 
 The POST and DELETE terminal routes apply the same rule and answer `403 forbidden_origin`. For local UI development list the dev server: `ORCH_ALLOWED_ORIGINS=http://localhost:5173`. An entry with a path, a trailing slash, userinfo or a scheme other than http or https fails settings validation naming `ORCH_ALLOWED_ORIGINS`.
 
+### Hooks and credentials
+
+Command hooks run `sh -c` in the agent pod with the wrapper's full environment, including `CLAUDE_CODE_OAUTH_TOKEN`, `CCW_AUTH_TOKEN`, `CCW_PEER_TOKEN` and `ORCH_AGENT_TOKEN`. Whoever can edit a preset can already run code in the pod through terminals and init scripts, so hooks add no new privilege, but they make the exposure part of the stored spec. A webhook `secret` and `headers` are stored in the spec in plain text and returned by the API, so do not put credentials you cannot share with every API reader there. `${VAR}` interpolation is disabled for every user value (each `$` is doubled to `$$` in the rendered wrapper config), so a spec cannot pull a pod environment variable into a URL, header or prompt; a hook's shell still expands `$VAR` itself at run time.
+
 ## Releasing
 
 The chart is published to `oci://harbor.szymonrichert.pl/charts/agent-orchestrator` with immutable versions; Harbor rejects a repeated version and CI fails first with a clear message. `scripts/chart-version.sh` picks the version from `version` in `chart/agent-orchestrator/Chart.yaml`:
@@ -308,6 +313,12 @@ Delivery is at-least-once. Success writes `status.discard_hook_delivered` (datab
 
 A failing hook holds the discard: nothing is deleted, the cluster stays `deleting`, and the status records `discard_hook_failed` (the reason), `discard_hook_failures` (the count) and `discard_hook_next_at`. The hook is retried on a later reconcile once the database clock passes `discard_hook_next_at`, with the backoff `ORCH_RETRY_BACKOFF_BASE_SECONDS` doubling up to `ORCH_RETRY_BACKOFF_MAX_SECONDS`. One cluster's failing hook never stops the other clusters reconciling.
 
+### Autoclose
+
+A cluster whose spec sets `autoclose_after_seconds` closes itself: once `created_at` plus that many seconds has passed, the api sweeper marks it `deleting`, and the reconciler discards it exactly as for `DELETE /api/v1/clusters/{id}` (discard hook export included, no handoff turn). The time is counted from `created_at`, not from the last activity. The value must be at least `ORCH_AUTOCLOSE_MIN_SECONDS` (default 300). The sweeper polls every 10 s, so a cluster closes up to about 10 s after its deadline. Every api replica runs the sweeper; the update is status-guarded (`WHERE desired = 'active'`), so each cluster is flipped once.
+
+The `clusters` table keeps one writer, the api: the sweeper is an api background task that writes `desired` and `generation` (the same write as `DELETE`), never the reconciler.
+
 ## Architecture
 
 One repo and one image; the entrypoint is `orch <cmd>`. The processes coordinate only through Postgres.
@@ -381,6 +392,10 @@ Every hive cluster (`coalesce(spec.max_replicas, spec.replicas) > 1`) has at mos
 Every change sends `NOTIFY leader_changed {cluster_id, agent_id, epoch}`.
 
 Election and lost-leader detection are poll-driven. Readiness is observed by the reconciler and is not a NOTIFY the dispatcher hears, so the initial election, the grace clock and the takeover run on the next dispatcher drain, within `ORCH_DISPATCH_POLL_SECONDS` of the readiness change. "The first ready agent leads" therefore means the lowest-ordinal ready agent at the first pass that sees one ready, within the poll window, not the first instantaneous ready event. Requests are applied promptly: `leadership_requested` wakes the dispatcher. Each drain runs the pass, before claiming messages, for hive clusters with queued requests, with no leader row while an agent could lead, whose leader is gone or not ready, or whose `unready_since` is still set.
+
+### Leader lease
+
+A hive spec may set `leader_lease_seconds` (60 to 604800, hive clusters only). When the current leader's term (`cluster_leaders.since`, database clock) is older than the lease, step 4 of `leadership_pass` hands leadership to the ready agent free the longest, at `epoch + 1`, a new `since`, reason `lease_expired`, with the usual `leader_changed` NOTIFY. It runs only at the leader's turn boundary: the leader's `agent_status.state` is `idle` and no message of the leader is `dispatching` or `verifying`. A busy leader keeps leadership past its lease and is handed over on the first pass after its turn ends, so no turn is interrupted and no message is re-routed. With no other ready agent the leader stays, nothing is written, and the lease is re-checked on every pass. A leader chosen by a queued request in step 2 starts a fresh term. It is a handover of the current term, never a takeover, and no agent can trigger it. Clusters without `leader_lease_seconds` keep today's indefinite leadership. An expired lease makes the cluster a leadership candidate, so the dispatcher's next drain (within `ORCH_DISPATCH_POLL_SECONDS`) runs the pass.
 
 ### Routing
 
@@ -502,13 +517,13 @@ All clusters as a list of cluster views. Response 200.
 Schedules a cluster. The body holds exactly one of `spec` and `preset_id`, else 422 `invalid_request` ("exactly one of spec or preset_id"):
 
 - From a preset: `{"preset_id": "<uuid>", "slug": "<dns label, optional>"}`. Without `slug` the API generates `<preset name as a dns label>-<4 random letters>` (for example `default-qkzt`) and retries a clash with a fresh suffix up to 5 times, then answers 409 `conflict`. The preset spec is validated against the current settings when you schedule (a preset that has become invalid is 422 `invalid_request` with a message starting `preset '<name>': `), empty resource keys and an unset `replicas` are filled from the current defaults (`ORCH_DEFAULT_*`, `ORCH_DEFAULT_REPLICAS`), and the result is stored as the cluster's own spec: a snapshot. Editing or deleting the preset afterwards never changes the cluster, its `spec` or its `generation`; the cluster view keeps `preset_name` and `preset_id` becomes null once the preset is deleted. An unknown `preset_id` is 404 `not_found`.
-- Raw spec, for headless callers: `{"slug": "<dns label>", "spec": {...}}`; `slug` is required with `spec` (422 otherwise). `spec` fields (all optional): `replicas`, `max_replicas`, `static`, `image`, `model`, `effort`, `peers`, `workdir`, `pvc_size`, `resources`, `env`, `any_mcp_config`, `max_attempts`, `auto_compact_pct`, `discard_hook_url`, `init_scripts`. `max_replicas` (1 to 16, at most `ORCH_MAX_REPLICAS`, at least `replicas`) is the replica cap and defaults to `replicas`; `static` (default false) pins the size and requires `max_replicas == replicas`. A cluster with `max_replicas > 1` is a hive (no switch): it may run several agents; `static` only forbids scaling. A cluster with `max_replicas == 1` runs alone. The any-mcp plugin name and namespace `orchestrator` are reserved for the rendered plugin (422 `invalid_request`). `init_scripts` (list of shell scripts, default empty; at most 20 entries, each non-empty after strip and at most 16384 characters, 422 `invalid_request` naming the index otherwise) runs once per cluster, not per pod or restart; an edit (on a preset or a cluster) applies to the next cluster and is never rendered into pods, so changing it never rolls them; a cluster created from a preset snapshots the preset's scripts. Presets stay sparse: unset `max_replicas`, `static` and `init_scripts` are not stored. Such a cluster has null `preset_id` and `preset_name`.
+- Raw spec, for headless callers: `{"slug": "<dns label>", "spec": {...}}`; `slug` is required with `spec` (422 otherwise). `spec` fields (all optional): `replicas`, `max_replicas`, `static`, `image`, `model`, `effort`, `peers`, `workdir`, `pvc_size`, `resources`, `env`, `any_mcp_config`, `max_attempts`, `auto_compact_pct`, `discard_hook_url`, `init_scripts`, `wrapper`, `leader_lease_seconds`, `autoclose_after_seconds` (see Cluster configuration below). `max_replicas` (1 to 16, at most `ORCH_MAX_REPLICAS`, at least `replicas`) is the replica cap and defaults to `replicas`; `static` (default false) pins the size and requires `max_replicas == replicas`. A cluster with `max_replicas > 1` is a hive (no switch): it may run several agents; `static` only forbids scaling. A cluster with `max_replicas == 1` runs alone. The any-mcp plugin name and namespace `orchestrator` are reserved for the rendered plugin (422 `invalid_request`). `init_scripts` (list of shell scripts, default empty; at most 20 entries, each non-empty after strip and at most 16384 characters, 422 `invalid_request` naming the index otherwise) runs once per cluster, not per pod or restart; an edit (on a preset or a cluster) applies to the next cluster and is never rendered into pods, so changing it never rolls them; a cluster created from a preset snapshots the preset's scripts. Presets stay sparse: unset `max_replicas`, `static` and `init_scripts` are not stored. Such a cluster has null `preset_id` and `preset_name`.
 
 Response 201 with the cluster view. Errors: 422 `invalid_request` (bad slug, both or neither of `spec` and `preset_id`, `spec` without `slug`, image outside `ORCH_AGENT_IMAGES`, reserved env key, replicas or PVC size above the caps, invalid `any_mcp_config`, an invalid preset), 404 `not_found` (unknown preset), 409 `conflict` (slug exists, or no free generated slug), 409 `cluster_limit`, 403 `forbidden`.
 
 ### `GET /api/v1/clusters/{cluster_id}`
 
-One cluster view: `id`, `slug`, `spec`, `desired`, `status`, `generation`, `observed_generation`, `created_at`, `preset_id` (null for a raw-spec cluster or once the preset is deleted), `preset_name`, `summary` (`state` of `working`, `waiting`, `booting`, `error`, `deleting`; `ready`, `replicas`, `context_pct_max`, `auto_compact_pct`, `queued`, `failed`), `hive`, `max_replicas` (the cap), `static`, `leader_agent_id` and `leader_epoch` (both null for an alone cluster or before the first election), and `init_edited_since_run` (same rule as `edited_since_run` of the init-scripts view; also in the list and the status stream). Response 200. Errors: 404 `not_found`.
+One cluster view: `id`, `slug`, `spec`, `desired`, `status`, `generation`, `observed_generation`, `created_at`, `preset_id` (null for a raw-spec cluster or once the preset is deleted), `preset_name`, `summary` (`state` of `working`, `waiting`, `booting`, `error`, `deleting`; `ready`, `replicas`, `context_pct_max`, `auto_compact_pct`, `queued`, `failed`), `hive`, `max_replicas` (the cap), `static`, `leader_agent_id` and `leader_epoch` (both null for an alone cluster or before the first election), `leader_since` and `leader_reason` (when the current leader's term began and why it began, `start`, a handover reason or `lease_expired`; null without a leader), `closes_at` (`created_at` plus `spec.autoclose_after_seconds`, null when unset), and `init_edited_since_run` (same rule as `edited_since_run` of the init-scripts view; also in the list and the status stream). Response 200. Errors: 404 `not_found`.
 
 ### `DELETE /api/v1/clusters/{cluster_id}`
 
@@ -729,6 +744,40 @@ The `/clusters/{cluster_id}/events/stream` frames are named by the stored wrappe
 | `message_status` | `/stream` | `{"cluster_id", "queued", "failed", "messages": [<changed message views>]}` |
 | `cluster_removed` | `/stream` | `{"cluster_id"}` when a discard completed |
 | `leader_changed` | `/stream` | `{"cluster_id", "agent_id", "epoch"}` on NOTIFY `leader_changed`; the `cluster_status` and `agent_status` frames that follow carry the new leader |
+
+### Cluster configuration
+
+Create-time only fields of the cluster `spec` (also accepted on `POST /api/v1/presets` and `PUT /api/v1/presets/{preset_id}`; a cluster created from a preset snapshots them). They cannot be edited on a running cluster; discard and schedule again. Unset fields are not stored and not rendered.
+
+`spec.wrapper` is a typed block of claude-code-wrapper settings; unknown keys are 422. Every key, with the wrapper config path it renders to:
+
+| Key | Shape | Wrapper config path |
+|---|---|---|
+| `hooks` | map of hook event to at most 20 actions | `hooks.<event>` |
+| `auto_compact` | `{idle_seconds >= 0, instructions, min_context_tokens >= 0}`; `instructions` is one line of at most 2000 characters without control characters | `sessions.auto_compact` |
+| `system_append` | string, at most 16384 characters | `prompts.system_append` |
+| `permissions` | `{allow: [...], deny: [...]}` | `claude.permissions.allow` and `claude.permissions.deny` |
+| `mcp_servers` | map of name to `{type: stdio, command, args, env}` or `{type: http or sse, url, headers}` | `claude.mcp_servers` |
+| `plugins` | `{marketplaces: [{name, source}], install: [{plugin: name@marketplace, scope: user, project or local, required}]}` | `plugins` |
+| `turn_stall_seconds` | number >= 0 | `sessions.turn_stall_seconds` |
+| `max_restarts` | integer 0 to 10 | `sessions.max_restarts` |
+| `restart_continue_prompt` | string | `sessions.restart_continue_prompt` |
+| `turn_max_seconds` | number >= 0 | `limits.turn_max_seconds` |
+| `agent_commands` | subset of `compact`, `context`, `mcp`, `reload-plugins`, `reload-skills` | `sessions.commands.agent` |
+
+Hooks: the event is one of the 21 wrapper events (`onCreate`, `onResume`, `onDestroy`, `onTurn`, `onTurnComplete`, `onStop`, `onTick`, `onAgentResponse`, `onAgentToolCall`, `onToolResult`, `onSubagentStart`, `onSubagentStop`, `onInterrupt`, `onCommand`, `onCommandComplete`, `onError`, `preJoin`, `postJoin`, `preLeave`, `postLeave`, `onStart`). An action is `{type: command, run, env}` or `{type: webhook, url, secret, headers, retries}` plus the common `timeout_seconds`, `blocking`, `on_error` (`allow` or `deny`); `matcher` (a regex) only on `onAgentToolCall` and `onToolResult`; `interval_seconds` (required) and `when` (`busy` or `always`) only on `onTick`. `run` is at most 16384 characters; command `env` keys match `[A-Z_][A-Z0-9_]*`; a webhook `url` is http or https.
+
+Reserved entries stay first and cannot be removed or reordered: the `onStart` hook, the lock-check `onAgentToolCall` hook, the denies `EnterPlanMode`, `ExitPlanMode`, `AskUserQuestion`, the `any-mcp` MCP server and the ask-in-writing prompt. User hooks and denies follow them, user MCP servers sit beside `any-mcp` (the names `any-mcp` and `ccw` and names outside `[A-Za-z0-9_-]{1,64}` are refused), and `system_append` follows the built-in prompt after a blank line.
+
+Escaping: every string value in `spec.wrapper` (not keys) has each `$` doubled to `$$` before it reaches the wrapper config, so the wrapper's `${VAR}` interpolation yields the literal text and a pod environment variable such as `${CLAUDE_CODE_OAUTH_TOKEN}` cannot be read through it. A shell command still sees `$VAR` at run time.
+
+`spec.leader_lease_seconds` (60 to 604800, hive clusters only, so `max_replicas > 1`): once the leader's term (`leader_since`) is older than the lease, the dispatcher hands leadership to the longest-free ready peer at the leader's next turn boundary, with `leader_reason` `lease_expired` and the epoch raised by one. A running turn is never interrupted, and with no ready peer the leader stays. Unset means a leader holds leadership until it hands over.
+
+`spec.autoclose_after_seconds` (integer, at least `ORCH_AUTOCLOSE_MIN_SECONDS`, default 300, at most 2592000): the cluster goes to `desired: deleting` within about 10 s of `created_at` plus this many seconds and is discarded like `DELETE /api/v1/clusters/{cluster_id}` (with the discard hook export). `closes_at` of the cluster view shows the deadline; unset means the cluster lives until discarded.
+
+View fields: `closes_at`, `leader_since` and `leader_reason` (see `GET /api/v1/clusters/{cluster_id}`).
+
+Refusals are 422 `invalid_request` on `POST /api/v1/clusters`, `POST /api/v1/presets` and `PUT /api/v1/presets/{preset_id}`; the message names the field: `wrapper.hooks.<event>: unknown hook event`, `wrapper.hooks.<event>.<i>.matcher: only allowed on onAgentToolCall, onToolResult`, `wrapper.hooks.<event>.<i>.interval_seconds: required on onTick`, `wrapper.mcp_servers.<any-mcp or ccw>: the name is reserved`, `wrapper.plugins.install.<i>.plugin: marketplace '<m>' is not listed in marketplaces or claude-plugins-official`, `leader_lease_seconds requires a hive cluster (max_replicas > 1)`, and `autoclose_after_seconds <n> is below the minimum <floor>`. Values outside a numeric range (for example `leader_lease_seconds` under 60) are refused with the field name in the message too.
 
 ### Scaling
 

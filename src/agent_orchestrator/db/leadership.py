@@ -90,6 +90,8 @@ WHERE c.desired = 'active' AND {_HIVE} AND (
         SELECT 1 FROM agents x WHERE x.cluster_id = c.id AND x.ready
           AND x.gone_at IS NULL AND x.session_id IS NOT NULL))
     OR a.gone_at IS NOT NULL OR NOT a.ready OR l.unready_since IS NOT NULL
+    OR (c.spec->>'leader_lease_seconds' IS NOT NULL
+        AND l.since < now() - make_interval(secs => (c.spec->>'leader_lease_seconds')::int))
 )
 ORDER BY c.id
 """
@@ -136,10 +138,17 @@ async def _leader(conn: psycopg.AsyncConnection, cluster_id: uuid.UUID) -> dict 
     return await _one(
         conn,
         "SELECT l.agent_id, l.epoch, l.unready_since,"
+        " coalesce(l.since < now() - make_interval(secs => (c.spec->>'leader_lease_seconds')::int),"
+        "   false) AS lease_over,"
+        " EXISTS (SELECT 1 FROM agent_status s WHERE s.agent_id = l.agent_id"
+        "   AND s.state = 'idle')"
+        " AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.agent_id = l.agent_id"
+        "   AND m.status IN ('dispatching', 'verifying')) AS at_boundary,"
         " l.unready_since IS NOT NULL AND l.unready_since"
         "   < now() - make_interval(secs => %s) AS grace_over,"
         " a.ready, a.gone_at IS NOT NULL AS gone"
         " FROM cluster_leaders l JOIN agents a ON a.id = l.agent_id"
+        " JOIN clusters c ON c.id = l.cluster_id"
         " WHERE l.cluster_id = %s FOR UPDATE OF l",
         (LEADER_GRACE_SECONDS, cluster_id),
     )
@@ -301,9 +310,24 @@ async def leadership_pass(
                 picked = await _free_longest(conn, cluster_id, leader["agent_id"])
                 if picked is not None:
                     change = await _set_leader(conn, cluster_id, picked, "leader_lost")
+                    leader = None
             elif leader["unready_since"] is None:
                 await conn.execute(
                     "UPDATE cluster_leaders SET unready_since = now() WHERE cluster_id = %s",
                     (cluster_id,),
                 )
+
+        # 4. Lease expiry (hive D26 amended): a healthy leader whose term outlived the spec's
+        # `leader_lease_seconds` hands over at a turn boundary, never mid-turn and never as a
+        # takeover. With no ready peer the leader stays and the lease is re-checked next pass.
+        if (
+            leader is not None
+            and leader["lease_over"]
+            and leader["ready"]
+            and not leader["gone"]
+            and leader["at_boundary"]
+        ):
+            picked = await _free_longest(conn, cluster_id, leader["agent_id"])
+            if picked is not None:
+                change = await _set_leader(conn, cluster_id, picked, "lease_expired")
         return change

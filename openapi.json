@@ -142,6 +142,48 @@
         "title": "AgentView",
         "type": "object"
       },
+      "AutoCompact": {
+        "additionalProperties": false,
+        "properties": {
+          "idle_seconds": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idle Seconds"
+          },
+          "instructions": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instructions"
+          },
+          "min_context_tokens": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Context Tokens"
+          }
+        },
+        "title": "AutoCompact",
+        "type": "object"
+      },
       "CheckAccepted": {
         "properties": {
           "check_id": {
@@ -268,6 +310,19 @@
             ],
             "title": "Auto Compact Pct"
           },
+          "autoclose_after_seconds": {
+            "anyOf": [
+              {
+                "maximum": 2592000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Autoclose After Seconds"
+          },
           "discard_hook_url": {
             "anyOf": [
               {
@@ -316,6 +371,19 @@
             },
             "title": "Init Scripts",
             "type": "array"
+          },
+          "leader_lease_seconds": {
+            "anyOf": [
+              {
+                "maximum": 604800.0,
+                "minimum": 60.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leader Lease Seconds"
           },
           "max_attempts": {
             "default": 5,
@@ -392,6 +460,16 @@
             "maxLength": 63,
             "title": "Workdir",
             "type": "string"
+          },
+          "wrapper": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WrapperSettings"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "title": "ClusterSpec",
@@ -456,6 +534,18 @@
       },
       "ClusterView": {
         "properties": {
+          "closes_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closes At"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -508,6 +598,29 @@
               }
             ],
             "title": "Leader Epoch"
+          },
+          "leader_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leader Reason"
+          },
+          "leader_since": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leader Since"
           },
           "max_replicas": {
             "title": "Max Replicas",
@@ -577,6 +690,9 @@
           "static",
           "leader_agent_id",
           "leader_epoch",
+          "leader_since",
+          "leader_reason",
+          "closes_at",
           "init_edited_since_run"
         ],
         "title": "ClusterView",
@@ -593,6 +709,118 @@
           "command_id"
         ],
         "title": "CommandAccepted",
+        "type": "object"
+      },
+      "CommandHook": {
+        "additionalProperties": false,
+        "properties": {
+          "blocking": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blocking"
+          },
+          "env": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Env"
+          },
+          "interval_seconds": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interval Seconds"
+          },
+          "matcher": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matcher"
+          },
+          "on_error": {
+            "anyOf": [
+              {
+                "enum": [
+                  "allow",
+                  "deny"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "On Error"
+          },
+          "run": {
+            "maxLength": 16384,
+            "minLength": 1,
+            "title": "Run",
+            "type": "string"
+          },
+          "timeout_seconds": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout Seconds"
+          },
+          "type": {
+            "const": "command",
+            "title": "Type",
+            "type": "string"
+          },
+          "when": {
+            "anyOf": [
+              {
+                "enum": [
+                  "busy",
+                  "always"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "When"
+          }
+        },
+        "required": [
+          "type",
+          "run"
+        ],
+        "title": "CommandHook",
         "type": "object"
       },
       "CommandView": {
@@ -1446,6 +1674,113 @@
         "title": "MakeLeaderIn",
         "type": "object"
       },
+      "Marketplace": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "source": {
+            "minLength": 1,
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "source"
+        ],
+        "title": "Marketplace",
+        "type": "object"
+      },
+      "McpRemote": {
+        "additionalProperties": false,
+        "properties": {
+          "headers": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Headers"
+          },
+          "type": {
+            "enum": [
+              "http",
+              "sse"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "url"
+        ],
+        "title": "McpRemote",
+        "type": "object"
+      },
+      "McpStdio": {
+        "additionalProperties": false,
+        "properties": {
+          "args": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Args"
+          },
+          "command": {
+            "minLength": 1,
+            "title": "Command",
+            "type": "string"
+          },
+          "env": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Env"
+          },
+          "type": {
+            "const": "stdio",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "command"
+        ],
+        "title": "McpStdio",
+        "type": "object"
+      },
       "Me": {
         "properties": {
           "agent_id": {
@@ -1887,6 +2222,117 @@
         "title": "MetaResources",
         "type": "object"
       },
+      "Permissions": {
+        "additionalProperties": false,
+        "properties": {
+          "allow": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allow"
+          },
+          "deny": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deny"
+          }
+        },
+        "title": "Permissions",
+        "type": "object"
+      },
+      "PluginInstall": {
+        "additionalProperties": false,
+        "properties": {
+          "plugin": {
+            "title": "Plugin",
+            "type": "string"
+          },
+          "required": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Required"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "enum": [
+                  "user",
+                  "project",
+                  "local"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope"
+          }
+        },
+        "required": [
+          "plugin"
+        ],
+        "title": "PluginInstall",
+        "type": "object"
+      },
+      "Plugins": {
+        "additionalProperties": false,
+        "properties": {
+          "install": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PluginInstall"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Install"
+          },
+          "marketplaces": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/Marketplace"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Marketplaces"
+          }
+        },
+        "title": "Plugins",
+        "type": "object"
+      },
       "PostCheck": {
         "additionalProperties": false,
         "properties": {
@@ -2258,6 +2704,318 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "WebhookHook": {
+        "additionalProperties": false,
+        "properties": {
+          "blocking": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blocking"
+          },
+          "headers": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Headers"
+          },
+          "interval_seconds": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interval Seconds"
+          },
+          "matcher": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matcher"
+          },
+          "on_error": {
+            "anyOf": [
+              {
+                "enum": [
+                  "allow",
+                  "deny"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "On Error"
+          },
+          "retries": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retries"
+          },
+          "secret": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Secret"
+          },
+          "timeout_seconds": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout Seconds"
+          },
+          "type": {
+            "const": "webhook",
+            "title": "Type",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          },
+          "when": {
+            "anyOf": [
+              {
+                "enum": [
+                  "busy",
+                  "always"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "When"
+          }
+        },
+        "required": [
+          "type",
+          "url"
+        ],
+        "title": "WebhookHook",
+        "type": "object"
+      },
+      "WrapperSettings": {
+        "additionalProperties": false,
+        "description": "Typed claude-code-wrapper settings a cluster may carry (create-time only).",
+        "properties": {
+          "agent_commands": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "compact",
+                    "context",
+                    "mcp",
+                    "reload-plugins",
+                    "reload-skills"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Commands"
+          },
+          "auto_compact": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AutoCompact"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hooks": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "items": {
+                    "discriminator": {
+                      "mapping": {
+                        "command": "#/components/schemas/CommandHook",
+                        "webhook": "#/components/schemas/WebhookHook"
+                      },
+                      "propertyName": "type"
+                    },
+                    "oneOf": [
+                      {
+                        "$ref": "#/components/schemas/CommandHook"
+                      },
+                      {
+                        "$ref": "#/components/schemas/WebhookHook"
+                      }
+                    ]
+                  },
+                  "type": "array"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hooks"
+          },
+          "max_restarts": {
+            "anyOf": [
+              {
+                "maximum": 10.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Restarts"
+          },
+          "mcp_servers": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "discriminator": {
+                    "mapping": {
+                      "http": "#/components/schemas/McpRemote",
+                      "sse": "#/components/schemas/McpRemote",
+                      "stdio": "#/components/schemas/McpStdio"
+                    },
+                    "propertyName": "type"
+                  },
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/McpStdio"
+                    },
+                    {
+                      "$ref": "#/components/schemas/McpRemote"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mcp Servers"
+          },
+          "permissions": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Permissions"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "plugins": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Plugins"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "restart_continue_prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Restart Continue Prompt"
+          },
+          "system_append": {
+            "anyOf": [
+              {
+                "maxLength": 16384,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "System Append"
+          },
+          "turn_max_seconds": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Turn Max Seconds"
+          },
+          "turn_stall_seconds": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Turn Stall Seconds"
+          }
+        },
+        "title": "WrapperSettings",
         "type": "object"
       }
     }

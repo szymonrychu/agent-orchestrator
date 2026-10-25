@@ -586,3 +586,167 @@ def test_scale_allow_independent_of_replicas():
     high = _on_start_body(make_cluster(replicas=4, max_replicas=4))
     assert low == high
     assert "scale" in low[1]["plugins"][0]["allow"]
+
+
+FULL_WRAPPER = {
+    "hooks": {
+        "onStart": [{"type": "command", "run": "echo user-start"}],
+        "onAgentToolCall": [{"type": "command", "run": "echo user-tool", "matcher": "^Bash$"}],
+        "onStop": [{"type": "command", "run": "echo stop $HOME", "env": {"FOO": "x"}}],
+        "onTick": [{"type": "webhook", "url": "https://h.example/t", "interval_seconds": 30}],
+    },
+    "auto_compact": {"idle_seconds": 120, "instructions": "keep notes", "min_context_tokens": 1000},
+    "system_append": "Be terse.",
+    "permissions": {"allow": ["Bash(ls:*)"], "deny": ["ExitPlanMode", "WebFetch"]},
+    "mcp_servers": {
+        "docs": {"type": "http", "url": "https://mcp.example/x", "headers": {"X-A": "b"}},
+        "loc": {"type": "stdio", "command": "/bin/true", "args": ["-x"], "env": {"A": "b"}},
+    },
+    "plugins": {
+        "marketplaces": [{"name": "mine", "source": "github:me/market"}],
+        "install": [{"plugin": "tool@mine", "scope": "user", "required": False}],
+    },
+    "turn_stall_seconds": 90,
+    "max_restarts": 3,
+    "restart_continue_prompt": "continue please",
+    "turn_max_seconds": 600,
+    "agent_commands": ["compact", "context"],
+}
+
+
+def wrapper_cfg(wrapper, **spec) -> dict:
+    cluster = make_cluster(wrapper=wrapper, max_replicas=2, replicas=2, **spec)
+    return config_of(render.render_cluster(cluster, make_settings(agent_api_url=AGENT_URL), TOKENS))
+
+
+def test_wrapper_settings_keep_reserved_entries():
+    cfg = wrapper_cfg(FULL_WRAPPER)
+    start = cfg["hooks"]["onStart"]
+    assert start[0]["run"] == "sh /etc/ccw/on-start.sh"
+    assert [h["run"] for h in start[1:]] == ["echo user-start"]
+    tool = cfg["hooks"]["onAgentToolCall"]
+    assert tool[0]["url"].endswith("/agent/v1/locks/check")
+    assert tool[1]["run"] == "echo user-tool"
+    assert cfg["claude"]["permissions"]["deny"] == [
+        "EnterPlanMode",
+        "ExitPlanMode",
+        "AskUserQuestion",
+        "WebFetch",
+    ]
+    assert list(cfg["claude"]["mcp_servers"]) == ["any-mcp", "docs", "loc"]
+    assert cfg["prompts"]["system_append"] == render.ASK_IN_WRITING_PROMPT + "\n\nBe terse."
+
+
+def test_user_strings_escaped_against_interpolation():
+    from claude_code_wrapper.interpolation import interpolate
+
+    lit = "${CLAUDE_CODE_OAUTH_TOKEN}"
+    wrapper = {
+        "hooks": {
+            "onStop": [
+                {"type": "webhook", "url": f"https://h.example/{lit}", "headers": {"X": lit}},
+                {"type": "command", "run": f"echo {lit} $HOME"},
+            ]
+        },
+        "auto_compact": {"idle_seconds": 10, "instructions": lit},
+        "system_append": lit,
+    }
+    cfg = wrapper_cfg(wrapper)
+    hooks = cfg["hooks"]["onStop"]
+    assert hooks[0]["url"] == "https://h.example/$${CLAUDE_CODE_OAUTH_TOKEN}"
+    assert hooks[0]["headers"]["X"] == "$${CLAUDE_CODE_OAUTH_TOKEN}"
+    assert hooks[1]["run"] == "echo $${CLAUDE_CODE_OAUTH_TOKEN} $$HOME"
+    assert cfg["sessions"]["auto_compact"]["instructions"] == "$${CLAUDE_CODE_OAUTH_TOKEN}"
+    env = {"CLAUDE_CODE_OAUTH_TOKEN": "secret"}
+    out = interpolate(cfg["hooks"]["onStop"], env)
+    assert out[0]["url"] == f"https://h.example/{lit}"
+    assert out[0]["headers"]["X"] == lit
+    assert out[1]["run"] == f"echo {lit} $HOME"
+    assert interpolate(cfg["sessions"]["auto_compact"], env)["instructions"] == lit
+    assert interpolate(cfg["prompts"]["system_append"], env).endswith("\n\n" + lit)
+    # rendered orchestrator values stay interpolable
+    assert cfg["server"]["auth_token"] == "${CCW_AUTH_TOKEN}"
+    assert cfg["hooks"]["onAgentToolCall"][0]["headers"]["Authorization"] == (
+        "Bearer ${ORCH_AGENT_TOKEN}"
+    )
+
+
+def test_wrapper_settings_mapped():
+    cfg = wrapper_cfg(FULL_WRAPPER)
+    s = cfg["sessions"]
+    assert s["auto_compact"] == FULL_WRAPPER["auto_compact"]
+    assert s["turn_stall_seconds"] == 90
+    assert s["max_restarts"] == 3
+    assert s["restart_continue_prompt"] == "continue please"
+    assert s["commands"] == {"agent": ["compact", "context"]}
+    assert (s["max_sessions"], s["resume_on_start"], s["idle_timeout_seconds"]) == (1, True, 0)
+    assert s["ask_user_question"] == "deny"
+    assert cfg["limits"]["turn_max_seconds"] == 600
+    assert cfg["plugins"]["install"][0]["plugin"] == "tool@mine"
+    assert cfg["plugins"]["marketplaces"][0]["name"] == "mine"
+    assert cfg["claude"]["permissions"]["allow"] == ["Bash(ls:*)"]
+    assert cfg["hooks"]["onStop"][0]["run"] == "echo stop $$HOME"
+    assert cfg["hooks"]["onTick"][0]["interval_seconds"] == 30
+    assert "docs" in cfg["claude"]["mcp_servers"]
+
+
+def test_rendered_wrapper_settings_validate(tmp_path, monkeypatch):
+    cluster = make_cluster(wrapper=FULL_WRAPPER, max_replicas=2, replicas=2)
+    objs = render.render_cluster(cluster, make_settings(agent_api_url=AGENT_URL), TOKENS)
+    for k, v in {
+        "CCW_AUTH_TOKEN": TOKENS.auth,
+        "CCW_PEER_TOKEN": TOKENS.peer,
+        "CCW_PEER_URL": "http://agent-alpha-0.agent-alpha.agents.svc:8080",
+        "CLAUDE_CODE_OAUTH_TOKEN": "oauth",
+        "POD_NAME": "agent-alpha-0",
+        "ORCH_AGENT_TOKEN": "t",
+        "ORCH_AGENT_URL": AGENT_URL,
+        "ORCH_CLUSTER_ID": "c",
+    }.items():
+        monkeypatch.setenv(k, v)
+    path = tmp_path / "config.yaml"
+    path.write_text(by_kind(objs)["ConfigMap"]["data"]["config.yaml"])
+    cfg = load_config(path)
+    assert cfg.sessions.auto_compact.idle_seconds == 120
+    assert cfg.hooks.onStart[1].run == "echo user-start"
+
+
+def test_no_wrapper_block_renders_unchanged():
+    cfg = config_of(render.render_cluster(make_cluster(), make_settings(), TOKENS))
+    assert cfg["hooks"] == {"onStart": [cfg["hooks"]["onStart"][0]]}
+    assert cfg["sessions"] == {
+        "max_sessions": 1,
+        "resume_on_start": True,
+        "idle_timeout_seconds": 0,
+        "ask_user_question": "deny",
+    }
+    assert cfg["claude"]["permissions"] == {
+        "deny": ["EnterPlanMode", "ExitPlanMode", "AskUserQuestion"]
+    }
+    assert list(cfg["claude"]["mcp_servers"]) == ["any-mcp"]
+    assert cfg["prompts"] == {"system_append": render.ASK_IN_WRITING_PROMPT}
+    assert set(cfg["limits"]) == {"shutdown_timeout_seconds"}
+    assert "plugins" not in cfg
+
+
+def test_hive_with_agent_commands_validates(tmp_path, monkeypatch):
+    wrapper = {
+        "agent_commands": ["compact"],
+        "mcp_servers": {"docs": FULL_WRAPPER["mcp_servers"]["docs"]},
+    }
+    cluster = make_cluster(wrapper=wrapper, max_replicas=2, replicas=2)
+    objs = render.render_cluster(cluster, make_settings(agent_api_url=AGENT_URL), TOKENS)
+    for k, v in {
+        "CCW_AUTH_TOKEN": TOKENS.auth,
+        "CCW_PEER_TOKEN": TOKENS.peer,
+        "CCW_PEER_URL": "http://agent-alpha-0.agent-alpha.agents.svc:8080",
+        "CLAUDE_CODE_OAUTH_TOKEN": "oauth",
+        "POD_NAME": "agent-alpha-0",
+        "ORCH_AGENT_TOKEN": "t",
+        "ORCH_AGENT_URL": AGENT_URL,
+        "ORCH_CLUSTER_ID": "c",
+    }.items():
+        monkeypatch.setenv(k, v)
+    path = tmp_path / "config.yaml"
+    path.write_text(by_kind(objs)["ConfigMap"]["data"]["config.yaml"])
+    assert load_config(path).sessions.commands.agent == ["compact"]
