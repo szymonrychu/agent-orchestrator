@@ -117,3 +117,34 @@ def test_readme_documents_leaving_agent_detection() -> None:
     scaling = section("API").split("### Scaling", 1)[1].split("\n### ")[0]
     for needle in ("spec.replicas", "ordinal", "status.drain", "leaving", "waiting", "since"):
         assert needle in scaling, needle
+
+
+SERVICE_ROUTES = (
+    "GET /api/v1/meta",
+    "GET /api/v1/presets",
+    "GET /api/v1/presets/{preset_id}",
+    "GET /api/v1/clusters",
+    "POST /api/v1/clusters",
+    "GET /api/v1/clusters/{cluster_id}",
+    "GET /api/v1/clusters/{cluster_id}/messages",
+    "POST /api/v1/clusters/{cluster_id}/messages",
+    "GET /api/v1/messages/{message_id}",
+)
+
+
+def test_service_port_documented() -> None:
+    from agent_orchestrator.api.service_auth import ALLOWED_ROUTES
+
+    assert len(SERVICE_ROUTES) == len(ALLOWED_ROUTES)
+    config = section("Configuration")
+    for name in ("ORCH_SERVICE_PORT", "ORCH_SERVICE_TOKENS", "ORCH_SERVICE_TOKENS_FILE"):
+        assert name in config, f"{name} missing from Configuration"
+    match = re.search(r"^### Service tokens\s*$", section("Security"), re.MULTILINE)
+    assert match, "README ## Security has no '### Service tokens' subsection"
+    body = section("Security")[match.end() :]
+    body = body.split("\n### ")[0]
+    for route in SERVICE_ROUTES:
+        assert f"`{route}`" in body, f"service route not documented: {route}"
+    for needle in ("openssl rand -hex 32", "sha256sum", "Bearer", "401", "403"):
+        assert needle in body, f"Service tokens section lacks {needle!r}"
+    assert "serviceApi" in section("Helm chart") and "-services" in section("Helm chart")
