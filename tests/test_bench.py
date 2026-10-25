@@ -288,3 +288,19 @@ def test_leader_epoch_none_when_cluster_view_fails(caplog):
         recs, _ = run(FakeApi(view_ok=False))
     assert recs and all(r["leader_epoch"] is None for r in recs)
     assert "reading leader epoch" in caplog.text
+
+
+def test_example_bench_arms_pass_api_spec_validation():
+    from agent_orchestrator.settings import Settings
+    from agent_orchestrator.spec import ClusterSpec, validate_spec
+
+    settings = Settings(database_url="postgresql://x/x", master_key="k" * 32)
+    spec = load_spec("examples/bench.yaml")
+    for arm in spec.arms:
+        body = {
+            **spec.cluster.model_dump(exclude_none=True, exclude={"max_replicas", "static"}),
+            "replicas": arm.replicas,
+            "peers": arm.peers,
+            **arm.model_dump(include={"max_replicas", "static"}, exclude_none=True),
+        }
+        validate_spec(ClusterSpec(**body), settings)
