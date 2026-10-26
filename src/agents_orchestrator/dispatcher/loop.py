@@ -17,6 +17,7 @@ from psycopg_pool import AsyncConnectionPool
 from agents_orchestrator.db import leadership, queue
 from agents_orchestrator.db.pool import listen
 from agents_orchestrator.dispatcher import hive
+from agents_orchestrator.dispatcher.session_frame import frame
 from agents_orchestrator.dispatcher.verify import Verifier, session_max_attempts
 from agents_orchestrator.settings import Settings
 from agents_orchestrator.tokens import tokens_for
@@ -206,13 +207,17 @@ class Dispatcher:
             outcome: Any = Unavailable("agent has no url")
         else:
             client = self._client(claim.session_id, claim.agent_url)
+            text = claim.text
+            metadata: dict[str, Any] = {
+                "orch_message_id": claim.message_id,
+                "orch_attempt": claim.attempts + 1,
+            }
+            if claim.sender_slug is not None:
+                text = frame(claim.text, claim.sender_slug, claim.message_id)
+                metadata["orch_sender_session"] = claim.sender_slug
             heartbeat = asyncio.create_task(self._heartbeat(claim.message_id))
             try:
-                outcome = await client.submit_turn(
-                    claim.wrapper_session_id,
-                    claim.text,
-                    {"orch_message_id": claim.message_id, "orch_attempt": claim.attempts + 1},
-                )
+                outcome = await client.submit_turn(claim.wrapper_session_id, text, metadata)
             finally:
                 heartbeat.cancel()
                 with contextlib.suppress(asyncio.CancelledError):

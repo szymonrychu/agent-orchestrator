@@ -46,6 +46,7 @@ class Claim:
     free_since: datetime
     dispatched_at: datetime
     previous_dispatched_at: datetime | None
+    sender_slug: str | None
 
 
 @dataclass(frozen=True)
@@ -131,13 +132,22 @@ async def enqueue_message(
     session_id: uuid.UUID,
     text: str,
     target_agent_id: uuid.UUID | None = None,
+    *,
+    sender_session_id: uuid.UUID | None = None,
+    sender_slug: str | None = None,
+    hop: int = 0,
 ) -> int:
+    """Queue a message; a session message carries its sender and hop (D8).
+
+    A message with a sender is untargeted, so the leader routing delivers it to whoever leads
+    the target session at claim time.
+    """
     async with conn.transaction():
         row = await _one(
             conn,
-            "INSERT INTO messages (session_id, text, target_agent_id) VALUES (%s, %s, %s)"
-            " RETURNING id",
-            (session_id, text, target_agent_id),
+            "INSERT INTO messages (session_id, text, target_agent_id, sender_session_id,"
+            " sender_slug, hop) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+            (session_id, text, target_agent_id, sender_session_id, sender_slug, hop),
         )
         assert row is not None
         await notify(conn, "message_queued", {"session_id": str(session_id)})
@@ -333,7 +343,7 @@ async def _dispatch(conn: psycopg.AsyncConnection, message_id: int, pick: Pick) 
         conn,
         "UPDATE messages SET status = 'dispatching', agent_id = %s, dispatched_at = now(),"
         " heartbeat_at = now() WHERE id = %s AND status = 'queued'"
-        " RETURNING id, session_id, text, attempts, target_agent_id, dispatched_at",
+        " RETURNING id, session_id, text, attempts, target_agent_id, dispatched_at, sender_slug",
         (pick.agent_id, message_id),
     )
     assert msg is not None  # the row is locked and was queued
@@ -350,6 +360,7 @@ async def _dispatch(conn: psycopg.AsyncConnection, message_id: int, pick: Pick) 
         free_since=pick.free_since,
         dispatched_at=msg["dispatched_at"],
         previous_dispatched_at=pick.last_dispatched_at,
+        sender_slug=msg["sender_slug"],
     )
 
 

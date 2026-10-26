@@ -53,7 +53,7 @@ def test_fresh_database_gets_all_tables(empty_dsn):
         }
         versions = [r[0] for r in c.execute("SELECT version FROM schema_migrations")]
     assert tables >= TABLES
-    assert versions == ["0001", "0002", "0003", "0004", "0005", "0006"]
+    assert versions == ["0001", "0002", "0003", "0004", "0005", "0006", "0007"]
 
 
 def test_presets_migration_on_existing_sessions(empty_dsn, tmp_path):
@@ -65,7 +65,7 @@ def test_presets_migration_on_existing_sessions(empty_dsn, tmp_path):
             "INSERT INTO clusters (id, slug, spec) VALUES (gen_random_uuid(), 'old', %s)",
             (json.dumps(spec),),
         )
-    assert run_migrations(empty_dsn) == ["0002", "0003", "0004", "0005", "0006"]
+    assert run_migrations(empty_dsn) == ["0002", "0003", "0004", "0005", "0006", "0007"]
     with psycopg.connect(empty_dsn) as c:
         row = c.execute(
             "SELECT spec, preset_id, preset_name FROM sessions WHERE slug='old'"
@@ -99,9 +99,9 @@ def test_concurrent_migrate_serialises(empty_dsn):
     [t.start() for t in threads]
     [t.join() for t in threads]
     assert not errors
-    assert sorted(len(r) for r in results) == [0, 6]
+    assert sorted(len(r) for r in results) == [0, 7]
     with psycopg.connect(empty_dsn) as c:
-        assert c.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 6
+        assert c.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 7
 
 
 async def test_events_unique_agent_session_seq(pool):
@@ -505,7 +505,7 @@ def test_0005_renames_clusters_to_sessions(empty_dsn, tmp_path):
             "INSERT INTO file_locks (cluster_id, path, agent_id) VALUES (%s, 'a.py', %s)",
             (unit, agent),
         )
-    assert run_migrations(empty_dsn) == ["0005", "0006"]
+    assert run_migrations(empty_dsn) == ["0005", "0006", "0007"]
     with psycopg.connect(empty_dsn) as c:
         assert c.execute(
             "SELECT id, slug, preset_id::text, preset_name FROM sessions"
@@ -561,3 +561,56 @@ def test_0006_compaction_column(empty_dsn, tmp_path):
     assert run_migrations(empty_dsn, tmp_path) == []
     with psycopg.connect(empty_dsn) as c:
         assert _cols(c, "agent_status")["compaction_at"] == ("timestamp with time zone", "YES")
+
+
+def test_0007_session_message_columns(empty_dsn, tmp_path):
+    for path in sorted(MIGRATIONS_DIR.glob("000[1-6]_*.sql")):
+        shutil.copy(path, tmp_path / path.name)
+    assert run_migrations(empty_dsn, tmp_path)[-1] == "0006"
+    with psycopg.connect(empty_dsn, autocommit=True) as c:
+        session = c.execute(
+            "INSERT INTO sessions (id, slug, spec) VALUES (gen_random_uuid(), 'old', '{}')"
+            " RETURNING id"
+        ).fetchone()[0]
+        old = c.execute(
+            "INSERT INTO messages (session_id, text) VALUES (%s, 'before') RETURNING id",
+            (session,),
+        ).fetchone()[0]
+    shutil.copy(MIGRATIONS_DIR / "0007_session_messages.sql", tmp_path)
+    assert run_migrations(empty_dsn, tmp_path) == ["0007"]
+    with psycopg.connect(empty_dsn, autocommit=True) as c:
+        cols = _cols(c, "messages")
+        assert cols["sender_session_id"] == ("uuid", "YES")
+        assert cols["sender_slug"] == ("text", "YES")
+        assert cols["hop"] == ("integer", "NO")
+        assert c.execute(
+            "SELECT sender_session_id, sender_slug, hop FROM messages WHERE id=%s", (old,)
+        ).fetchall() == [(None, None, 0)]
+        assert any(
+            "(sender_session_id, created_at)" in r[0]
+            for r in c.execute("SELECT indexdef FROM pg_indexes WHERE tablename='messages'")
+        )
+        # No foreign key: a purged sender session leaves the message intact.
+        sender = c.execute(
+            "INSERT INTO sessions (id, slug, spec) VALUES (gen_random_uuid(), 'gone', '{}')"
+            " RETURNING id"
+        ).fetchone()[0]
+        sent = c.execute(
+            "INSERT INTO messages (session_id, text, sender_session_id, sender_slug, hop)"
+            " VALUES (%s, 'hi', %s, 'gone', 1) RETURNING id",
+            (session, sender),
+        ).fetchone()[0]
+        c.execute("DELETE FROM sessions WHERE id=%s", (sender,))
+        assert c.execute(
+            "SELECT sender_session_id, sender_slug, hop FROM messages WHERE id=%s", (sent,)
+        ).fetchall() == [(sender, "gone", 1)]
+    sql = (MIGRATIONS_DIR / "0007_session_messages.sql").read_text()
+    with psycopg.connect(empty_dsn, autocommit=True) as c:
+        c.execute(sql)
+        c.execute(sql)
+        c.execute("DELETE FROM schema_migrations WHERE version = '0007'")
+    assert run_migrations(empty_dsn, tmp_path) == ["0007"]
+    assert run_migrations(empty_dsn, tmp_path) == []
+    with psycopg.connect(empty_dsn) as c:
+        assert c.execute("SELECT count(*) FROM messages").fetchone()[0] == 2
+        assert _cols(c, "messages")["hop"] == ("integer", "NO")
