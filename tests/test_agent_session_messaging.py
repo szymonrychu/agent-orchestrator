@@ -9,9 +9,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+import httpx
 from factories import insert_agent, insert_message, insert_session, set_agent_status
 from psycopg.rows import dict_row
-from test_api_agent import client_for, headers, make_settings, set_ip
+from test_api_agent import AGENT_PORT, client_for, headers, make_settings, set_ip, token
 from test_api_sessions import assert_error
 
 from agents_orchestrator.api.app import create_app
@@ -368,3 +369,36 @@ async def test_pair_budget_stops_cross_turn_ping_pong(pool, dsn):
     assert r.status_code == 202, r.text
     r = await _send(app, third, boss.slug)
     assert r.status_code == 202, r.text
+
+
+async def test_session_tools_parity(pool, dsn):
+    """The released any-mcp orchestrator plugin drives sessions_list and session_send against
+    the real agent routes."""
+    from any_mcp.orchestrator import OrchestratorPlugin
+    from any_mcp.testing import PluginHarness
+
+    boss = await hive(pool, "x-boss", superleader=True)
+    plain = await alone(pool, "x-plain")
+    app = _app(pool, dsn)
+    config = {
+        "base_url": f"http://orch:{AGENT_PORT}",
+        "token": token(plain.id),
+        "session": str(plain.id),
+        "agent": "a0",
+        "slug": plain.slug,
+    }
+    transport = httpx.ASGITransport(app=app, client=(plain.leader_ip, 4321))
+    async with PluginHarness(OrchestratorPlugin, config=config, transport=transport) as h:
+        listed = await h.call("sessions_list")
+        sent = await h.call("session_send", {"slug": boss.slug, "text": "from the plugin"})
+    assert not listed.is_error, listed.text
+    assert listed.structured == (await _list(app, plain)).json()
+    assert listed.structured == {"sessions": [_entry(boss, superleader=True, leader_present=True)]}
+    assert not sent.is_error, sent.text
+    assert set(sent.structured) == {"message_id"}
+    (row,) = await _rows(pool)
+    assert row["id"] == sent.structured["message_id"]
+    assert row["session_id"] == boss.id
+    assert row["text"] == "from the plugin"
+    assert row["sender_session_id"] == plain.id
+    assert row["status"] == "queued"

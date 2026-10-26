@@ -76,7 +76,7 @@ Every process reads `ORCH_*` variables (the contract `agents-orchestrator-settin
 | `ORCH_DISCARD_HOOK_TIMEOUT_SECONDS` | `120` | api, reconciler | discard hook timeout |
 | `ORCH_SCALE_DRAIN_SECONDS` | `900` | reconciler | scale-down drain deadline (> 0): after it the StatefulSet gets the target replicas even while a draining agent is busy |
 | `ORCH_ANY_MCP_REPO` | `https://github.com/szymonrychu/any-mcp` | api, reconciler | any-mcp git repository |
-| `ORCH_ANY_MCP_REF` | `v0.3.0` | api, reconciler | any-mcp pinned release tag vX.Y.Z (never a branch) |
+| `ORCH_ANY_MCP_REF` | `v0.4.0` | api, reconciler | any-mcp pinned release tag vX.Y.Z (never a branch) |
 | `ORCH_ON_START_TIMEOUT_SECONDS` | `600` | api, reconciler | onStart hook timeout |
 | `ORCH_KUBE_ACCESS_SERVICE_ACCOUNT` | empty | api, reconciler | ServiceAccount (bound to the `cluster-admin` ClusterRole by the chart) that pods of a `kube_access` session run as; empty refuses `spec.kube_access: true` with 422 and `GET /api/v1/meta` reports `kube_access.available` false |
 | `ORCH_AGENT_SERVICE_ACCOUNT` | `default` | reconciler | unprivileged ServiceAccount of every other agent pod and of every init, check and cache Job, with no token mounted |
@@ -110,7 +110,7 @@ CI (`.github/workflows/ci.yaml`, job `images`) builds the orchestrator image fro
 
 - Orchestrator image: `harbor.szymonrichert.pl/containers/agents-orchestrator:<sha7>`, where `<sha7>` is the first seven characters of the commit sha. Tags are immutable; there is no `latest`.
 - Agent image: no agent image is built here. Agent pods run the claude-code-wrapper image named by `ORCH_AGENT_IMAGE`; the recommended one is `harbor.szymonrichert.pl/containers/claude-code-wrapper:ee10aa8`. This is the value for the chart's `agentImage` and agents-helmfile, and the commit the dev dependency `claude-code-wrapper` in `pyproject.toml` is pinned to, so config validation tests the wrapper the agents run.
-- any-mcp: it reaches agent pods through the rendered onStart hook, not through an image. The `any-mcp` dependency in `pyproject.toml` and `ORCH_ANY_MCP_REF` pin the same release tag (`v0.3.0`).
+- any-mcp: it reaches agent pods through the rendered onStart hook, not through an image. The `any-mcp` dependency in `pyproject.toml` and `ORCH_ANY_MCP_REF` pin the same release tag (`v0.4.0`).
 
 ## Helm chart
 

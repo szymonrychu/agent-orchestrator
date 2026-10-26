@@ -38,7 +38,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "any-mcp", git = "https://github.com/szymonrychu/any-mcp?rev=v0.3.0" },
+    { name = "any-mcp", git = "https://github.com/szymonrychu/any-mcp?rev=v0.4.0" },
     { name = "botocore", specifier = ">=1.43.118" },
     { name = "fastapi", specifier = "==0.160.0" },
     { name = "httpx" },
@@ -103,8 +103,8 @@ wheels = [
 
 [[package]]
 name = "any-mcp"
-version = "0.3.0"
-source = { git = "https://github.com/szymonrychu/any-mcp?rev=v0.3.0#fa03c365759b7fcd0b122e600db59b3a2e5999cd" }
+version = "0.4.0"
+source = { git = "https://github.com/szymonrychu/any-mcp?rev=v0.4.0#9f506b2314f279dc2b5ca0678a91a8c0f54d5542" }
 dependencies = [
     { name = "fastmcp" },
     { name = "httpx" },
