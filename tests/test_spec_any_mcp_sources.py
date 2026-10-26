@@ -212,7 +212,9 @@ async def test_source_with_credentials_refused(http, source, secret):
     errs = check(SessionSpec(any_mcp_config=cfg))
     assert len(errs) == 1 and "credentials in the URL are not allowed" in errs[0]
     assert secret not in errs[0]
-    r = await http.post("/api/v1/presets", json={"name": "p", "spec": {"any_mcp_sources": [source]}})
+    r = await http.post(
+        "/api/v1/presets", json={"name": "p", "spec": {"any_mcp_sources": [source]}}
+    )
     assert r.status_code == 422, r.text
     assert "credentials in the URL are not allowed" in r.text
     assert secret not in r.text
