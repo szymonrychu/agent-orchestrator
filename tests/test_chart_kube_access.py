@@ -116,10 +116,7 @@ def test_reconciler_role_unchanged_with_kube_access() -> None:
 
 
 def _annotations(docs: list[dict]) -> dict[str, dict | None]:
-    return {
-        n: d["metadata"].get("annotations")
-        for n, d in _named(docs, "ServiceAccount").items()
-    }
+    return {n: d["metadata"].get("annotations") for n, d in _named(docs, "ServiceAccount").items()}
 
 
 def test_agent_accounts_do_not_inherit_api_annotations() -> None:
