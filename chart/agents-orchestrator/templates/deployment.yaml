@@ -22,6 +22,9 @@ spec:
     metadata:
       annotations:
         checksum/settings: {{ $settingsSum }}
+        {{- if and $.Values.serviceApi.tokenHashes (not $.Values.serviceApi.existingSecret) }}
+        checksum/services-secret: {{ include "agents-orchestrator.serviceTokensCsv" $ | sha256sum }}
+        {{- end }}
         {{- with merge (deepCopy ($cfg.podAnnotations | default dict)) ($.Values.podAnnotations | default dict) }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

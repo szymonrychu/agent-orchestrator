@@ -224,3 +224,21 @@ def test_agent_api_url_rendered_once_when_overridden() -> None:
     )
     assert text.count("ORCH_AGENT_API_URL:") == 1
     assert 'ORCH_AGENT_API_URL: "http://x:1"' in text
+
+
+def test_services_secret_checksum_rolls_api() -> None:
+    h1, h2 = "a" * 64, "b" * 64
+
+    def sums(hashes: dict[str, str]) -> dict[str, str | None]:
+        deps = _deployments({"serviceApi": {"tokenHashes": hashes}})
+        return {
+            n: d["spec"]["template"]["metadata"]["annotations"].get("checksum/services-secret")
+            for n, d in deps.items()
+        }
+
+    one, two = sums({"schedule": h1}), sums({"schedule": h1, "webhook": h2})
+    assert sorted(one) == sorted(f"{FULL}-{c}" for c in COMPONENTS)
+    assert all(one.values()) and all(two.values())
+    assert one[f"{FULL}-api"] != two[f"{FULL}-api"]
+    assert sums({"schedule": h1}) == one
+    assert set(sums({}).values()) == {None}
