@@ -49,9 +49,10 @@ CacheAction = Literal["restore", "save"]
 BACKOFF_LIMIT = 2
 TMP_DIR = "/tmp"
 SCRATCH_DIR = "/scratch"
-# A save runs only after a restore that left the workdir trustworthy: it unpacked the archive, or
-# found none (first use). Every other outcome, present or future, skips the save.
-SAVE_OK_RESTORE_STATES = frozenset({"restored", "miss"})
+# A save runs only after a restore that left the workdir trustworthy: it unpacked the archive,
+# found none (first use), or emptied the workdir because the archive was unreadable (`reset`, so
+# the save overwrites the bad object). Every other outcome, present or future, skips the save.
+SAVE_OK_RESTORE_STATES = frozenset({"restored", "miss", "reset"})
 
 
 def restore_job_name(slug: str) -> str:
@@ -211,9 +212,9 @@ class CacheRunner:
     async def save_step(self, session: Session) -> bool:
         """Advance the one save run by at most one transition; True lets the discard go on.
 
-        Skipped (no Job) unless the restore succeeded (`restored`, or `miss` on first use), so a
-        failed restore never replaces a good archive with a partial workdir. A failed or
-        timed-out save is logged and recorded, never held.
+        Skipped (no Job) unless the restore succeeded (`restored`, `miss` on first use, or `reset`
+        after an unreadable archive), so a failed restore never replaces a good archive with a
+        partial workdir. A failed or timed-out save is logged and recorded, never held.
         """
         if session.spec.cache is None:
             return True
@@ -381,6 +382,9 @@ class CacheRunner:
             return await self._finish(session, cache, action, run, "failed", reason="bad_output")
         if not failed and action == "restore" and kind == "miss":
             return await self._finish(session, cache, action, run, "miss")
+        if not failed and action == "restore" and kind == "reset" and outcome:
+            reason = str(outcome.get("reason") or "extract_failed")[:REASON_MAX]
+            return await self._finish(session, cache, action, run, "reset", reason=reason)
         if not failed and action == "save" and kind == "skipped" and outcome:
             reason = str(outcome.get("reason") or "skipped")[:REASON_MAX]
             return await self._finish(session, cache, action, run, "skipped", reason=reason)
