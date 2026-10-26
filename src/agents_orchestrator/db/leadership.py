@@ -84,13 +84,16 @@ class LeaderChange:
 _HIVE = "coalesce(c.spec->>'max_replicas', c.spec->>'replicas')::int > 1"
 
 # An agent stays when its ordinal is below its session's `spec.replicas` (a spec without one
-# never removes anyone). `STAYS` takes the agent alias `a`; `sessions.set_replicas` shares it.
+# never removes anyone). It can lead when it also is ready, not gone and has a wrapper session.
+# Both take the agent alias `a`; `ELIGIBLE` is the pick's predicate and `sessions.set_replicas`
+# shares it for its staying-peer check.
 _NO_LIMIT = 2147483647
 _REPLICAS = "coalesce((c.spec->>'replicas')::int, 2147483647)"
 STAYS = (
     "a.ordinal < coalesce((SELECT (cs.spec->>'replicas')::int FROM sessions cs"
     f" WHERE cs.id = a.session_id), {_NO_LIMIT})"
 )
+ELIGIBLE = f"a.ready AND a.gone_at IS NULL AND a.wrapper_session_id IS NOT NULL AND {STAYS}"
 
 # Hive sessions whose leadership needs a pass: queued requests, no leader row while an agent
 # could lead, a leader that is gone or not ready, an unready mark to clear, an expired lease,
@@ -120,8 +123,7 @@ ORDER BY c.id
 # first, so a hive whose other members are all busy still gets a leader.
 _FREE_LONGEST = f"""
 SELECT a.id FROM agents a LEFT JOIN agent_status s ON s.agent_id = a.id
-WHERE a.session_id = %s AND a.ready AND a.gone_at IS NULL AND a.wrapper_session_id IS NOT NULL
-  AND {STAYS} AND a.id <> %s
+WHERE a.session_id = %s AND {ELIGIBLE} AND a.id <> %s
 ORDER BY (s.state = 'idle') IS NOT TRUE, s.free_since ASC NULLS LAST, a.id
 LIMIT 1
 """
@@ -297,8 +299,7 @@ async def leadership_pass(
         if leader is None:
             first = await _one(
                 conn,
-                f"SELECT a.id FROM agents a WHERE a.session_id = %s AND a.ready"
-                f" AND a.gone_at IS NULL AND a.wrapper_session_id IS NOT NULL AND {STAYS}"
+                f"SELECT a.id FROM agents a WHERE a.session_id = %s AND {ELIGIBLE}"
                 " ORDER BY a.ordinal LIMIT 1",
                 (session_id,),
             )

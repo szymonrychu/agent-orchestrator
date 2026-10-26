@@ -69,6 +69,25 @@ async def test_non_leader_refused_403(pool, dsn):
     assert await replicas_of(pool, c["id"]) == 3
 
 
+async def test_leader_scales_below_own_ordinal_202(pool, dsn):
+    c, a0, a1 = await hive(pool)
+    async with pool.connection() as conn:
+        await conn.execute("UPDATE agents SET wrapper_session_id = 'w0' WHERE id = %s", (a0["id"],))
+        await conn.execute(
+            "UPDATE session_leaders SET agent_id = %s WHERE session_id = %s", (a1["id"], c["id"])
+        )
+    async with client_for(create_app(make_settings(dsn), pool), IP1) as http:
+        r = await http.post("/agent/v1/scale", json={"replicas": 1}, headers=headers(c["id"]))
+    assert r.status_code == 202, r.text
+    assert r.json() == {
+        "session_id": str(c["id"]),
+        "replicas": 1,
+        "previous_replicas": 3,
+        "max_replicas": 4,
+    }
+    assert await replicas_of(pool, c["id"]) == 1
+
+
 async def test_agent_scale_refusals(pool, dsn):
     c, _, _ = await hive(pool)
     s, _, _ = await hive(pool, replicas=2, max_replicas=2, static=True)
@@ -107,6 +126,13 @@ async def test_agent_scale_refusals(pool, dsn):
             )
         await set_ip(pool, (await _agent(pool, c["id"], 0))["id"], "10.9.0.99")
         await set_ip(pool, (await _agent(pool, c["id"], 1))["id"], IP0)
+        # ordinal 0 stays at 1 replica but is not ready, so no agent that stays can take over
+        async with pool.connection() as conn:
+            await conn.execute(
+                "UPDATE agents SET ready = false, wrapper_session_id = 'w0'"
+                " WHERE session_id = %s AND ordinal = 0",
+                (c["id"],),
+            )
         assert_error(
             await post("/agent/v1/scale", json={"replicas": 1}, headers=headers(c["id"])),
             409,

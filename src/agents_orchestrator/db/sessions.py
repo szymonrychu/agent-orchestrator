@@ -11,6 +11,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from agents_orchestrator.db import leadership
 from agents_orchestrator.db.pool import notify
 from agents_orchestrator.spec import SessionSpec, validate_slug
 
@@ -31,7 +32,8 @@ class SessionBeingDeleted(Exception):
 
 class ScaleRefused(Exception):
     """A replica change was refused; `code` is one of session_deleting, not_leader,
-    static_session, out_of_range, leader_would_leave."""
+    static_session, out_of_range, leader_would_leave (the leader would leave and no ready
+    agent that stays can take over)."""
 
     def __init__(self, code: str, message: str = "") -> None:
         super().__init__(message or code)
@@ -212,9 +214,13 @@ async def set_replicas(
     """The one writer of the runtime replica count: spec.replicas, in place.
 
     No generation bump: a replica change never touches the pod template. Lock order is the
-    session row, then a read of session_leaders joined to agents (never written here).
+    session row, then reads of session_leaders and agents (never written here: the dispatcher
+    moves the leader, deriving the move from spec.replicas).
     Refusals, in order: session_deleting, not_leader, static_session, out_of_range,
-    leader_would_leave. An unchanged value writes and notifies nothing.
+    leader_would_leave. A count at or below the leader's ordinal is refused leader_would_leave
+    only when no other agent can lead after the change (`leadership.ELIGIBLE`, the pass's
+    pick predicate); accepted, it also sends `NOTIFY leadership_requested {session_id}` so the
+    dispatcher hands leadership over at once. An unchanged value writes and notifies nothing.
     """
     async with conn.transaction():
         locked = await _fetch(
@@ -239,18 +245,33 @@ async def set_replicas(
         max_replicas = spec.max_replicas or spec.replicas
         if not 1 <= replicas <= max_replicas:
             raise ScaleRefused("out_of_range", f"replicas must be 1..{max_replicas}")
-        if leader is not None and leader[1] >= replicas:
+        changed = replicas != spec.replicas
+        if changed:
+            await conn.execute(
+                "UPDATE sessions SET spec = jsonb_set(spec, '{replicas}', to_jsonb(%s::int))"
+                " WHERE id = %s AND desired = 'active'",
+                (replicas, session_id),
+            )
+        # Checked after the write: ELIGIBLE reads spec.replicas, so it judges the new count;
+        # a refusal leaves the transaction and rolls the write back.
+        leaving = leader is not None and leader[1] >= replicas
+        if leaving and not await _staying_peer(conn, session_id):
             raise ScaleRefused("leader_would_leave")
-        outcome = ScaleOutcome(session_id, replicas, spec.replicas, max_replicas)
-        if replicas == spec.replicas:
-            return outcome
-        await conn.execute(
-            "UPDATE sessions SET spec = jsonb_set(spec, '{replicas}', to_jsonb(%s::int))"
-            " WHERE id = %s AND desired = 'active'",
-            (replicas, session_id),
-        )
-        await _notify(conn, session_id)
-    return outcome
+        if changed:
+            if leaving:
+                await notify(conn, leadership.CHANNEL, {"session_id": str(session_id)})
+            await _notify(conn, session_id)
+    return ScaleOutcome(session_id, replicas, spec.replicas, max_replicas)
+
+
+async def _staying_peer(conn: psycopg.AsyncConnection, session_id: uuid.UUID) -> bool:
+    """True when an agent of the session could lead at its current spec.replicas."""
+    cur = await conn.execute(
+        f"SELECT EXISTS (SELECT 1 FROM agents a WHERE a.session_id = %s AND {leadership.ELIGIBLE})",
+        (session_id,),
+    )
+    row = await cur.fetchone()
+    return bool(row and row[0])
 
 
 async def set_status(
