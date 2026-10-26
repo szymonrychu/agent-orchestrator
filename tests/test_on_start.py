@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 
+import pytest
 from any_mcp.config import AnyMcpConfig
 from any_mcp.orchestrator import OrchestratorPlugin
 
@@ -20,6 +21,7 @@ HIVE_TOOLS = [
     "lock_list",
     "lock_reassign",
 ]
+SESSION_TOOLS = ["sessions_list", "session_send"]
 SECRET = "s3cr3t-token-value"
 
 
@@ -47,26 +49,52 @@ def entries(spec: SessionSpec, settings: Settings | None = None) -> dict:
     return {p["name"]: p for p in cfg.get("plugins", [])}
 
 
-def test_alone_has_no_orchestrator_entry():
-    spec = SessionSpec(replicas=1)
-    assert on_start.orchestrator_allow(spec) == []
-    assert "orchestrator" not in entries(spec)
+@pytest.mark.parametrize("messaging", [None, False, True])
+@pytest.mark.parametrize("static", [False, True])
+def test_alone_session_tools_entry(messaging, static):
+    """D11: an alone session gets only the session tools, whatever session_messaging says."""
+    spec = SessionSpec(replicas=1, static=static, session_messaging=messaging)
+    assert on_start.orchestrator_allow(spec) == SESSION_TOOLS
+    entry = entries(spec)["orchestrator"]
+    assert entry["allow"] == SESSION_TOOLS
+    assert entry["config"]["hive"] is False
+    assert entry["config"]["max_replicas"] == 1
+    cfg = written_config(on_start.render_on_start(spec, make_settings(), "alpha"))
+    config = AnyMcpConfig.model_validate(cfg)
+    plugin = next(p for p in config.plugins if p.name == "orchestrator")
+    OrchestratorPlugin.Config.model_validate(plugin.config)
+
+
+@pytest.mark.parametrize("messaging", [None, False, True])
+@pytest.mark.parametrize(
+    "spec_fields,hive_allow",
+    [
+        ({"replicas": 2, "static": True}, HIVE_TOOLS),
+        ({"replicas": 2}, [*HIVE_TOOLS, "scale"]),
+        ({"replicas": 1, "max_replicas": 3}, [*HIVE_TOOLS, "scale"]),
+    ],
+)
+def test_hive_session_tools(messaging, spec_fields, hive_allow):
+    """D11: hive tools, scale when scalable, then the session tools, whatever session_messaging."""
+    spec = SessionSpec(session_messaging=messaging, **spec_fields)
+    assert on_start.orchestrator_allow(spec) == [*hive_allow, *SESSION_TOOLS]
+    assert entries(spec)["orchestrator"]["allow"] == [*hive_allow, *SESSION_TOOLS]
 
 
 def test_static_hive_has_no_scale_tool():
     spec = SessionSpec(replicas=2, static=True)
-    assert on_start.orchestrator_allow(spec) == HIVE_TOOLS
+    assert on_start.orchestrator_allow(spec) == [*HIVE_TOOLS, *SESSION_TOOLS]
 
 
 def test_hive_entry_and_allow():
     spec = SessionSpec(replicas=2, max_replicas=4, auto_compact_pct=70)
-    assert on_start.orchestrator_allow(spec) == [*HIVE_TOOLS, "scale"]
+    assert on_start.orchestrator_allow(spec) == [*HIVE_TOOLS, "scale", *SESSION_TOOLS]
     entry = entries(spec)["orchestrator"]
     assert entry == {
         "name": "orchestrator",
         "plugin": "any_mcp.orchestrator:OrchestratorPlugin",
         "namespace": "orchestrator",
-        "allow": [*HIVE_TOOLS, "scale"],
+        "allow": [*HIVE_TOOLS, "scale", *SESSION_TOOLS],
         "config": {
             "base_url": "${ORCH_AGENT_URL}",
             "token": "${ORCH_AGENT_TOKEN}",
@@ -84,7 +112,7 @@ def test_hive_entry_and_allow():
 
 
 def test_plugin_entry_session_key():
-    """The rendered entry names the session and validates under any-mcp v0.3.0."""
+    """The rendered entry names the session and validates under the installed any-mcp."""
     spec = SessionSpec(replicas=2, max_replicas=4)
     cfg = written_config(on_start.render_on_start(spec, make_settings(), "alpha"))
     config = AnyMcpConfig.model_validate(cfg)
@@ -116,9 +144,13 @@ def test_default_config_used_when_spec_has_none(tmp_path):
     assert set(got) == {"gh", "orchestrator"}
 
 
-def test_omitted_without_agent_api_url_or_slug():
-    spec = SessionSpec(replicas=2)
+@pytest.mark.parametrize("spec", [SessionSpec(replicas=1), SessionSpec(replicas=2)])
+def test_omitted_without_agent_api_url_or_slug(spec):
+    assert "orchestrator" in entries(spec)
     assert "orchestrator" not in entries(spec, make_settings(agent_api_url=None))
+    for slug in (None, ""):
+        cfg = written_config(on_start.render_on_start(spec, make_settings(), slug))
+        assert "orchestrator" not in {p["name"] for p in cfg.get("plugins", [])}
 
 
 def test_placeholders_not_secrets():

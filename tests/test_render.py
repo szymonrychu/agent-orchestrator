@@ -569,9 +569,11 @@ def _on_start_plugins(session) -> list[str]:
     return [p["name"] for p in json.loads(body).get("plugins", [])]
 
 
-def test_on_start_orchestrator_entry_only_for_hive():
+def test_on_start_orchestrator_entry_for_every_session():
+    """D11: the session tools are rendered for every session, alone sessions included."""
     assert _on_start_plugins(make_session(replicas=2)) == ["orchestrator"]
-    assert _on_start_plugins(make_session(replicas=1)) == []
+    assert _on_start_plugins(make_session(replicas=1)) == ["orchestrator"]
+    assert _on_start_plugins(make_session(replicas=1, static=True)) == ["orchestrator"]
 
 
 def _on_start_body(session) -> tuple[str, dict]:
