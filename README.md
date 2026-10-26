@@ -154,6 +154,8 @@ The master key and the Claude token each need a value or an `existingSecret`; wi
 
 ### RBAC
 
+Annotations are per ServiceAccount: `serviceAccount.annotations` applies to the api and reconciler ServiceAccounts only; `agentServiceAccount.annotations` (default `{}`) to `<fullname>-agent` and `kubeAccess.annotations` (default `{}`) to `<fullname>-kube-access`. Cloud-identity annotations (IRSA, GKE Workload Identity) set on the api ServiceAccount therefore never reach agent pods or Jobs.
+
 `rbac.create` (default `true`) renders a namespaced Role `<fullname>-reconciler` in the release namespace and a RoleBinding to the ServiceAccount `<fullname>-reconciler` only. No ClusterRole is ever rendered, and a ClusterRoleBinding only behind one value: with `kubeAccess.enabled` (default `false`) and `rbac.create`, the chart renders the single ClusterRoleBinding `<fullname>-kube-access` of the ServiceAccount `<fullname>-kube-access` to the built-in ClusterRole `cluster-admin` (see Kubernetes permissions). The Role grants exactly:
 
 | Resource | Verbs |

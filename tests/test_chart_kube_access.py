@@ -33,7 +33,7 @@ def _settings(docs: list[dict]) -> dict[str, str]:
 
 def test_kube_access_off_by_default() -> None:
     values = yaml.safe_load((CHART / "values.yaml").read_text())
-    assert values["kubeAccess"] == {"enabled": False}
+    assert values["kubeAccess"] == {"enabled": False, "annotations": {}}
     docs = _docs()
     kinds = {d["kind"] for d in docs}
     assert not kinds & {"ClusterRole", "ClusterRoleBinding"}
@@ -113,3 +113,37 @@ def test_reconciler_role_unchanged_with_kube_access() -> None:
     assert len([d for d in _docs(ON) if d["kind"] == "RoleBinding"]) == 1
     for rule in on_role["rules"]:
         assert rule["apiGroups"] != ["rbac.authorization.k8s.io"]
+
+
+def _annotations(docs: list[dict]) -> dict[str, dict | None]:
+    return {
+        n: d["metadata"].get("annotations")
+        for n, d in _named(docs, "ServiceAccount").items()
+    }
+
+
+def test_agent_accounts_do_not_inherit_api_annotations() -> None:
+    ann = {"eks.amazonaws.com/role-arn": "arn:aws:iam::1:role/api"}
+    got = _annotations(_docs({**ON, "serviceAccount": {"create": True, "annotations": ann}}))
+    assert got[FULL] == ann
+    assert got[f"{FULL}-reconciler"] == ann
+    assert got[f"{FULL}-agent"] is None
+    assert got[f"{FULL}-kube-access"] is None
+
+
+def test_agent_account_annotations_own_values() -> None:
+    values = yaml.safe_load((CHART / "values.yaml").read_text())
+    assert values["agentServiceAccount"]["annotations"] == {}
+    assert values["kubeAccess"]["annotations"] == {}
+    got = _annotations(
+        _docs(
+            {
+                "kubeAccess": {"enabled": True, "annotations": {"k": "kube"}},
+                "agentServiceAccount": {"annotations": {"a": "agent"}},
+            }
+        )
+    )
+    assert got[f"{FULL}-agent"] == {"a": "agent"}
+    assert got[f"{FULL}-kube-access"] == {"k": "kube"}
+    assert got[FULL] is None
+    assert got[f"{FULL}-reconciler"] is None
