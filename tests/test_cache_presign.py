@@ -16,6 +16,7 @@ from moto.server import ThreadedMotoServer
 
 from agents_orchestrator import cli
 from agents_orchestrator.cache import presign as presign_module
+from agents_orchestrator.cache import transfer
 from agents_orchestrator.cache.presign import object_name, presign
 from agents_orchestrator.settings import Settings
 
@@ -64,8 +65,8 @@ def test_path_style_url():
     assert q["X-Amz-Algorithm"] == "AWS4-HMAC-SHA256"
     assert q["X-Amz-Credential"].startswith(f"{ACCESS_KEY}/")
     assert q["X-Amz-Credential"].endswith("/us-east-1/s3/aws4_request")
-    # Only the host is signed: the CLI's Content-Type and Content-Length do not break the PUT.
-    assert q["X-Amz-SignedHeaders"] == "host"
+    # Host and Content-Type are signed; Content-Length is not, so it need not match.
+    assert q["X-Amz-SignedHeaders"] == "content-type;host"
     assert SECRET not in url
 
 
@@ -105,6 +106,15 @@ def test_get_and_put_sign_different_requests():
     get, put = presign(s, "GET", "k"), presign(s, "PUT", "k")
     assert urlsplit(get).path == urlsplit(put).path
     assert _query(get)["X-Amz-Signature"] != _query(put)["X-Amz-Signature"]
+
+
+def test_put_signs_content_type():
+    s = _settings()
+    put_headers = _query(presign(s, "PUT", "k"))["X-Amz-SignedHeaders"].split(";")
+    get_headers = _query(presign(s, "GET", "k"))["X-Amz-SignedHeaders"].split(";")
+    assert "content-type" in put_headers
+    assert "content-type" not in get_headers
+    assert transfer.CONTENT_TYPE == "application/zstd"
 
 
 def test_other_methods_are_refused():
