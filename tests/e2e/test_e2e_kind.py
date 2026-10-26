@@ -1285,6 +1285,50 @@ def test_scale_up_and_down_keeps_surviving_pods(api: httpx.Client, baseline: dic
         assert final_leader is not None and final_leader["id"] == leader["id"], final_leader
 
 
+def test_scale_down_below_leader_hands_over(api: httpx.Client, baseline: dict) -> None:
+    with scale_session(api, "handover", {"replicas": 3, "max_replicas": 3}) as created:
+        cid, slug = created["id"], created["slug"]
+        wait_sessions(api, cid, 3)
+        wait_for("the first election", lambda: leader_view(api, cid)[1] is not None, LEADER_TIMEOUT)
+        current, epoch = leader_view(api, cid)
+        assert current is not None and epoch is not None
+
+        def ordinal(agent: dict[str, Any]) -> int:
+            return int(agent["pod_name"].rsplit("-", 1)[1])
+
+        # The highest ordinal is the pod a 3->2 scale removes; it must be the leader.
+        top = max(live_agents(api, cid), key=ordinal)
+        if top["id"] != current["id"]:
+            resp = api.post(f"/sessions/{cid}/leader", json={"agent_id": top["id"]})
+            assert resp.status_code == 202, resp.text
+            wait_leader(api, cid, epoch + 1, top["id"])
+            epoch += 1
+        before = pod_identity(slug)
+        assert len(before) == 3, before
+
+        resp = scale_to(api, cid, 2)
+        assert resp.status_code == 202, resp.text
+
+        def moved() -> dict[str, Any] | None:
+            view = api.get(f"/sessions/{cid}").json()
+            leader, current_epoch = leader_view(api, cid)
+            ok = (
+                leader is not None
+                and ordinal(leader) < ordinal(top)
+                and current_epoch is not None
+                and current_epoch > epoch
+                and view["leader_reason"] == "scale_down"
+            )
+            return leader if ok else None
+
+        wait_for("leadership to move to a staying agent (scale_down)", moved, LEADER_TIMEOUT)
+        wait_pod_gone(slug, top["pod_name"])
+        after = pod_identity(slug)
+        assert set(after) == set(before) - {top["pod_name"]}, after
+        for pod, (uid, _) in after.items():
+            assert uid == before[pod][0], (pod, before, after)
+
+
 def test_scale_refusals(api: httpx.Client, baseline: dict) -> None:
     with scale_session(api, "refuse", {"replicas": 3, "max_replicas": 3}) as created:
         cid = created["id"]
@@ -1293,20 +1337,6 @@ def test_scale_refusals(api: httpx.Client, baseline: dict) -> None:
             resp = scale_to(api, cid, bad)
             assert resp.status_code == 422, (bad, resp.text)
             assert error_code(resp) == "out_of_range", resp.text
-
-        wait_for("the first election", lambda: leader_view(api, cid)[1] is not None, LEADER_TIMEOUT)
-        current, epoch = leader_view(api, cid)
-        assert current is not None and epoch is not None
-        # The highest ordinal is the pod a 3->2 scale removes; it must be the leader.
-        top = max(live_agents(api, cid), key=lambda a: int(a["pod_name"].rsplit("-", 1)[1]))
-        if top["id"] != current["id"]:
-            resp = api.post(f"/sessions/{cid}/leader", json={"agent_id": top["id"]})
-            assert resp.status_code == 202, resp.text
-            wait_leader(api, cid, epoch + 1, top["id"])
-        resp = scale_to(api, cid, 2)
-        assert resp.status_code == 409, resp.text
-        assert error_code(resp) == "leader_would_leave", resp.text
-        assert len(live_agents(api, cid)) == 3
 
     with scale_session(api, "static", {"replicas": 2, "max_replicas": 2, "static": True}) as s:
         resp = scale_to(api, s["id"], 1)
@@ -1703,6 +1733,54 @@ def test_leader_lease_hands_over(api: httpx.Client) -> None:
             handed_over,
             LEASE_TIMEOUT,
         )
+
+
+COMPACT_PROMPT = "compact mid turn: report when done"
+
+
+def test_leader_compaction_hands_over(api: httpx.Client) -> None:
+    with config_session(api, "compact", {"replicas": 2}) as created:
+        cid = created["id"]
+        ready_agents(api, cid, 2)
+        wait_for("the first election", lambda: leader_view(api, cid)[1] is not None, LEADER_TIMEOUT)
+        first, epoch = leader_view(api, cid)
+        assert first is not None and epoch is not None
+
+        resp = api.post(f"/sessions/{cid}/messages", json={"text": COMPACT_PROMPT})
+        assert resp.status_code == 202, resp.text
+        mid = resp.json()["message_id"]
+
+        def turn_done() -> dict[str, Any] | None:
+            view = message(api, mid)
+            done = view["status"] == "sent" and view["turn"] and view["turn"]["completed_at"]
+            return view if done else None
+
+        sent = wait_for(f"message {mid} turn to complete", turn_done, TURN_TIMEOUT, interval=1)
+        assert sent["agent_id"] == first["id"], (sent, first)
+        events = [e for page in all_events(api, cid) for e in page]
+        compacting = [e for e in events if e["type"] == "compacting"]
+        assert any(e["agent_id"] == first["id"] for e in compacting), compacting
+
+        def handed_over() -> dict[str, Any] | None:
+            view = api.get(f"/sessions/{cid}").json()
+            ok = (
+                view["leader_agent_id"] not in (None, first["id"])
+                and view["leader_epoch"] > epoch
+                and view["leader_reason"] == "compaction"
+            )
+            return view if ok else None
+
+        new = wait_for("leadership to hand over (compaction)", handed_over, LEADER_TIMEOUT)
+
+        resp = api.post(f"/sessions/{cid}/messages", json={"text": "say hello"})
+        assert resp.status_code == 202, resp.text
+        second = wait_for(
+            "the next message to be dispatched",
+            lambda: (v := message(api, resp.json()["message_id"]))["agent_id"] and v,
+            TURN_TIMEOUT,
+            interval=0.5,
+        )
+        assert second["agent_id"] == new["leader_agent_id"], (second, new)
 
 
 def test_autoclose_discards_session(api: httpx.Client) -> None:

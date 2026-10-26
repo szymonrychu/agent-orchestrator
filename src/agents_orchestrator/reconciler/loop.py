@@ -275,14 +275,16 @@ class Reconciler:
     async def _draining(self, session_id: UUID, replicas: int) -> list[tuple[int, bool]]:
         """(ordinal, busy) of each agent at or above `replicas` that is not gone (D3).
 
-        Busy: its `agent_status.state` is `busy`, or a message dispatched to it is still
-        `dispatching` or `verifying`.
+        Busy: its `agent_status.state` is `busy`, a message dispatched to it is still
+        `dispatching` or `verifying`, or it is the session's current leader (D8: its pod is
+        held until the leader row names a staying agent; the drain deadline bounds the hold).
         """
         async with self.pool.connection() as conn:
             cur = await conn.execute(
                 "SELECT a.ordinal, COALESCE(s.state = 'busy', false) OR EXISTS ("
                 "  SELECT 1 FROM messages m WHERE m.session_id = a.session_id"
                 "  AND m.agent_id = a.id AND m.status IN ('dispatching', 'verifying'))"
+                "  OR EXISTS (SELECT 1 FROM session_leaders l WHERE l.agent_id = a.id)"
                 " FROM agents a LEFT JOIN agent_status s ON s.agent_id = a.id"
                 " WHERE a.session_id = %s AND a.ordinal >= %s AND a.gone_at IS NULL"
                 " ORDER BY a.ordinal",

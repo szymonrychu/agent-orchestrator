@@ -20,6 +20,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from agents_orchestrator.db.eligibility import ELIGIBLE, REPLICAS
 from agents_orchestrator.db.pool import notify
 
 COMMAND_KINDS = frozenset({"interrupt", "compact", "restart", "rebootstrap"})
@@ -242,13 +243,36 @@ async def _target_gone(
     return row is None or row["gone_at"] is not None
 
 
+# A leader whose handover is pending (it compacted in its term, or its pod is leaving) while an
+# agent that could take over exists: the pass's pick predicate (`ELIGIBLE`), so the hold never
+# outlives a possible move. `a` is the candidate peer, `la` the leader, `c` the session.
+_HANDOVER_PENDING = f"""
+SELECT (coalesce(s.compaction_at > l.since, false)
+        OR (la.gone_at IS NULL AND la.ordinal >= {REPLICAS}))
+       AND EXISTS (SELECT 1 FROM agents a WHERE a.session_id = l.session_id AND {ELIGIBLE}
+                   AND a.id <> l.agent_id) AS pending
+FROM session_leaders l
+JOIN agents la ON la.id = l.agent_id
+JOIN sessions c ON c.id = l.session_id
+LEFT JOIN agent_status s ON s.agent_id = l.agent_id
+WHERE l.session_id = %s
+"""
+
+
+async def _handover_pending(conn: psycopg.AsyncConnection, session_id: uuid.UUID) -> bool:
+    row = await _one(conn, _HANDOVER_PENDING, (session_id,))
+    return bool(row and row["pending"])
+
+
 async def _claim_in_session(conn: psycopg.AsyncConnection, session_id: uuid.UUID) -> Claim | None:
     """Scan one session's queued messages in id order; the caller holds the session lock."""
     leader = await _one(
         conn, "SELECT agent_id FROM session_leaders WHERE session_id = %s", (session_id,)
     )
     leader_id = leader["agent_id"] if leader is not None else None
-    held = False  # an untargeted head waits on the leader: later untargeted messages wait too
+    # An untargeted head waits on the leader: later untargeted messages wait too. A leader whose
+    # handover is pending and possible holds them from the start (D16): the pass moves it first.
+    held = leader_id is not None and await _handover_pending(conn, session_id)
     after = 0
     while True:
         rows = await _all(

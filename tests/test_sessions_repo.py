@@ -1,6 +1,7 @@
 import inspect
 import json
 import uuid
+from datetime import UTC, datetime
 
 import psycopg
 import pytest
@@ -246,14 +247,15 @@ async def _scalable(pool, **spec):
 
 
 class _Listener:
-    """A LISTEN connection on session_changed; payloads() drains what arrived so far."""
+    """A LISTEN connection on one channel; payloads() drains what arrived so far."""
 
-    def __init__(self, dsn):
+    def __init__(self, dsn, channel="session_changed"):
         self.dsn = dsn
+        self.channel = channel
 
     async def __aenter__(self):
         self.conn = await psycopg.AsyncConnection.connect(self.dsn, autocommit=True)
-        await self.conn.execute("LISTEN session_changed")
+        await self.conn.execute(f"LISTEN {self.channel}")
         return self
 
     async def __aexit__(self, *exc):
@@ -323,14 +325,71 @@ async def test_set_replicas_leader_rules(pool):
         out = await sessions.set_replicas(conn, free["id"], 1)
     assert out.replicas == 1
     zero = await insert_agent(pool, c["id"], ordinal=0)
-    two = await insert_agent(pool, c["id"], ordinal=2)
+    two = await insert_agent(pool, c["id"], ordinal=2, ready=True, wrapper_session_id="w2")
     await _make_leader(pool, c["id"], two["id"])
     assert await _refused(pool, c["id"], 3, caller_agent_id=zero["id"]) == "not_leader"
-    assert await _refused(pool, c["id"], 2, caller_agent_id=two["id"]) == "leader_would_leave"
+    before = await _spec_row(pool, c["id"])
+    leader = await _leader_row(pool, c["id"])
+    # Ordinal 0 stays at 2 replicas but can never take over: not ready, gone, or without a
+    # wrapper session; so a scale-down below the leader is refused and nothing is written.
+    ineligible = (
+        (False, "w0", None),
+        (True, "w0", datetime.now(UTC)),
+        (True, None, None),
+    )
+    for ready, wrapper_session_id, gone_at in ineligible:
+        await _set_agent(pool, zero["id"], ready, wrapper_session_id, gone_at)
+        assert await _refused(pool, c["id"], 2, caller_agent_id=two["id"]) == "leader_would_leave"
+        assert await _refused(pool, c["id"], 2) == "leader_would_leave"
+    # A ready agent that is itself leaving (ordinal 3 >= 2) cannot take over either.
+    await _set_agent(pool, zero["id"], False, "w0", None)
+    await insert_agent(pool, c["id"], ordinal=3, ready=True, wrapper_session_id="w3")
     assert await _refused(pool, c["id"], 2) == "leader_would_leave"
+    assert await _spec_row(pool, c["id"]) == before
+    assert await _leader_row(pool, c["id"]) == leader
     async with pool.connection() as conn:
         out = await sessions.set_replicas(conn, c["id"], 3, caller_agent_id=two["id"])
     assert (out.replicas, out.previous_replicas) == (3, 4)
+
+
+async def _set_agent(pool, agent_id, ready, wrapper_session_id, gone_at):
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE agents SET ready = %s, wrapper_session_id = %s, gone_at = %s WHERE id = %s",
+            (ready, wrapper_session_id, gone_at, agent_id),
+        )
+
+
+async def _leader_row(pool, session_id):
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT agent_id, epoch, since, reason FROM session_leaders WHERE session_id = %s",
+            (session_id,),
+        )
+        return await cur.fetchone()
+
+
+async def test_set_replicas_below_leader_with_staying_peer(pool, dsn):
+    c = await _scalable(pool, replicas=4)
+    await insert_agent(pool, c["id"], ordinal=0, ready=True, wrapper_session_id="w0")
+    two = await insert_agent(pool, c["id"], ordinal=2, ready=True, wrapper_session_id="w2")
+    await _make_leader(pool, c["id"], two["id"])
+    leader = await _leader_row(pool, c["id"])
+    async with (
+        _Listener(dsn, "leadership_requested") as lis,
+        _Listener(dsn) as changed,
+        pool.connection() as conn,
+    ):
+        # 4 to 3 leaves the leader (ordinal 2) in place: no leadership wake.
+        await sessions.set_replicas(conn, c["id"], 3, caller_agent_id=two["id"])
+        assert await lis.payloads() == []
+        # 3 to 2 removes the leader's ordinal: written, and the dispatcher is woken.
+        out = await sessions.set_replicas(conn, c["id"], 2, caller_agent_id=two["id"])
+        assert await lis.payloads() == [json.dumps({"session_id": str(c["id"])})]
+        assert len(await changed.payloads()) == 2
+    assert (out.replicas, out.previous_replicas) == (2, 3)
+    assert (await _spec_row(pool, c["id"]))[0]["replicas"] == 2
+    assert await _leader_row(pool, c["id"]) == leader
 
 
 async def test_set_replicas_unchanged_is_noop(pool, dsn):

@@ -1,5 +1,11 @@
 """Leadership queue and the leadership pass (D7, D19, D21, D27).
 
+Besides elections, queued requests and the lost-leader fallback, the pass hands a leader over
+by itself in three cases, always on for hives: its pod is about to be removed by a scale-down
+(`scale_down`, at once), it compacted (`compaction`, at its turn boundary) and its lease ran
+out (`lease_expired`, at its turn boundary). Every pick is restricted to agents that stay
+(`ordinal < spec.replicas`).
+
 The api only inserts `leadership_requests` rows (status `queued`) and reads the leader record.
 `session_leaders` and every request decision belong to the dispatcher, through
 `leadership_pass`, which runs under the per-session claim lock of `db/queue.py` so a leader
@@ -15,6 +21,7 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 
+from agents_orchestrator.db.eligibility import ELIGIBLE, REPLICAS, STAYS
 from agents_orchestrator.db.pool import notify
 from agents_orchestrator.db.queue import _CLAIM_LOCK_NAMESPACE
 
@@ -78,7 +85,8 @@ class LeaderChange:
 _HIVE = "coalesce(c.spec->>'max_replicas', c.spec->>'replicas')::int > 1"
 
 # Hive sessions whose leadership needs a pass: queued requests, no leader row while an agent
-# could lead, a leader that is gone or not ready, or an unready mark to clear.
+# could lead, a leader that is gone or not ready, an unready mark to clear, an expired lease,
+# a leader that compacted in its term, or a leader whose ordinal a scale-down removes.
 _CANDIDATES = f"""
 SELECT c.id FROM sessions c
 LEFT JOIN session_leaders l ON l.session_id = c.id
@@ -88,20 +96,23 @@ WHERE c.desired = 'active' AND {_HIVE} AND (
             WHERE r.session_id = c.id AND r.status = 'queued')
     OR (l.session_id IS NULL AND EXISTS (
         SELECT 1 FROM agents x WHERE x.session_id = c.id AND x.ready
-          AND x.gone_at IS NULL AND x.wrapper_session_id IS NOT NULL))
+          AND x.gone_at IS NULL AND x.wrapper_session_id IS NOT NULL
+          AND x.ordinal < {REPLICAS}))
     OR a.gone_at IS NOT NULL OR NOT a.ready OR l.unready_since IS NOT NULL
     OR (c.spec->>'leader_lease_seconds' IS NOT NULL
         AND l.since < now() - make_interval(secs => (c.spec->>'leader_lease_seconds')::int))
+    OR (a.gone_at IS NULL AND a.ordinal >= {REPLICAS})
+    OR EXISTS (SELECT 1 FROM agent_status s
+               WHERE s.agent_id = l.agent_id AND s.compaction_at > l.since)
 )
 ORDER BY c.id
 """
 
 # The ready agent free the longest (the _PICK order, free_since asc then id), idle agents
 # first, so a hive whose other members are all busy still gets a leader.
-_FREE_LONGEST = """
+_FREE_LONGEST = f"""
 SELECT a.id FROM agents a LEFT JOIN agent_status s ON s.agent_id = a.id
-WHERE a.session_id = %s AND a.ready AND a.gone_at IS NULL AND a.wrapper_session_id IS NOT NULL
-  AND a.id <> %s
+WHERE a.session_id = %s AND {ELIGIBLE} AND a.id <> %s
 ORDER BY (s.state = 'idle') IS NOT TRUE, s.free_since ASC NULLS LAST, a.id
 LIMIT 1
 """
@@ -146,7 +157,10 @@ async def _leader(conn: psycopg.AsyncConnection, session_id: uuid.UUID) -> dict 
         "   AND m.status IN ('dispatching', 'verifying')) AS at_boundary,"
         " l.unready_since IS NOT NULL AND l.unready_since"
         "   < now() - make_interval(secs => %s) AS grace_over,"
-        " a.ready, a.gone_at IS NOT NULL AS gone"
+        " a.ready, a.gone_at IS NOT NULL AS gone,"
+        f" a.ordinal >= {REPLICAS} AS leaving,"
+        " coalesce((SELECT s.compaction_at > l.since FROM agent_status s"
+        "   WHERE s.agent_id = l.agent_id), false) AS compacted"
         " FROM session_leaders l JOIN agents a ON a.id = l.agent_id"
         " JOIN sessions c ON c.id = l.session_id"
         " WHERE l.session_id = %s FOR UPDATE OF l",
@@ -168,8 +182,8 @@ async def _target_ready(
         return False
     row = await _one(
         conn,
-        "SELECT 1 AS ok FROM agents WHERE id = %s AND session_id = %s AND ready"
-        " AND gone_at IS NULL",
+        f"SELECT 1 AS ok FROM agents a WHERE a.id = %s AND a.session_id = %s AND a.ready"
+        f" AND a.gone_at IS NULL AND {STAYS}",
         (agent_id, session_id),
     )
     return row is not None
@@ -202,7 +216,12 @@ async def _set_leader(
     await notify(
         conn,
         LEADER_CHANGED_CHANNEL,
-        {"session_id": str(session_id), "agent_id": str(agent_id), "epoch": change.epoch},
+        {
+            "session_id": str(session_id),
+            "agent_id": str(agent_id),
+            "epoch": change.epoch,
+            "reason": reason,
+        },
     )
     return change
 
@@ -249,7 +268,7 @@ async def _judge(
 async def leadership_pass(
     conn: psycopg.AsyncConnection, session_id: uuid.UUID
 ) -> LeaderChange | None:
-    """Elect, apply queued requests, replace a lost leader: one transaction, one lock.
+    """Elect, apply queued requests, hand over (scale-down, lost, compaction, lease): one lock.
 
     Returns the last change of this pass, or None when nothing changed, the session is not a
     hive, or another dispatcher holds the session's claim lock (the pass is skipped).
@@ -274,8 +293,8 @@ async def leadership_pass(
         if leader is None:
             first = await _one(
                 conn,
-                "SELECT id FROM agents WHERE session_id = %s AND ready AND gone_at IS NULL"
-                " AND wrapper_session_id IS NOT NULL ORDER BY ordinal LIMIT 1",
+                f"SELECT a.id FROM agents a WHERE a.session_id = %s AND {ELIGIBLE}"
+                " ORDER BY a.ordinal LIMIT 1",
                 (session_id,),
             )
             if first is not None:
@@ -297,7 +316,18 @@ async def leadership_pass(
                 change = await _set_leader(conn, session_id, target, reason)
                 leader = await _leader(conn, session_id)
 
-        # 3. Lost leader: gone, or not ready past the grace (unready_since set on first sight
+        # 3. Scale-down: a leader whose ordinal a scale-down removes moves at once (no turn
+        # boundary: a leaving agent is already out of routing), to the staying agent free the
+        # longest. A leaving leader the reconciler already marked unready but not gone is
+        # handled here, before step 4 can see it, so its reason is `scale_down`. With no
+        # staying agent the leader stays and the next pass retries.
+        if leader is not None and leader["leaving"] and not leader["gone"]:
+            picked = await _free_longest(conn, session_id, leader["agent_id"])
+            if picked is not None:
+                change = await _set_leader(conn, session_id, picked, "scale_down")
+                leader = await _leader(conn, session_id)
+
+        # 4. Lost leader: gone, or not ready past the grace (unready_since set on first sight
         # and cleared once ready again, so separate short windows never add up).
         if leader is not None:
             if leader["ready"] and not leader["gone"]:
@@ -310,14 +340,30 @@ async def leadership_pass(
                 picked = await _free_longest(conn, session_id, leader["agent_id"])
                 if picked is not None:
                     change = await _set_leader(conn, session_id, picked, "leader_lost")
-                    leader = None
+                    leader = await _leader(conn, session_id)
             elif leader["unready_since"] is None:
                 await conn.execute(
                     "UPDATE session_leaders SET unready_since = now() WHERE session_id = %s",
                     (session_id,),
                 )
 
-        # 4. Lease expiry (hive D26 amended): a healthy leader whose term outlived the spec's
+        # 5. Compaction: a leader that compacted in its term (`compaction_at` after `since`)
+        # hands over at its turn boundary, like the lease, never mid-turn. With no eligible
+        # agent the leader stays and the move is retried for the rest of its term; any leader
+        # change starts a clean term.
+        if (
+            leader is not None
+            and leader["compacted"]
+            and leader["ready"]
+            and not leader["gone"]
+            and leader["at_boundary"]
+        ):
+            picked = await _free_longest(conn, session_id, leader["agent_id"])
+            if picked is not None:
+                change = await _set_leader(conn, session_id, picked, "compaction")
+                leader = await _leader(conn, session_id)
+
+        # 6. Lease expiry (hive D26 amended): a healthy leader whose term outlived the spec's
         # `leader_lease_seconds` hands over at a turn boundary, never mid-turn and never as a
         # takeover. With no ready peer the leader stays and the lease is re-checked next pass.
         if (

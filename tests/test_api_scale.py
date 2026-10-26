@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from factories import insert_agent, insert_session
@@ -58,17 +59,46 @@ async def test_scale_refusals_map_to_error_codes(pool, http):
     assert_error(extra, 422, "invalid_request")
 
 
-async def test_scale_leader_would_leave(pool, http):
-    c = await insert_session(pool, spec={"replicas": 3, "max_replicas": 4})
-    await insert_agent(pool, c["id"], ordinal=0, ready=True)
-    await insert_agent(pool, c["id"], ordinal=1, ready=True)
-    a2 = await insert_agent(pool, c["id"], ordinal=2, ready=True)
+async def _lead(pool, session_id, agent_id):
     async with pool.connection() as conn:
         await conn.execute(
             "INSERT INTO session_leaders (session_id, agent_id, epoch, since, reason)"
             " VALUES (%s, %s, 1, now(), 'start')",
-            (c["id"], a2["id"]),
+            (session_id, agent_id),
         )
+
+
+async def test_scale_leader_would_leave(pool, http):
+    c = await insert_session(pool, spec={"replicas": 3, "max_replicas": 4})
+    # Agents 0 and 1 stay at 2 replicas but cannot lead: 0 is gone, 1 is not ready.
+    gone = datetime.now(UTC)
+    await insert_agent(pool, c["id"], ordinal=0, ready=True, wrapper_session_id="w0", gone_at=gone)
+    await insert_agent(pool, c["id"], ordinal=1, ready=False, wrapper_session_id="w1")
+    a2 = await insert_agent(pool, c["id"], ordinal=2, ready=True, wrapper_session_id="w2")
+    await _lead(pool, c["id"], a2["id"])
     assert_error(await http.post(url(c), json={"replicas": 2}), 409, "leader_would_leave")
     view = (await http.get(f"/api/v1/sessions/{c['id']}")).json()
     assert view["spec"]["replicas"] == 3
+
+
+async def test_scale_below_leader_accepted(pool, http):
+    c = await insert_session(pool, spec={"replicas": 3, "max_replicas": 4})
+    await insert_agent(pool, c["id"], ordinal=0, ready=True, wrapper_session_id="w0")
+    await insert_agent(pool, c["id"], ordinal=1, ready=False)
+    a2 = await insert_agent(pool, c["id"], ordinal=2, ready=True, wrapper_session_id="w2")
+    await _lead(pool, c["id"], a2["id"])
+    r = await http.post(url(c), json={"replicas": 2})
+    assert r.status_code == 202, r.text
+    assert r.json() == {
+        "session_id": str(c["id"]),
+        "replicas": 2,
+        "previous_replicas": 3,
+        "max_replicas": 4,
+    }
+    view = (await http.get(f"/api/v1/sessions/{c['id']}")).json()
+    assert view["spec"]["replicas"] == 2
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT agent_id, epoch FROM session_leaders WHERE session_id = %s", (c["id"],)
+        )
+        assert await cur.fetchone() == (a2["id"], 1)

@@ -263,7 +263,9 @@ async def stream_status(
             for channel, payload in drained:
                 if channel == "leader_changed":
                     yield ServerSentEvent(
-                        data={k: payload.get(k) for k in ("session_id", "agent_id", "epoch")},
+                        data={
+                            k: payload.get(k) for k in ("session_id", "agent_id", "epoch", "reason")
+                        },
                         event="leader_changed",
                     )
             # a NOTIFY refreshes its session; a timeout is the poll and refreshes everything

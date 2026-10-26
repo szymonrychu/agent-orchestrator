@@ -2,6 +2,11 @@
   "boot": {"bypass_dialog": true, "min_seconds": 0.1},
   "turns": [
     {"match": "slow", "steps": [{"text": "Working slowly."}, {"sleep": 4}, {"text": "Slow work done."}]},
+    {"match": "compact mid turn", "steps": [
+      {"text": "Working before the compaction."},
+      {"auto_compact": {"pre_tokens": 150000}},
+      {"text": "Compaction done, turn finished."}
+    ]},
     {"match": "write note file", "steps": [
       {"tool": "Write", "input": {"file_path": "/workdir/workdir/e2e-note.txt", "content": "hello"}, "result": "File created successfully"},
       {"text": "Note file written."}

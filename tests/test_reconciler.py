@@ -393,6 +393,70 @@ async def test_scale_down_drain_deadline(env):
     assert "drain" not in (await env.get(c.id)).status
 
 
+async def _lead(env, session_id, agent_id) -> None:
+    """Write the leader row the way the dispatcher does (the reconciler only reads it)."""
+    async with env.pool.connection() as conn:
+        await conn.execute(
+            "INSERT INTO session_leaders (session_id, agent_id, epoch, since, reason)"
+            " VALUES (%s, %s, 1, now(), 'initial')"
+            " ON CONFLICT (session_id) DO UPDATE SET agent_id = EXCLUDED.agent_id,"
+            " epoch = session_leaders.epoch + 1, since = now(), reason = 'scale_down'",
+            (session_id, agent_id),
+        )
+
+
+async def _age_drain(env, session_id) -> None:
+    async with env.pool.connection() as conn:
+        await conn.execute(
+            "UPDATE sessions SET status = jsonb_set(status, '{drain,since}',"
+            " to_jsonb((now() - make_interval(secs => %s))::text)) WHERE id = %s",
+            (env.settings.scale_drain_seconds + 1, session_id),
+        )
+
+
+async def test_scale_down_holds_leader_pod_until_handover(env):
+    c, agents = await scaled_down(env, start=3, target=2)  # nothing busy; ordinal 2 leads
+    await _lead(env, c.id, agents[2].id)
+    await env.rec.reconcile_once()
+    assert sts_replicas(env) == 3  # the idle leader's pod is held
+    assert env.kube.has("Pod", "agent-alpha-2")
+    assert (await env.get(c.id)).status["drain"]["waiting"] == [2]
+
+    await env.rec.reconcile_once()  # still leading: still held
+    assert sts_replicas(env) == 3
+
+    await _lead(env, c.id, agents[0].id)  # the dispatcher's handover to a staying agent
+    await env.rec.reconcile_once()
+    assert sts_replicas(env) == 2
+    assert "drain" not in (await env.get(c.id)).status
+
+
+async def test_scale_down_leader_hold_bounded_by_deadline(env):
+    c, agents = await scaled_down(env, start=3, target=1)
+    await _lead(env, c.id, agents[2].id)
+    await env.rec.reconcile_once()
+    assert sts_replicas(env) == 3
+    await _age_drain(env, c.id)
+    await env.rec.reconcile_once()
+    assert sts_replicas(env) == 1
+    assert "drain" not in (await env.get(c.id)).status
+
+
+async def test_scale_down_busy_leader_peer_unready_bounded(env):
+    # the only staying peer (ordinal 0) is unready, so the pass cannot move the busy leader
+    c, agents = await scaled_down(env, start=2, target=1, busy=(1,))
+    await _lead(env, c.id, agents[1].id)
+    async with env.pool.connection() as conn:
+        await conn.execute("UPDATE agents SET ready = false WHERE id = %s", (agents[0].id,))
+    await env.rec.reconcile_once()
+    await env.rec.reconcile_once()
+    assert sts_replicas(env) == 2
+    assert (await env.get(c.id)).status["drain"]["waiting"] == [1]
+    await _age_drain(env, c.id)
+    await env.rec.reconcile_once()
+    assert sts_replicas(env) == 1
+
+
 async def test_scale_drain_seconds_setting(env):
     assert env.settings.scale_drain_seconds == 900
     assert make_settings(env.dsn, scale_drain_seconds=5).scale_drain_seconds == 5

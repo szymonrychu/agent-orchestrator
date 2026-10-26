@@ -142,3 +142,70 @@ async def test_held_untargeted_backoff_does_not_starve_targeted(pool):
     claim = await _claim(pool)
     assert claim is not None
     assert claim.message_id == targeted
+
+
+async def _compacted(pool, agent_id) -> None:
+    """Stamp a compaction reported after any term that began just now."""
+    await _exec(
+        pool,
+        "UPDATE agent_status SET compaction_at = now() + interval '5 seconds' WHERE agent_id=%s",
+        (agent_id,),
+    )
+
+
+async def test_compacted_leader_holds_untargeted(pool):
+    c = await insert_session(pool, spec={"replicas": 2, "max_replicas": 4})
+    leader = await _agent(pool, c["id"], free_ago=1, ordinal=0)
+    member = await _agent(pool, c["id"], free_ago=100, ordinal=1)
+    await _lead(pool, c["id"], leader["id"])
+    await _compacted(pool, leader["id"])
+    untargeted = await _enqueue(pool, c["id"], "u")
+    targeted = await _enqueue(pool, c["id"], "t", target=member["id"])
+    claim = await _claim(pool)
+    assert claim is not None
+    assert (claim.message_id, claim.agent_id) == (targeted, member["id"])
+    assert await _claim(pool) is None
+    assert await _status(pool, untargeted) == "queued"
+
+
+async def test_leaving_leader_holds_untargeted(pool):
+    c = await insert_session(pool, spec={"replicas": 1, "max_replicas": 4})
+    stays = await _agent(pool, c["id"], free_ago=100, ordinal=0)
+    leader = await _agent(pool, c["id"], free_ago=1, ordinal=1)
+    await _lead(pool, c["id"], leader["id"])
+    untargeted = await _enqueue(pool, c["id"], "u")
+    targeted = await _enqueue(pool, c["id"], "t", target=stays["id"])
+    claim = await _claim(pool)
+    assert claim is not None
+    assert (claim.message_id, claim.agent_id) == (targeted, stays["id"])
+    assert await _claim(pool) is None
+    assert await _status(pool, untargeted) == "queued"
+
+
+async def test_compacted_leader_without_peer_keeps_leading(pool):
+    c = await insert_session(pool, spec={"replicas": 2, "max_replicas": 4})
+    leader = await _agent(pool, c["id"], free_ago=1, ordinal=0)
+    peer = await _agent(pool, c["id"], free_ago=100, ordinal=1)
+    await _exec(pool, "UPDATE agents SET ready = false WHERE id=%s", (peer["id"],))
+    await _lead(pool, c["id"], leader["id"])
+    await _compacted(pool, leader["id"])
+    await _enqueue(pool, c["id"], "u")
+    claim = await _claim(pool)
+    assert claim is not None
+    assert claim.agent_id == leader["id"]
+
+
+async def test_compaction_before_the_term_does_not_hold(pool):
+    c = await insert_session(pool, spec={"replicas": 2, "max_replicas": 4})
+    leader = await _agent(pool, c["id"], free_ago=1, ordinal=0)
+    await _agent(pool, c["id"], free_ago=100, ordinal=1)
+    await _lead(pool, c["id"], leader["id"])
+    await _exec(
+        pool,
+        "UPDATE agent_status SET compaction_at = now() - interval '5 seconds' WHERE agent_id=%s",
+        (leader["id"],),
+    )
+    await _enqueue(pool, c["id"], "u")
+    claim = await _claim(pool)
+    assert claim is not None
+    assert claim.agent_id == leader["id"]

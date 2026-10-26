@@ -20,7 +20,8 @@ from typing import Any
 
 from psycopg_pool import AsyncConnectionPool
 
-from agents_orchestrator.db import events, status
+from agents_orchestrator.db import events, leadership, status
+from agents_orchestrator.db.pool import notify
 from agents_orchestrator.settings import Settings
 from agents_orchestrator.tokens import tokens_for
 from agents_orchestrator.wrapper import Envelope, WrapperClient, WrapperError, WrapperUnreachable
@@ -39,6 +40,7 @@ _STATE_MAP = {
     "dead": "dead",
 }
 _TURN_END = ("turn_completed", "turn_failed")
+_COMPACTION = ("compacting", "compacted")
 
 
 def map_state(wrapper_state: str | None) -> str:
@@ -194,6 +196,12 @@ class _AgentStream:
         if env.type == "context":
             await status.set_context(conn, ref.agent_id, data)
             await status.notify_status(conn, ref.session_id, ref.agent_id)
+        elif env.type in _COMPACTION:
+            # every compaction counts (D2), at the time the wrapper reported it (D3), and wakes
+            # the dispatcher's leadership pass for the session (D15)
+            await status.set_compaction(conn, ref.agent_id, env.ts)
+            await status.notify_status(conn, ref.session_id, ref.agent_id)
+            await notify(conn, leadership.CHANNEL, {"session_id": str(ref.session_id)})
         elif env.type == "turn_started" and data.get("turn_id"):
             turn_id = str(data["turn_id"])
             await status.upsert_turn(
