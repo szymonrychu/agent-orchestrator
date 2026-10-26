@@ -26,18 +26,19 @@ HIVE_TOOLS = [
     "lock_reassign",
 ]
 SESSION_TOOLS = ["sessions_list", "session_send"]
+INIT_SCRIPTS_TOOLS = ["init_scripts_get", "init_scripts_edit"]
 
 
 def orchestrator_allow(spec: SessionSpec) -> list[str]:
     """The orchestrator tools this session's agents may call.
 
-    Every session gets the session tools (D11), alone sessions included; the agent API decides
+    Every session gets the session tools (D11) then the init-scripts tools, alone sessions included; the agent API decides
     what each caller may list and send, so the list never depends on `session_messaging`.
     """
     if not spec.hive:
-        return list(SESSION_TOOLS)
+        return [*SESSION_TOOLS, *INIT_SCRIPTS_TOOLS]
     scale = [SCALE_TOOL] if spec.scalable else []
-    return [*HIVE_TOOLS, *scale, *SESSION_TOOLS]
+    return [*HIVE_TOOLS, *scale, *SESSION_TOOLS, *INIT_SCRIPTS_TOOLS]
 
 
 def _orchestrator_entry(

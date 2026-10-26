@@ -22,6 +22,8 @@ HIVE_TOOLS = [
     "lock_reassign",
 ]
 SESSION_TOOLS = ["sessions_list", "session_send"]
+INIT_SCRIPTS_TOOLS = ["init_scripts_get", "init_scripts_edit"]
+TAIL_TOOLS = [*SESSION_TOOLS, *INIT_SCRIPTS_TOOLS]
 SECRET = "s3cr3t-token-value"
 
 
@@ -54,9 +56,9 @@ def entries(spec: SessionSpec, settings: Settings | None = None) -> dict:
 def test_alone_session_tools_entry(messaging, static):
     """D11: an alone session gets only the session tools, whatever session_messaging says."""
     spec = SessionSpec(replicas=1, static=static, session_messaging=messaging)
-    assert on_start.orchestrator_allow(spec) == SESSION_TOOLS
+    assert on_start.orchestrator_allow(spec) == TAIL_TOOLS
     entry = entries(spec)["orchestrator"]
-    assert entry["allow"] == SESSION_TOOLS
+    assert entry["allow"] == TAIL_TOOLS
     assert entry["config"]["hive"] is False
     assert entry["config"]["max_replicas"] == 1
     cfg = written_config(on_start.render_on_start(spec, make_settings(), "alpha"))
@@ -77,24 +79,24 @@ def test_alone_session_tools_entry(messaging, static):
 def test_hive_session_tools(messaging, spec_fields, hive_allow):
     """D11: hive tools, scale when scalable, then the session tools, whatever session_messaging."""
     spec = SessionSpec(session_messaging=messaging, **spec_fields)
-    assert on_start.orchestrator_allow(spec) == [*hive_allow, *SESSION_TOOLS]
-    assert entries(spec)["orchestrator"]["allow"] == [*hive_allow, *SESSION_TOOLS]
+    assert on_start.orchestrator_allow(spec) == [*hive_allow, *TAIL_TOOLS]
+    assert entries(spec)["orchestrator"]["allow"] == [*hive_allow, *TAIL_TOOLS]
 
 
 def test_static_hive_has_no_scale_tool():
     spec = SessionSpec(replicas=2, static=True)
-    assert on_start.orchestrator_allow(spec) == [*HIVE_TOOLS, *SESSION_TOOLS]
+    assert on_start.orchestrator_allow(spec) == [*HIVE_TOOLS, *TAIL_TOOLS]
 
 
 def test_hive_entry_and_allow():
     spec = SessionSpec(replicas=2, max_replicas=4, auto_compact_pct=70)
-    assert on_start.orchestrator_allow(spec) == [*HIVE_TOOLS, "scale", *SESSION_TOOLS]
+    assert on_start.orchestrator_allow(spec) == [*HIVE_TOOLS, "scale", *TAIL_TOOLS]
     entry = entries(spec)["orchestrator"]
     assert entry == {
         "name": "orchestrator",
         "plugin": "any_mcp.orchestrator:OrchestratorPlugin",
         "namespace": "orchestrator",
-        "allow": [*HIVE_TOOLS, "scale", *SESSION_TOOLS],
+        "allow": [*HIVE_TOOLS, "scale", *TAIL_TOOLS],
         "config": {
             "base_url": "${ORCH_AGENT_URL}",
             "token": "${ORCH_AGENT_TOKEN}",
@@ -176,3 +178,39 @@ def test_user_orchestrator_entry_replaced():
         "any_mcp.orchestrator:OrchestratorPlugin"
     )
     AnyMcpConfig.model_validate(cfg)
+
+
+async def test_allowed_tools_exist_in_plugin():
+    """Every tool name rendered or named to agents is offered by the pinned plugin."""
+    from any_mcp.testing import PluginHarness
+
+    from agents_orchestrator.dispatcher.session_frame import frame
+    from agents_orchestrator.reconciler.init import render_init_sh
+
+    specs = (
+        SessionSpec(replicas=1),
+        SessionSpec(replicas=2, static=True),
+        SessionSpec(replicas=2, max_replicas=3),
+    )
+    offered: set[str] = set()
+    allowed: set[str] = set()
+    for spec in specs:
+        entry = entries(spec)["orchestrator"]
+        config = {
+            **entry["config"],
+            "base_url": "http://orch:8080",
+            "token": "t",
+            "session": "1",
+            "agent": "a0",
+        }
+        async with PluginHarness(OrchestratorPlugin, config=config) as h:
+            # the harness prefixes the class name; the rendered namespace is "orchestrator"
+            offered |= {t["name"].removeprefix("orchestratorplugin_") for t in await h.list_tools()}
+        allowed |= set(entry["allow"])
+    named = set(
+        re.findall(
+            r"orchestrator_[a-z_]+", render_init_sh("alpha", ["true"]) + frame("x", "alpha", 1)
+        )
+    )
+    assert named == {"orchestrator_init_scripts_edit", "orchestrator_session_send"}
+    assert allowed | {n.removeprefix("orchestrator_") for n in named} <= offered
