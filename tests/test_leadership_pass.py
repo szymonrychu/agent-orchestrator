@@ -418,10 +418,20 @@ async def test_alone_untouched_and_notify(pool, dsn):
         await lpass(pool, c["id"])  # leader lost
         payloads = await notes.drain()
     assert payloads == [
-        {"session_id": str(c["id"]), "agent_id": str(a0["id"]), "epoch": 1},
-        {"session_id": str(c["id"]), "agent_id": str(a1["id"]), "epoch": 2},
-        {"session_id": str(c["id"]), "agent_id": str(a2["id"]), "epoch": 3},
-        {"session_id": str(c["id"]), "agent_id": str(a0["id"]), "epoch": 4},
+        {"session_id": str(c["id"]), "agent_id": str(a0["id"]), "epoch": 1, "reason": "initial"},
+        {
+            "session_id": str(c["id"]),
+            "agent_id": str(a1["id"]),
+            "epoch": 2,
+            "reason": "handover: x",
+        },
+        {"session_id": str(c["id"]), "agent_id": str(a2["id"]), "epoch": 3, "reason": "user"},
+        {
+            "session_id": str(c["id"]),
+            "agent_id": str(a0["id"]),
+            "epoch": 4,
+            "reason": "leader_lost",
+        },
     ]
 
 
@@ -531,7 +541,14 @@ async def test_lease_expiry_hands_over_idle_leader(pool, dsn):
     row = await leader_row(pool, c["id"])
     assert (row["agent_id"], row["epoch"], row["reason"]) == (a1["id"], 4, "lease_expired")
     assert row["since"] > before
-    assert got == [{"session_id": str(c["id"]), "agent_id": str(a1["id"]), "epoch": 4}]
+    assert got == [
+        {
+            "session_id": str(c["id"]),
+            "agent_id": str(a1["id"]),
+            "epoch": 4,
+            "reason": "lease_expired",
+        }
+    ]
     # the fresh term is not expired: the next pass changes nothing
     assert await lpass(pool, c["id"]) is None
 

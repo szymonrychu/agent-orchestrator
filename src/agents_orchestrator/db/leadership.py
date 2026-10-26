@@ -216,7 +216,12 @@ async def _set_leader(
     await notify(
         conn,
         LEADER_CHANGED_CHANNEL,
-        {"session_id": str(session_id), "agent_id": str(agent_id), "epoch": change.epoch},
+        {
+            "session_id": str(session_id),
+            "agent_id": str(agent_id),
+            "epoch": change.epoch,
+            "reason": reason,
+        },
     )
     return change
 

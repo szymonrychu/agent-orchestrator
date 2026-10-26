@@ -479,7 +479,7 @@ NOTIFY payloads are wake-up hints that carry ids only. Every loop also polls, be
 | `events` | `{session_id, max_id}` | ingester | events stream |
 | `status` | `{session_id}` | ingester, dispatcher, reconciler | status stream |
 | `leadership_requested` | `{session_id}` | api (leadership routes, and a scale-down to a count at or below the leader's ordinal); ingester on a `compacting` or `compacted` event | dispatcher |
-| `leader_changed` | `{session_id, agent_id, epoch}` | dispatcher (leadership pass) | hive-state push, session stream |
+| `leader_changed` | `{session_id, agent_id, epoch, reason}` | dispatcher (leadership pass) | hive-state push, session stream |
 
 Polling fallbacks: dispatcher `ORCH_DISPATCH_POLL_SECONDS` (2 s), reconciler `ORCH_RECONCILE_POLL_SECONDS` (10 s), ingester stream refresh `ORCH_INGEST_REFRESH_SECONDS` (5 s); the api SSE streams re-read on a 5 s poll when no NOTIFY arrives.
 
@@ -511,7 +511,7 @@ Every hive session (`coalesce(spec.max_replicas, spec.replicas) > 1`) has at mos
 
 After any change in steps 1 to 5 the pass re-reads the leader, so the later steps judge the new leader at its new epoch and fresh `since`: one pass makes at most one move per step and never moves a fresh leader again for the old leader's compaction or lease.
 
-Every change sends `NOTIFY leader_changed {session_id, agent_id, epoch}`.
+Every change sends `NOTIFY leader_changed {session_id, agent_id, epoch, reason}`.
 
 Election and lost-leader detection are poll-driven. Readiness is observed by the reconciler and is not a NOTIFY the dispatcher hears, so the initial election, the grace clock and the takeover run on the next dispatcher drain, within `ORCH_DISPATCH_POLL_SECONDS` of the readiness change. "The first ready agent leads" therefore means the lowest-ordinal ready agent at the first pass that sees one ready, within the poll window, not the first instantaneous ready event. Requests are applied promptly: `leadership_requested` wakes the dispatcher. Each drain runs the pass, before claiming messages, for hive sessions with queued requests, with no leader row while an agent could lead, whose leader is gone or not ready, whose `unready_since` is still set, whose lease expired, whose leader compacted in its term (`compaction_at` later than `since`), or whose leader is leaving (`ordinal >= spec.replicas`). A healthy, uncompacted, staying leader is never selected. The ingester wakes the dispatcher through `leadership_requested` when it projects a compaction, so an idle compacted leader moves on that wake rather than the next poll, and the api sends it when it accepts a scale-down to a count at or below the leader's ordinal, so a leaving leader moves on that wake too.
 
@@ -585,7 +585,7 @@ Plain SQL migrations (`src/agents_orchestrator/db/migrations`), psycopg 3, no OR
 | `events` | every stored wrapper event; UNIQUE(agent_id, wrapper_session_id, seq), where wrapper_session_id is the claude-code-wrapper's own session id; the global bigserial id is the SSE id and the page cursor |
 | `commands` | queue: `interrupt`, `compact`, `restart`, `rebootstrap` with status and result |
 | `leadership_requests` | queue: `handover` (from the leader) or `user` requests with target agent, epoch, status (`queued`, `applied`, `rejected`); the api inserts, the dispatcher decides |
-| `session_leaders` | one row per hive: leader agent, `epoch`, `since`, `reason` (`initial`, `handover: <reason>`, `user`, `leader_lost`), `unready_since`, feed cursor and pushed hive-state hash; the dispatcher is the only writer (see Leadership) |
+| `session_leaders` | one row per hive: leader agent, `epoch`, `since`, `reason` (`initial`, `user`, `handover: <reason>`, `leader_lost`, `lease_expired`, `scale_down`, `compaction`), `unready_since`, feed cursor and pushed hive-state hash; the dispatcher is the only writer (see Leadership) |
 | `checks` | queue: a shell command run as a Kubernetes Job; exit code and log tail |
 
 ## API
@@ -647,7 +647,7 @@ Response 201 with the session view. Errors: 422 `invalid_request` (bad slug, bot
 
 ### `GET /api/v1/sessions/{session_id}`
 
-One session view: `id`, `slug`, `spec`, `desired`, `status`, `generation`, `observed_generation`, `created_at`, `preset_id` (null for a raw-spec session or once the preset is deleted), `preset_name`, `summary` (`state` of `working`, `waiting`, `booting`, `error`, `deleting`; `ready`, `replicas`, `context_pct_max`, `auto_compact_pct`, `queued`, `failed`), `hive`, `max_replicas` (the cap), `static`, `leader_agent_id` and `leader_epoch` (both null for an alone session or before the first election), `leader_since` and `leader_reason` (when the current leader's term began and why it began, `start`, a handover reason or `lease_expired`; null without a leader), `closes_at` (`created_at` plus `spec.autoclose_after_seconds`, null when unset), and `init_edited_since_run` (same rule as `edited_since_run` of the init-scripts view; also in the list and the status stream). Response 200. Errors: 404 `not_found`.
+One session view: `id`, `slug`, `spec`, `desired`, `status`, `generation`, `observed_generation`, `created_at`, `preset_id` (null for a raw-spec session or once the preset is deleted), `preset_name`, `summary` (`state` of `working`, `waiting`, `booting`, `error`, `deleting`; `ready`, `replicas`, `context_pct_max`, `auto_compact_pct`, `queued`, `failed`), `hive`, `max_replicas` (the cap), `static`, `leader_agent_id` and `leader_epoch` (both null for an alone session or before the first election), `leader_since` and `leader_reason` (when the current leader's term began and why it began: `initial`, `user`, `handover: <reason>`, `leader_lost`, `lease_expired`, `scale_down` or `compaction`; null without a leader), `closes_at` (`created_at` plus `spec.autoclose_after_seconds`, null when unset), and `init_edited_since_run` (same rule as `edited_since_run` of the init-scripts view; also in the list and the status stream). Response 200. Errors: 404 `not_found`.
 
 ### `DELETE /api/v1/sessions/{session_id}`
 
@@ -867,7 +867,7 @@ The `/sessions/{session_id}/events/stream` frames are named by the stored wrappe
 | `agent_status` | `/stream` | `{"session_id", "agent": <agent view>}` when an agent changed |
 | `message_status` | `/stream` | `{"session_id", "queued", "failed", "messages": [<changed message views>]}` |
 | `session_removed` | `/stream` | `{"session_id"}` when a discard completed |
-| `leader_changed` | `/stream` | `{"session_id", "agent_id", "epoch"}` on NOTIFY `leader_changed`; the `session_status` and `agent_status` frames that follow carry the new leader |
+| `leader_changed` | `/stream` | `{"session_id", "agent_id", "epoch", "reason"}` on NOTIFY `leader_changed`; the `session_status` and `agent_status` frames that follow carry the new leader |
 
 ### Session configuration
 

@@ -7,6 +7,7 @@ from test_api_sessions import make_settings
 from test_api_streams import open_sse, serve, srv  # noqa: F401
 
 from agents_orchestrator.api.app import create_app
+from agents_orchestrator.db import leadership
 from agents_orchestrator.db.pool import notify
 
 
@@ -68,7 +69,12 @@ async def test_leader_changed_frame(srv, pool):  # noqa: F811
             await notify(
                 conn,
                 "leader_changed",
-                {"session_id": str(cl["id"]), "agent_id": str(a2["id"]), "epoch": 2},
+                {
+                    "session_id": str(cl["id"]),
+                    "agent_id": str(a2["id"]),
+                    "epoch": 2,
+                    "reason": "test",
+                },
             )
         seen: dict[str, list[dict]] = {}
         for _ in range(6):
@@ -78,9 +84,42 @@ async def test_leader_changed_frame(srv, pool):  # noqa: F811
             if {"leader_changed", "session_status"} <= set(seen) and str(a2["id"]) in agents:
                 break
     assert seen["leader_changed"] == [
-        {"session_id": str(cl["id"]), "agent_id": str(a2["id"]), "epoch": 2}
+        {"session_id": str(cl["id"]), "agent_id": str(a2["id"]), "epoch": 2, "reason": "test"}
     ]
     assert seen["session_status"][0]["session"]["leader_epoch"] == 2
     assert seen["session_status"][0]["session"]["leader_agent_id"] == str(a2["id"])
     leaders = {x["agent"]["id"]: x["agent"]["leader"] for x in seen["agent_status"]}
     assert leaders[str(a2["id"])] is True
+
+
+async def test_auto_handover_reason_in_frame_and_view(srv, pool, dsn):  # noqa: F811
+    cl = await insert_session(pool, spec={"replicas": 2, "max_replicas": 3})
+    agents = []
+    for i in range(3):
+        a = await insert_agent(pool, cl["id"], ordinal=i, ready=True, wrapper_session_id=f"s{i}")
+        await set_agent_status(pool, a["id"], state="idle")
+        agents.append(a)
+    await _lead(pool, cl["id"], agents[2]["id"], epoch=1)  # ordinal 2 is above replicas 2
+    async with open_sse(srv, "/api/v1/stream") as sse:
+        assert (await sse.next())["event"] == "snapshot"
+        async with pool.connection() as conn:
+            change = await leadership.leadership_pass(conn, cl["id"])
+        assert change is not None and change.reason == "scale_down"
+        frames: list[dict] = []
+        for _ in range(8):
+            f = await sse.next()
+            if f["event"] == "leader_changed":
+                frames.append(f["data"])
+                break
+    assert frames == [
+        {
+            "session_id": str(cl["id"]),
+            "agent_id": str(change.agent_id),
+            "epoch": 2,
+            "reason": "scale_down",
+        }
+    ]
+    app = create_app(make_settings(dsn, allowed_cidrs="127.0.0.0/8"), pool)
+    async with serve(app) as s, s.client() as c:
+        view = (await c.get(f"/api/v1/sessions/{cl['id']}")).json()
+    assert (view["leader_epoch"], view["leader_reason"]) == (2, "scale_down")
