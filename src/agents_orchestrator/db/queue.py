@@ -155,6 +155,65 @@ async def enqueue_message(
         return row["id"]
 
 
+async def _count(conn: psycopg.AsyncConnection, query: str, params: Any) -> int:
+    row = await _one(conn, query, params)
+    assert row is not None
+    return row["n"]
+
+
+async def turn_hop(conn: psycopg.AsyncConnection, agent_id: uuid.UUID) -> int | None:
+    """Hop of the session message the agent's current turn delivered, or None when the current
+    turn (`agent_status.current_turn_id`) delivered no message with a sender (D10)."""
+    row = await _one(
+        conn,
+        "SELECT m.hop FROM agent_status s JOIN agents a ON a.id = s.agent_id"
+        " JOIN messages m ON m.session_id = a.session_id AND m.turn_id = s.current_turn_id"
+        " WHERE s.agent_id = %s AND m.sender_session_id IS NOT NULL"
+        " ORDER BY m.id DESC LIMIT 1",
+        (agent_id,),
+    )
+    return row["hop"] if row is not None else None
+
+
+async def count_sent_by(
+    conn: psycopg.AsyncConnection, sender_session_id: uuid.UUID, seconds: float
+) -> int:
+    """Session messages of any status the sender session sent in the last `seconds`."""
+    return await _count(
+        conn,
+        "SELECT count(*) AS n FROM messages WHERE sender_session_id = %s"
+        " AND created_at > now() - make_interval(secs => %s::float8)",
+        (sender_session_id, seconds),
+    )
+
+
+async def count_between(
+    conn: psycopg.AsyncConnection, a: uuid.UUID, b: uuid.UUID, seconds: float
+) -> int:
+    """Session messages exchanged between sessions `a` and `b`, both directions, in the last
+    `seconds`."""
+    return await _count(
+        conn,
+        "SELECT count(*) AS n FROM messages"
+        " WHERE ((sender_session_id = %(a)s AND session_id = %(b)s)"
+        " OR (sender_session_id = %(b)s AND session_id = %(a)s))"
+        " AND created_at > now() - make_interval(secs => %(secs)s::float8)",
+        {"a": a, "b": b, "secs": seconds},
+    )
+
+
+async def count_queued_session_messages(
+    conn: psycopg.AsyncConnection, session_id: uuid.UUID
+) -> int:
+    """Queued messages with a sender waiting in the session."""
+    return await _count(
+        conn,
+        "SELECT count(*) AS n FROM messages WHERE session_id = %s AND status = 'queued'"
+        " AND sender_session_id IS NOT NULL",
+        (session_id,),
+    )
+
+
 async def cancel_message(conn: psycopg.AsyncConnection, id: int) -> bool:
     row = await _transition(
         conn,

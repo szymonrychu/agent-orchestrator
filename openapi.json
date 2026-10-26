@@ -2133,6 +2133,86 @@
         "title": "ScaleResult",
         "type": "object"
       },
+      "SessionMessageIn": {
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "maxLength": 16000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "SessionMessageIn",
+        "type": "object"
+      },
+      "SessionMessageQueued": {
+        "properties": {
+          "message_id": {
+            "title": "Message Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "message_id"
+        ],
+        "title": "SessionMessageQueued",
+        "type": "object"
+      },
+      "SessionPeer": {
+        "properties": {
+          "leader_present": {
+            "title": "Leader Present",
+            "type": "boolean"
+          },
+          "preset_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preset Name"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "superleader": {
+            "title": "Superleader",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "slug",
+          "preset_name",
+          "superleader",
+          "leader_present"
+        ],
+        "title": "SessionPeer",
+        "type": "object"
+      },
+      "SessionPeers": {
+        "properties": {
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/SessionPeer"
+            },
+            "title": "Sessions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "sessions"
+        ],
+        "title": "SessionPeers",
+        "type": "object"
+      },
       "SessionSpec": {
         "additionalProperties": false,
         "properties": {
@@ -3839,6 +3919,156 @@
           }
         },
         "summary": "Scale the caller's session (leader only)",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
+    "/agent/v1/sessions": {
+      "get": {
+        "operationId": "sessions_list_agent_v1_sessions_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-orch-session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Orch-Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionPeers"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sessions the caller's session may message (superleaders, or all for a superleader)",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
+    "/agent/v1/sessions/{slug}/messages": {
+      "post": {
+        "description": "Checks in the order of D7; a refusal queues nothing. The limits are advisory: the\ncounts and the insert are not one atomic step (D10).",
+        "operationId": "session_send_agent_v1_sessions__slug__messages_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-orch-session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Orch-Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionMessageIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionMessageQueued"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Queue a message to the leader of another session (leader only)",
         "tags": [
           "agent"
         ]

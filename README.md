@@ -1005,6 +1005,32 @@ Replaces the caller's session init scripts. Body `{"scripts": ["<shell script>",
 
 The leader grows or shrinks its own session. Body `{replicas}`; sets `spec.replicas` in place (no generation bump, no pod roll) through the same writer as the public `POST /api/v1/sessions/{id}/scale`, with the caller checked as leader. Response 202 `{session_id, replicas, previous_replicas, max_replicas}`. Errors: 403 `not_leader` (the caller is not the current leader), 409 `static_session`, 422 `out_of_range` (outside 1 to `max_replicas`), 409 `leader_would_leave` (the leader's ordinal would be removed and no ready agent that stays can take over; with one, the scale is accepted and leadership moves to it, reason `scale_down`), 409 `session_deleting`, 422 `invalid_request`, plus the 401 and 403 above. Served only on the agent port; the public scale route is not reachable there. Backs the plugin tool `orchestrator_scale`.
 
+### Cross-session messaging
+
+A superleader session is one whose spec has `session_messaging` true. Its leader lists and messages the leader of every other open session; the leader of any other session, alone sessions included, lists and messages only the superleader sessions. A send needs a superleader on at least one end (two superleaders may message each other), and every session can receive. A message is an async mailbox entry: it is queued untargeted in the target session, so whoever leads there at claim time gets it as a turn framed with the sender session's slug (see "Session messages" under Delivery and retries); a reply is a send back to that slug. Backs the plugin tools `orchestrator_sessions_list` and `orchestrator_session_send`.
+
+#### `GET /agent/v1/sessions`
+
+Response 200 `{"sessions": [{"slug", "preset_name", "superleader", "leader_present"}]}`, ordered by slug. Never the caller's own session and never a session being discarded (`desired: deleting`). For a caller in a superleader session: every other active session, with or without the option. For any other caller: only the other active superleader sessions, an empty list when there is none. `preset_name` is the preset the session was created from, or null. `leader_present` is true when a hive has a leader on a not-gone agent, or an alone session has a not-gone agent. Any agent of the session may list (read only); a non-superleader leader still sees its own members through `GET /agent/v1/me`. Errors: the 401 and 403 above.
+
+#### `POST /agent/v1/sessions/{slug}/messages`
+
+Queues a message to the session named `slug`. Body `{"text"}`, 1 to 16000 characters, no other field (the hop is never taken from the request). Response 202 `{"message_id"}`; the row carries `sender_session_id`, `sender_slug` and `hop`. Errors, checked in this order, and a refusal queues nothing:
+
+- 403 `not_leader`: the caller is not its session's current leader (the only agent of an alone session counts as leader);
+- 404 `not_found`: no session has that slug;
+- 422 `self_send`: the slug is the caller's own session;
+- 403 `target_not_superleader`: neither the caller's session nor the target is a superleader;
+- 409 `session_deleting`: the target is being discarded;
+- 409 `hop_limit`: the new hop exceeds `ORCH_SESSION_MESSAGE_MAX_HOPS` (8). The hop is computed by the server: when the caller's current turn (`agent_status.current_turn_id`) delivered a message that has a sender, it is that message's hop plus one, else 1. It stops a ping-pong whose replies are sent in the turn that delivered the previous message;
+- 429 `rate_limited`: the caller's session sent `ORCH_SESSION_MESSAGE_RATE_PER_MINUTE` (10) or more messages in the last 60 s, any status;
+- 429 `pair_budget`: the caller's session and the target exchanged `ORCH_SESSION_MESSAGE_PAIR_MAX_PER_HOUR` (30) or more messages, both directions, in the last hour. It stops a ping-pong across turns, where the hop restarts at 1;
+- 409 `target_queue_full`: the target holds `ORCH_SESSION_MESSAGE_QUEUED_MAX` (20) or more queued messages that have a sender;
+- 422 `invalid_request`: the text is empty, longer than 16000 characters, or the body has another field (checked before the others, by request validation);
+- plus the 401 and 403 above.
+
+The limits are advisory: the counts and the insert are not one atomic step, so concurrent sends of one session can overshoot a limit by the number of sends in flight.
+
 ### File locks
 
 Advisory locks on files, so agents claim what they edit and are warned before writing a file another live agent holds. Paths are relative to the session workdir (`/workdir/<spec.workdir>`); an absolute path under it is converted, and an empty path, a `..` escape or a path outside the workdir is `400 invalid_path`. The workdir root constant `WORKDIR_ROOT` lives in `spec.py`, shared by the renderer and the api.

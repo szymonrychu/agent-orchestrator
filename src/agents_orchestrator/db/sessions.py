@@ -128,6 +128,53 @@ async def list_sessions(conn: psycopg.AsyncConnection) -> list[Session]:
     return await _fetch(conn, "SELECT * FROM sessions ORDER BY created_at, slug", ())
 
 
+@dataclass(frozen=True)
+class MessagingPeer:
+    slug: str
+    preset_name: str | None
+    superleader: bool
+    leader_present: bool
+
+
+# Active sessions other than the caller's, with whether a not-gone agent holds the leader row
+# and whether any not-gone agent exists; the hive rule picks which one is "leader present".
+_PEERS = """
+SELECT c.*,
+       EXISTS (SELECT 1 FROM session_leaders l JOIN agents a ON a.id = l.agent_id
+               WHERE l.session_id = c.id AND a.gone_at IS NULL) AS live_leader,
+       EXISTS (SELECT 1 FROM agents a
+               WHERE a.session_id = c.id AND a.gone_at IS NULL) AS live_agent
+FROM sessions c
+WHERE c.desired = 'active' AND c.id <> %s
+ORDER BY c.slug
+"""
+
+
+async def list_messaging_peers(
+    conn: psycopg.AsyncConnection, caller_session_id: uuid.UUID, *, superleaders_only: bool
+) -> list[MessagingPeer]:
+    """The sessions the caller may message (D6, D7): every other active session, or only the
+    other active superleader sessions, ordered by slug."""
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(_PEERS, (caller_session_id,))
+        rows = await cur.fetchall()
+    out = []
+    for row in rows:
+        spec = _from_row(row).spec
+        superleader = bool(spec.session_messaging)
+        if superleaders_only and not superleader:
+            continue
+        out.append(
+            MessagingPeer(
+                slug=row["slug"],
+                preset_name=row["preset_name"],
+                superleader=superleader,
+                leader_present=row["live_leader"] if spec.hive else row["live_agent"],
+            )
+        )
+    return out
+
+
 async def count_active(conn: psycopg.AsyncConnection) -> int:
     cur = await conn.execute("SELECT count(*) FROM sessions")
     return (await cur.fetchone())[0]
