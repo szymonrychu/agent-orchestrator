@@ -58,7 +58,8 @@
       \ venv /opt/any-mcp\n  /opt/any-mcp/bin/pip install --no-cache-dir 'any-mcp\
       \ @ git+https://github.com/szymonrychu/any-mcp@v0.5.0'\n  printf '%s\\n' \"\
       $REF\" > /opt/any-mcp/.ref\nfi\nmkdir -p /opt/any-mcp/etc\ncat > /opt/any-mcp/etc/any-mcp.yaml\
-      \ <<'ANY_MCP_CONFIG_EOF'\n{}\nANY_MCP_CONFIG_EOF\n/opt/any-mcp/bin/any-mcp --help\
+      \ <<'ANY_MCP_CONFIG_EOF'\n{}\nANY_MCP_CONFIG_EOF\n/opt/any-mcp/bin/any-mcp plugins\
+      \ install --config /opt/any-mcp/etc/any-mcp.yaml\n/opt/any-mcp/bin/any-mcp --help\
       \ >/dev/null\n"
 - apiVersion: v1
   kind: Service
@@ -100,7 +101,7 @@
           agents.szymonrichert.pl/session: solo
           app.kubernetes.io/managed-by: agents-orchestrator
         annotations:
-          agents.szymonrichert.pl/config-hash: 2b4df32037197521695e478bfe69ae08c9e439047f9f721a46e4e7cb07bfe7e2
+          agents.szymonrichert.pl/config-hash: 5fa27ea46dce2feb6fce90d74663de8c10a17a41343128e3741e6859318a6c7c
       spec:
         imagePullSecrets:
         - name: regcred

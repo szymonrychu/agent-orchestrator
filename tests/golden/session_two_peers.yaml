@@ -62,6 +62,7 @@
       \ @ git+https://github.com/szymonrychu/any-mcp@v0.5.0'\n  printf '%s\\n' \"\
       $REF\" > /opt/any-mcp/.ref\nfi\nmkdir -p /opt/any-mcp/etc\ncat > /opt/any-mcp/etc/any-mcp.yaml\
       \ <<'ANY_MCP_CONFIG_EOF'\n{\n  \"servers\": {}\n}\nANY_MCP_CONFIG_EOF\n/opt/any-mcp/bin/any-mcp\
+      \ plugins install --config /opt/any-mcp/etc/any-mcp.yaml\n/opt/any-mcp/bin/any-mcp\
       \ --help >/dev/null\n"
 - apiVersion: v1
   kind: Service
@@ -103,7 +104,7 @@
           agents.szymonrichert.pl/session: alpha
           app.kubernetes.io/managed-by: agents-orchestrator
         annotations:
-          agents.szymonrichert.pl/config-hash: 971e976af496824df0c2487f683e6d4567bb6cf06475a6517bbc9ffdda10af5e
+          agents.szymonrichert.pl/config-hash: c69a22c0aaa8c3f12a82cc86f3996b868055d07ec3bd98ccf238c9b6147e899b
       spec:
         imagePullSecrets:
         - name: regcred

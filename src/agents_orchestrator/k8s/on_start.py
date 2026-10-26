@@ -1,4 +1,5 @@
-"""The per-session onStart script: installs any-mcp once per ref and writes its config (D16)."""
+"""The per-session onStart script: installs any-mcp once per ref, writes its config, installs its
+plugin sources (D16, generic-any-mcp D7, D8)."""
 
 from __future__ import annotations
 
@@ -7,7 +8,7 @@ import shlex
 from typing import Any
 
 from agents_orchestrator.settings import Settings
-from agents_orchestrator.spec import SessionSpec
+from agents_orchestrator.spec import SessionSpec, source_plugin_name
 
 DELIMITER = "ANY_MCP_CONFIG_EOF"
 ROOT = "/opt/any-mcp"
@@ -15,7 +16,7 @@ CONFIG_PATH = f"{ROOT}/etc/any-mcp.yaml"
 
 
 PLUGIN_NAME = "orchestrator"
-PLUGIN_CLASS = "any_mcp.orchestrator:OrchestratorPlugin"
+PLUGIN_SUBDIR = "orchestration/orchestrator"
 SCALE_TOOL = "scale"
 HIVE_TOOLS = [
     "me",
@@ -49,7 +50,10 @@ def _orchestrator_entry(
         return None
     return {
         "name": PLUGIN_NAME,
-        "plugin": PLUGIN_CLASS,
+        "source": (
+            f"git::{settings.any_mcp_plugins_repo}//{PLUGIN_SUBDIR}"
+            f"?ref={settings.any_mcp_plugins_ref}"
+        ),
         "namespace": PLUGIN_NAME,
         "allow": orchestrator_allow(spec),
         "config": {
@@ -75,10 +79,14 @@ def any_mcp_config(
         else settings.default_any_mcp_config()
     )
     entry = _orchestrator_entry(spec, settings, slug)
-    if entry is None:
+    sources = [{"name": source_plugin_name(s), "source": s} for s in spec.any_mcp_sources or []]
+    if entry is None and not sources:
         return base
-    kept = [p for p in base.get("plugins", []) if p.get("name") != PLUGIN_NAME]
-    return {**base, "plugins": [*kept, entry]}
+    plugins = base.get("plugins", [])
+    if entry is None:
+        return {**base, "plugins": [*plugins, *sources]}
+    kept = [p for p in plugins if p.get("name") != PLUGIN_NAME]
+    return {**base, "plugins": [*kept, *sources, entry]}
 
 
 def render_on_start(spec: SessionSpec, settings: Settings, slug: str | None = None) -> str:
@@ -100,5 +108,6 @@ mkdir -p {ROOT}/etc
 cat > {CONFIG_PATH} <<'{DELIMITER}'
 {body}
 {DELIMITER}
+{ROOT}/bin/any-mcp plugins install --config {CONFIG_PATH}
 {ROOT}/bin/any-mcp --help >/dev/null
 """

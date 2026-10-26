@@ -212,6 +212,21 @@ def test_config_hash_rolls_pods():
     assert hash_of(make_session(), any_mcp_ref="v9.9.9") != base
 
 
+def test_config_hash_follows_plugin_sources():
+    def hash_of(session, **kw):
+        settings = make_settings(agent_api_url=AGENT_URL, **kw)
+        objs = render.render_session(session, settings, TOKENS)
+        return sts_of(objs)["spec"]["template"]["metadata"]["annotations"][render.HASH_ANNOTATION]
+
+    base = hash_of(make_session())
+    assert hash_of(make_session()) == base
+    assert hash_of(make_session(), any_mcp_plugins_ref="v9.9.9") != base
+    assert hash_of(make_session(), any_mcp_plugins_repo="https://git.example/a/b") != base
+    tools = hash_of(make_session(any_mcp_sources=["github.com/acme/tools"]))
+    assert tools != base
+    assert hash_of(make_session(any_mcp_sources=["github.com/acme/tools?ref=v2"])) != tools
+
+
 def test_all_objects_in_namespace():
     objs = render.render_session(
         make_session(replicas=2), make_settings(namespace="ns1", cluster_domain="k.local"), TOKENS
@@ -303,6 +318,16 @@ def _stub_bin(tmp_path: Path) -> tuple[Path, Path]:
     bin_dir.mkdir()
     log = tmp_path / "calls.log"
     root = tmp_path / "any-mcp"
+    # the fake any-mcp logs its argv; `plugins install --config F` also logs F's content
+    (tmp_path / "any-mcp.stub").write_text(
+        f"""#!/bin/sh
+echo "any-mcp $*" >> {log}
+if [ "$1 $2 $3" = "plugins install --config" ]; then
+  cat "$4" >> {log}
+  echo >> {log}
+fi
+"""
+    )
     python3 = bin_dir / "python3"
     python3.write_text(
         f"""#!/bin/sh
@@ -310,7 +335,7 @@ echo "python3 $*" >> {log}
 if [ "$1 $2" = "-m venv" ]; then
   mkdir -p "$3/bin"
   printf '#!/bin/sh\\necho "pip $*" >> {log}\\n' > "$3/bin/pip"
-  printf '#!/bin/sh\\necho "any-mcp $*" >> {log}\\n' > "$3/bin/any-mcp"
+  cp {tmp_path / "any-mcp.stub"} "$3/bin/any-mcp"
   chmod +x "$3/bin/pip" "$3/bin/any-mcp"
 fi
 """
@@ -353,6 +378,30 @@ def test_on_start_script_installs_once_and_writes_json_config(tmp_path):
     _run(on_start.render_on_start(spec2, make_settings(any_mcp_ref="v0.2.0")), root, tmp_path)
     assert log.read_text().count("pip install") == 1
     assert (root / ".ref").read_text().strip() == "v0.2.0"
+
+
+def test_on_start_installs_plugin_sources(tmp_path):
+    """D7: after writing the config and before --help, on every run, not only on a new ref."""
+    settings = make_settings(agent_api_url=AGENT_URL)
+    spec = SessionSpec(replicas=2, any_mcp_sources=["github.com/acme/tools"])
+    script = on_start.render_on_start(spec, settings, "alpha")
+    install = "/opt/any-mcp/bin/any-mcp plugins install --config /opt/any-mcp/etc/any-mcp.yaml\n"
+    assert script.count(install) == 1
+    heredoc_end = script.index("\nANY_MCP_CONFIG_EOF\n")
+    assert heredoc_end < script.index(install) < script.index("/opt/any-mcp/bin/any-mcp --help")
+
+    log, root = _stub_bin(tmp_path)
+    config = root / "etc" / "any-mcp.yaml"
+    for run in range(2):
+        log.write_text("")
+        _run(script, root, tmp_path)
+        lines = log.read_text().splitlines()
+        assert ("pip install" in log.read_text()) is (run == 0)
+        at = lines.index(f"any-mcp plugins install --config {config}")
+        installed = json.loads("\n".join(lines[at + 1 : lines.index("any-mcp --help")]))
+        assert installed == json.loads(config.read_text())
+        assert {"name": "tools", "source": "github.com/acme/tools"} in installed["plugins"]
+        assert lines[-1] == "any-mcp --help"
 
 
 def test_on_start_config_sources(tmp_path):

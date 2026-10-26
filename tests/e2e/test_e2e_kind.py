@@ -152,9 +152,20 @@ def orchestrator_objects() -> list[tuple[str, str]]:
     return sorted(set(names))
 
 
-def any_mcp_ref() -> str:
+def release_setting(env: str, field: str) -> str:
     data = kube_json("get", "configmap", f"{RELEASE}-settings").get("data") or {}
-    return data.get("ORCH_ANY_MCP_REF") or Settings.model_fields["any_mcp_ref"].default
+    return data.get(env) or Settings.model_fields[field].default
+
+
+def any_mcp_ref() -> str:
+    return release_setting("ORCH_ANY_MCP_REF", "any_mcp_ref")
+
+
+def orchestrator_source() -> str:
+    """The reserved entry's source: the plugins repo at the release's pinned ref (D7)."""
+    repo = release_setting("ORCH_ANY_MCP_PLUGINS_REPO", "any_mcp_plugins_repo")
+    ref = release_setting("ORCH_ANY_MCP_PLUGINS_REF", "any_mcp_plugins_ref")
+    return f"git::{repo}//orchestration/orchestrator?ref={ref}"
 
 
 def agents_of(api: httpx.Client, session_id: str) -> list[dict[str, Any]]:
@@ -278,6 +289,7 @@ def assert_alone_session_tools(configmap: dict[str, Any]) -> None:
     plugins = on_start_any_mcp(configmap).get("plugins", [])
     entry = next((p for p in plugins if p.get("name") == "orchestrator"), None)
     assert entry is not None, plugins
+    assert entry["source"] == orchestrator_source() and "plugin" not in entry, entry
     assert entry["allow"] == [
         "sessions_list",
         "session_send",
@@ -587,6 +599,11 @@ def test_any_mcp_installed_by_on_start(session: dict[str, Any]) -> None:
     ref = any_mcp_ref()
     cm = kube_json("get", "configmap", f"agent-{SLUG}-config")["data"]
     assert f"REF={ref}\n" in cm["on-start.sh"], cm["on-start.sh"]
+    install = "/opt/any-mcp/bin/any-mcp plugins install --config /opt/any-mcp/etc/any-mcp.yaml\n"
+    assert install in cm["on-start.sh"], cm["on-start.sh"]
+    plugins = on_start_any_mcp({"data": cm})["plugins"]
+    entry = next(p for p in plugins if p["name"] == "orchestrator")
+    assert entry["source"] == orchestrator_source() and "plugin" not in entry, entry
     rendered = yaml.safe_load(cm["config.yaml"])
     claude = rendered["claude"]
     assert claude["mcp_servers"]["any-mcp"] == {
@@ -606,6 +623,9 @@ def test_any_mcp_installed_by_on_start(session: dict[str, Any]) -> None:
         ), pod
         kubectl("exec", pod, "-c", "ccw", "--", "/opt/any-mcp/bin/any-mcp", "--help")
         kubectl("exec", pod, "-c", "ccw", "--", "test", "-s", "/opt/any-mcp/etc/any-mcp.yaml")
+        # the reserved source was installed by `any-mcp plugins install` in onStart
+        pip = "/opt/any-mcp/bin/pip"
+        kubectl("exec", pod, "-c", "ccw", "--", pip, "show", "any-mcp-tatara-orchestrator")
         # the session the wrapper started registers the stdio server and denies the tool
         found = kubectl("exec", pod, "-c", "ccw", "--", "python3", "-c", SESSION_CONFIGS).stdout
         sessions = json.loads(found)
@@ -1066,6 +1086,7 @@ def test_alone_session_has_no_hive_tools(api: httpx.Client, session: dict[str, A
         hive_plugins = on_start_any_mcp(hive_map).get("plugins", [])
         hive_entry = next(p for p in hive_plugins if p.get("name") == "orchestrator")
         assert "me" in hive_entry["allow"], hive_entry
+        assert hive_entry["source"] == orchestrator_source(), hive_entry
         assert yaml.safe_load(hive_map["data"]["config.yaml"])["notes"] == {"enabled": True}
     finally:
         api.delete(f"/sessions/{alone['id']}")
