@@ -183,7 +183,37 @@ def test_restore_download_failed_reports_status(tmp_path, capsys):
     assert _outcome(capsys.readouterr().out)["reason"] == "download_failed: HTTP 403"
 
 
-def test_restore_extract_failed(tmp_path, capsys):
+def test_restore_corrupt_archive_resets_workdir(tmp_path, capsys):
+    work = tmp_path / "work"
+    (work / "sub").mkdir(parents=True)
+    (work / "old.txt").write_text("stale")
+    (work / ".hidden").write_text("stale")
+    (work / "sub" / "deep.txt").write_text("stale")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep")
+    (work / "link").symlink_to(outside)
+    rec = _Recorder(lambda request: httpx.Response(200, content=b"definitely not zstd" * 64))
+
+    code = transfer.restore(_env(tmp_path), transport=rec.transport)
+
+    outcome = _outcome(capsys.readouterr().out)
+    assert code == 0
+    assert outcome["outcome"] == "reset"
+    assert outcome["reason"].startswith("extract_failed: ")
+    assert work.is_dir() and list(work.iterdir()) == []
+    assert (outside / "keep.txt").read_text() == "keep"
+
+
+def test_restore_reset_failure_is_failed(tmp_path, capsys, monkeypatch):
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "old.txt").write_text("stale")
+
+    def boom(path):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(transfer, "_clear_dir", boom)
     rec = _Recorder(lambda request: httpx.Response(200, content=b"definitely not zstd" * 64))
 
     code = transfer.restore(_env(tmp_path), transport=rec.transport)
@@ -192,6 +222,7 @@ def test_restore_extract_failed(tmp_path, capsys):
     assert code == 1
     assert outcome["outcome"] == "failed"
     assert outcome["reason"].startswith("extract_failed: ")
+    assert "; reset failed: " in outcome["reason"]
 
 
 def test_restore_network_error_after_extraction_began_is_extract_failed(tmp_path, capsys):
@@ -204,13 +235,18 @@ def test_restore_network_error_after_extraction_began_is_extract_failed(tmp_path
         yield body[: len(body) // 2]
         raise httpx.ReadError(f"connection reset reading {URL}")
 
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "old.txt").write_text("stale")
     rec = _Recorder(lambda request: httpx.Response(200, content=chunks()))
     code = transfer.restore(_env(tmp_path), transport=rec.transport)
 
     out = capsys.readouterr()
     outcome = _outcome(out.out)
     assert code == 1
+    assert outcome["outcome"] == "failed"
     assert outcome["reason"].startswith("extract_failed: ")
+    assert (work / "old.txt").read_text() == "stale"
     _no_signature(out.out, out.err)
 
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
 import sys
 from collections.abc import Buffer, Iterator, Mapping
 from pathlib import Path
@@ -144,12 +145,23 @@ class _BodyReader(io.RawIOBase):
         return size
 
 
+def _clear_dir(path: Path) -> None:
+    """Empty `path` but keep it; symlinks are unlinked, never followed."""
+    for entry in path.iterdir():
+        if entry.is_symlink() or not entry.is_dir():
+            entry.unlink()
+        else:
+            shutil.rmtree(entry)
+
+
 def restore(env: Mapping[str, str], *, transport: httpx.BaseTransport | None = None) -> int:
     """GET `CACHE_URL` and unpack it into `CACHE_DIR`; print the outcome, return the exit code.
 
     200 restores, 404 is a miss that leaves the workdir untouched. Another status, or an error
-    before any body byte reached the extractor, is `download_failed`; an ExtractError or any
-    failure once extraction began is `extract_failed`.
+    before any body byte reached the extractor, is `download_failed`; any failure once extraction
+    began is `extract_failed`. An ExtractError means the archive itself is unreadable or untrusted:
+    the workdir is emptied and the outcome is `reset` (exit 0), so the save that follows replaces
+    the bad object. Any other failure leaves the workdir alone: the stored archive may be good.
     """
     url = env.get("CACHE_URL", "")
     try:
@@ -177,8 +189,14 @@ def restore(env: Mapping[str, str], *, transport: httpx.BaseTransport | None = N
                 pass  # the zstd epilogue past the tar end: count the whole object
             delivered = reader.delivered
     except archive.ExtractError as exc:
-        _emit("failed", reason=f"extract_failed: {_error(exc, url)}")
-        return EXIT_FAILED
+        reason = f"extract_failed: {_error(exc, url)}"
+        try:
+            _clear_dir(workdir)
+        except Exception as wipe:  # noqa: BLE001
+            _emit("failed", reason=f"{reason}; reset failed: {_error(wipe, url)}")
+            return EXIT_FAILED
+        _emit("reset", reason=reason)
+        return EXIT_OK
     except Exception as exc:  # noqa: BLE001 - every failure becomes the one outcome line
         stage = "extract_failed" if reader is not None and reader.delivered else "download_failed"
         _emit("failed", reason=f"{stage}: {_error(exc, url)}")

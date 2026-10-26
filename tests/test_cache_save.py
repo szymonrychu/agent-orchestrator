@@ -250,7 +250,7 @@ async def test_save_only_after_successful_restore(env, restore, reason):
     assert await env.gone(c)
 
 
-@pytest.mark.parametrize("restore", ["restored", "miss"])
+@pytest.mark.parametrize("restore", ["restored", "miss", "reset"])
 async def test_save_runs_after_success_states(env, restore):
     c = await env.ready(restore=restore)
     await env.delete(c)

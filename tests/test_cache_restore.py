@@ -173,6 +173,20 @@ async def test_miss_is_not_degraded(wenv, fake):
     assert status["phase"] == "ready" and "cache" not in status["message"]
 
 
+async def test_reset_is_not_degraded(wenv, fake):
+    c = await wenv.session("alpha")
+    await wenv.tick()
+    wenv.kube.finish_job(
+        RESTORE, exit_code=0, log=line("reset", reason="extract_failed: ExtractError: bad")
+    )
+    await wenv.tick(2)
+    restore = (await wenv.cache(c.id))["restore"]
+    assert restore["state"] == "reset" and restore["reason"].startswith("extract_failed: ")
+    assert len(fake.sessions) == 1
+    status = await wenv.status(c.id)
+    assert status["phase"] == "ready" and "cache" not in status["message"]
+
+
 async def test_failed_restore_degrades(wenv, fake):
     c = await wenv.session("alpha")
     await wenv.tick()
@@ -357,6 +371,7 @@ async def test_cache_gate_shapes():
     assert CacheGate.of({"restore": {"state": "running"}}, True).hold
     assert CacheGate.of({"restore": {"state": "restored"}}, True) == CacheGate()
     assert CacheGate.of({"restore": {"state": "miss"}}, True) == CacheGate()
+    assert CacheGate.of({"restore": {"state": "reset"}}, True) == CacheGate()
     failed = CacheGate.of({"restore": {"state": "failed", "reason": "timeout"}}, True)
     assert (failed.hold, failed.degraded, failed.message) == (
         False,
