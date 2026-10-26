@@ -32,7 +32,12 @@ from psycopg_pool import AsyncConnectionPool
 from agents_orchestrator.db.sessions import Session
 from agents_orchestrator.k8s.kube import KubeApi, KubeError, Obj, is_owned
 from agents_orchestrator.k8s.labels import object_names, prefix, session_labels
-from agents_orchestrator.k8s.render import WORKSPACE_VOLUME, workdir_mount, workdir_path
+from agents_orchestrator.k8s.render import (
+    WORKSPACE_VOLUME,
+    agent_identity,
+    workdir_mount,
+    workdir_path,
+)
 from agents_orchestrator.reconciler.checks import (
     BACKOFF_LIMIT,
     DEADLINE_GRACE_SECONDS,
@@ -117,6 +122,7 @@ def render_init_job(session: Session, settings: Settings) -> Obj:
             container["resources"] = resources
     pod_spec: dict[str, Any] = {
         "restartPolicy": "Never",
+        **agent_identity(settings),
         "securityContext": {"runAsUser": 1000, "fsGroup": 1000},
         "containers": [container],
         "volumes": [

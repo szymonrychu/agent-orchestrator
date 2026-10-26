@@ -44,6 +44,14 @@ def workdir_mount(spec: SessionSpec) -> dict[str, str]:
     return {"name": WORKSPACE_VOLUME, "mountPath": WORKDIR_ROOT, "subPath": "workdir"}
 
 
+def agent_identity(settings: Settings) -> dict[str, Any]:
+    """Every agent pod and Job runs as a named ServiceAccount with no token mounted (D4)."""
+    return {
+        "serviceAccountName": settings.agent_service_account,
+        "automountServiceAccountToken": False,
+    }
+
+
 def pod_url(slug: str, pod: str, settings: Settings) -> str:
     """The per-pod DNS base URL of one wrapper: <pod>.agent-<slug>.<namespace>.svc.<domain>."""
     return (
@@ -308,6 +316,7 @@ def render_session(
         },
     }
     pod_spec: dict[str, Any] = {
+        **agent_identity(settings),
         "securityContext": {"runAsUser": 1000, "fsGroup": 1000},
         "terminationGracePeriodSeconds": settings.agent_termination_grace_seconds,
         "containers": [_container(session, settings, names)],

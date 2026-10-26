@@ -104,6 +104,8 @@
       spec:
         imagePullSecrets:
         - name: regcred
+        serviceAccountName: default
+        automountServiceAccountToken: false
         securityContext:
           runAsUser: 1000
           fsGroup: 1000
