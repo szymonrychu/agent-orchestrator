@@ -6,13 +6,13 @@ from typing import Any
 
 import pytest
 import yaml
+from test_service_accounts import TOKENS, URL, WHEN, make_session, make_settings
 
 from agents_orchestrator.db import queue
 from agents_orchestrator.k8s import render
 from agents_orchestrator.reconciler.cache import render_cache_job
 from agents_orchestrator.reconciler.checks import render_job
 from agents_orchestrator.reconciler.init import render_init_job
-from test_service_accounts import TOKENS, URL, WHEN, make_session, make_settings
 
 PRIVILEGED = "orch-kube-access"
 TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount"
@@ -85,7 +85,7 @@ def test_kube_access_passthrough_env() -> None:
     settings = make_settings()
     on = passthrough(render.render_session(make_session(kube_access=True), settings, TOKENS))
     off = passthrough(render.render_session(make_session(), settings, TOKENS))
-    assert KUBE_ENV <= set(on)
+    assert set(on) >= KUBE_ENV
     assert on == sorted(on)
     assert not KUBE_ENV & set(off)
 

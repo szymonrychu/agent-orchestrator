@@ -54,7 +54,7 @@ def agent_identity(settings: Settings) -> dict[str, Any]:
 
 
 def kube_access_granted(spec: SessionSpec, settings: Settings) -> bool:
-    """A kube_access spec gets the privileged identity only while the setting still names it (D3)."""
+    """A kube_access spec gets the privileged identity only while the setting is set (D3)."""
     return bool(spec.kube_access and settings.kube_access_service_account)
 
 
