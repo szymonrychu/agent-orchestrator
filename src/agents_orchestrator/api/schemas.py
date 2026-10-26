@@ -151,6 +151,10 @@ class MetaCache(BaseModel):
     max_bytes: int
 
 
+class MetaKubeAccess(BaseModel):
+    available: bool
+
+
 class Meta(BaseModel):
     defaults: MetaDefaults
     agent_image: str
@@ -160,6 +164,7 @@ class Meta(BaseModel):
     caps: MetaCaps
     discard_hook: Literal["none", "command", "url"]
     cache: MetaCache
+    kube_access: MetaKubeAccess
 
 
 MessageStatus = Literal["queued", "dispatching", "verifying", "sent", "failed", "cancelled"]

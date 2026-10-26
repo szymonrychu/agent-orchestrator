@@ -1674,6 +1674,9 @@
             "title": "Efforts",
             "type": "array"
           },
+          "kube_access": {
+            "$ref": "#/components/schemas/MetaKubeAccess"
+          },
           "models": {
             "items": {
               "type": "string"
@@ -1690,7 +1693,8 @@
           "efforts",
           "caps",
           "discard_hook",
-          "cache"
+          "cache",
+          "kube_access"
         ],
         "title": "Meta",
         "type": "object"
@@ -1802,6 +1806,19 @@
           "max_attempts"
         ],
         "title": "MetaDefaults",
+        "type": "object"
+      },
+      "MetaKubeAccess": {
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "available"
+        ],
+        "title": "MetaKubeAccess",
         "type": "object"
       },
       "MetaResources": {
@@ -2216,6 +2233,17 @@
             "title": "Init Scripts",
             "type": "array"
           },
+          "kube_access": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kube Access"
+          },
           "leader_lease_seconds": {
             "anyOf": [
               {
@@ -2304,6 +2332,17 @@
               }
             ],
             "title": "Reuse Running Agent"
+          },
+          "session_messaging": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Messaging"
           },
           "static": {
             "default": false,
