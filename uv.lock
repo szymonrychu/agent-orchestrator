@@ -54,7 +54,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "claude-code-wrapper", git = "https://github.com/szymonrychu/claude-code-wrapper?rev=1f64e9f9263f5feef15193d7d7acc159b0b65fee" },
+    { name = "claude-code-wrapper", git = "https://github.com/szymonrychu/claude-code-wrapper?rev=ee10aa8f742c98e473287e31d0c98492a9e2c1de" },
     { name = "moto", extras = ["server"], specifier = ">=5.2.4" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -501,7 +501,7 @@ wheels = [
 [[package]]
 name = "claude-code-wrapper"
 version = "0.2.0"
-source = { git = "https://github.com/szymonrychu/claude-code-wrapper?rev=1f64e9f9263f5feef15193d7d7acc159b0b65fee#1f64e9f9263f5feef15193d7d7acc159b0b65fee" }
+source = { git = "https://github.com/szymonrychu/claude-code-wrapper?rev=ee10aa8f742c98e473287e31d0c98492a9e2c1de#ee10aa8f742c98e473287e31d0c98492a9e2c1de" }
 dependencies = [
     { name = "anyio" },
     { name = "fastapi" },
