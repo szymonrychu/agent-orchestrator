@@ -146,7 +146,7 @@ The master key and the Claude token each need a value or an `existingSecret`; wi
 
 ### Settings ConfigMap
 
-`<fullname>-settings` carries `ORCH_NAMESPACE` (the release namespace), `ORCH_AGENT_IMAGE` (`agentImage`, required) and `ORCH_CLAUDE_SECRET_NAME` (`claude.existingSecret` or `<fullname>-claude`). Every entry of `env` is added verbatim; each key must start with `ORCH_` or the render fails naming it. No secret value is ever written to the ConfigMap; the database URL and master key reach the containers through `secretKeyRef`.
+`<fullname>-settings` carries `ORCH_NAMESPACE` (the release namespace), `ORCH_AGENT_IMAGE` (`agentImage`, required), `ORCH_CLAUDE_SECRET_NAME` (`claude.existingSecret` or `<fullname>-claude`), `ORCH_AGENT_SERVICE_ACCOUNT` (`<fullname>-agent` with `serviceAccount.create`, else `default`) and, only with `kubeAccess.enabled`, `ORCH_KUBE_ACCESS_SERVICE_ACCOUNT` (`<fullname>-kube-access`; without it `kube_access` sessions are refused). Every entry of `env` is added verbatim; each key must start with `ORCH_` or the render fails naming it. No secret value is ever written to the ConfigMap; the database URL and master key reach the containers through `secretKeyRef`.
 
 ### Service API
 
@@ -154,7 +154,7 @@ The master key and the Claude token each need a value or an `existingSecret`; wi
 
 ### RBAC
 
-`rbac.create` (default `true`) renders a namespaced Role `<fullname>-reconciler` in the release namespace and a RoleBinding to the ServiceAccount `<fullname>-reconciler` only. No ClusterRole or ClusterRoleBinding is ever rendered. The Role grants exactly:
+`rbac.create` (default `true`) renders a namespaced Role `<fullname>-reconciler` in the release namespace and a RoleBinding to the ServiceAccount `<fullname>-reconciler` only. No ClusterRole is ever rendered, and a ClusterRoleBinding only behind one value: with `kubeAccess.enabled` (default `false`) and `rbac.create`, the chart renders the single ClusterRoleBinding `<fullname>-kube-access` of the ServiceAccount `<fullname>-kube-access` to the built-in ClusterRole `cluster-admin` (see Kubernetes permissions). The Role grants exactly:
 
 | Resource | Verbs |
 |---|---|
@@ -164,7 +164,16 @@ The master key and the Claude token each need a value or an `existingSecret`; wi
 | `batch` jobs | get, list, watch, create, delete |
 | pods/log | get |
 
-There is no `pods/exec` and no wildcard. With `rbac.create=false` neither the Role nor the RoleBinding renders.
+There is no `pods/exec` and no wildcard. With `rbac.create=false` neither the Role nor the RoleBinding renders, and no ClusterRoleBinding either.
+
+ServiceAccounts, all with `automountServiceAccountToken: false` except the reconciler's:
+
+| ServiceAccount | Rendered when | Used by |
+|---|---|---|
+| `<fullname>` (or `serviceAccount.name`) | `serviceAccount.create` | api, dispatcher, ingester |
+| `<fullname>-reconciler` | `serviceAccount.create` | the reconciler (token mounted, bound to the Role) |
+| `<fullname>-agent` | `serviceAccount.create` | every agent pod without `kube_access` and every init, check and cache Job; no binding |
+| `<fullname>-kube-access` | `kubeAccess.enabled` (even with `serviceAccount.create=false`) | agent pods of `kube_access` sessions, which mount its token; bound to `cluster-admin` when `rbac.create` |
 
 ### Ingress
 
@@ -282,6 +291,10 @@ Only the reconciler talks to Kubernetes. Everything it touches lives in one name
 | pods/log | get | check log tails |
 
 Secrets are limited to create, patch and delete: there is no get, list or watch on secrets, so the reconciler can never read the master key, the Claude token, the database credentials or any other Secret in the namespace. The Role is bound only to the reconciler's ServiceAccount; the api, dispatcher and ingester run with `automountServiceAccountToken: false`. The Role never grants `pods/exec`, and there is no ClusterRole and no wildcard.
+
+Kubernetes access (D2) is the one value-gated exception. With `kubeAccess.enabled` (default `false`) the chart renders the ServiceAccount `<fullname>-kube-access` (`automountServiceAccountToken: false`; only the pods of a `kube_access` session mount its token) and, when `rbac.create` is also true, the single ClusterRoleBinding `<fullname>-kube-access` of it to the built-in ClusterRole `cluster-admin`: all namespaces, all resources, full read-write. No ClusterRole is rendered and `cluster-admin` is never edited. The reconciler's Role above is unchanged by the value and holds no RBAC verbs: the binding is owned by helm, and the reconciler only sets `serviceAccountName` and `automountServiceAccountToken` on opted-in pods. Without the value, `ORCH_KUBE_ACCESS_SERVICE_ACCOUNT` is unset and every `kube_access` session is refused.
+
+With `kubeAccess.enabled`, anything able to create pods, StatefulSets, Jobs or Secrets in the release namespace, the reconciler included, is cluster-admin-equivalent: it can run a pod as `<fullname>-kube-access`, or mint a non-expiring token Secret for that ServiceAccount, and so act as `cluster-admin`. Grant workload and Secret creation in that namespace only to identities you would trust with `cluster-admin`.
 
 Applies are server-side applies with field manager `agents-orchestrator` and `force`, so the reconciler owns the fields it renders.
 

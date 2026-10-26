@@ -181,6 +181,7 @@ def test_settings_configmap():
         "ORCH_SERVICE_PORT": "8002",
         "ORCH_AGENT_API_URL": f"http://{FULL}-agents.ns1.svc:8001",
         "ORCH_CLAUDE_SECRET_NAME": f"{FULL}-claude",
+        "ORCH_AGENT_SERVICE_ACCOUNT": f"{FULL}-agent",
         "ORCH_LOG_LEVEL": "debug",
         "ORCH_X": "5",
     }
