@@ -14,7 +14,7 @@ dependencies = [
     "pydantic-settings",
     "pyyaml",
     "websockets>=17.3",
-    "any-mcp @ git+https://github.com/szymonrychu/any-mcp@v0.4.0",
+    "any-mcp @ git+https://github.com/szymonrychu/any-mcp@v0.5.0",
     "zstandard>=0.25.0",
     "botocore>=1.43.118",
 ]
@@ -34,9 +34,9 @@ dev = [
 ]
 
 [tool.uv]
-# The plugins repo workspace sources any-mcp at its own tag; keep every resolution on the
-# any-mcp ref pinned in [project].dependencies above.
-override-dependencies = ["any-mcp @ git+https://github.com/szymonrychu/any-mcp@v0.4.0"]
+# uv refuses the plugins repo workspace's own any-mcp source as a conflicting URL, even at the
+# same tag; keep every resolution on the any-mcp ref pinned in [project].dependencies above.
+override-dependencies = ["any-mcp @ git+https://github.com/szymonrychu/any-mcp@v0.5.0"]
 
 [tool.hatch.metadata]
 allow-direct-references = true

@@ -8,7 +8,7 @@ resolution-markers = [
 ]
 
 [manifest]
-overrides = [{ name = "any-mcp", git = "https://github.com/szymonrychu/any-mcp?rev=v0.4.0" }]
+overrides = [{ name = "any-mcp", git = "https://github.com/szymonrychu/any-mcp?rev=v0.5.0" }]
 
 [[package]]
 name = "agents-orchestrator"
@@ -42,7 +42,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "any-mcp", git = "https://github.com/szymonrychu/any-mcp?rev=v0.4.0" },
+    { name = "any-mcp", git = "https://github.com/szymonrychu/any-mcp?rev=v0.5.0" },
     { name = "botocore", specifier = ">=1.43.118" },
     { name = "fastapi", specifier = "==0.160.0" },
     { name = "httpx" },
@@ -108,8 +108,8 @@ wheels = [
 
 [[package]]
 name = "any-mcp"
-version = "0.4.0"
-source = { git = "https://github.com/szymonrychu/any-mcp?rev=v0.4.0#9f506b2314f279dc2b5ca0678a91a8c0f54d5542" }
+version = "0.5.0"
+source = { git = "https://github.com/szymonrychu/any-mcp?rev=v0.5.0#4a73c79f99a5c6db3b03d43a756f78bcc04e7c9a" }
 dependencies = [
     { name = "fastmcp" },
     { name = "httpx" },

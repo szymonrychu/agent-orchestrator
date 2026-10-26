@@ -56,10 +56,10 @@
       \ 80\nnotes:\n  enabled: true\npeers:\n  enabled: true\n  name: ${POD_NAME}\n\
       \  advertise_url: ${CCW_PEER_URL}\n  token: ${CCW_PEER_TOKEN}\n  static:\n \
       \ - http://agent-alpha-0.agent-alpha.agents.svc.cluster.local:8080\n  - http://agent-alpha-1.agent-alpha.agents.svc.cluster.local:8080\n"
-    on-start.sh: "#!/bin/sh\nset -eu\nREF=v0.4.0\nif ! grep -qxF -- \"$REF\" /opt/any-mcp/.ref\
+    on-start.sh: "#!/bin/sh\nset -eu\nREF=v0.5.0\nif ! grep -qxF -- \"$REF\" /opt/any-mcp/.ref\
       \ 2>/dev/null; then\n  rm -rf /opt/any-mcp/* /opt/any-mcp/.ref\n  python3 -m\
       \ venv /opt/any-mcp\n  /opt/any-mcp/bin/pip install --no-cache-dir 'any-mcp\
-      \ @ git+https://github.com/szymonrychu/any-mcp@v0.4.0'\n  printf '%s\\n' \"\
+      \ @ git+https://github.com/szymonrychu/any-mcp@v0.5.0'\n  printf '%s\\n' \"\
       $REF\" > /opt/any-mcp/.ref\nfi\nmkdir -p /opt/any-mcp/etc\ncat > /opt/any-mcp/etc/any-mcp.yaml\
       \ <<'ANY_MCP_CONFIG_EOF'\n{\n  \"servers\": {}\n}\nANY_MCP_CONFIG_EOF\n/opt/any-mcp/bin/any-mcp\
       \ --help >/dev/null\n"
@@ -103,7 +103,7 @@
           agents.szymonrichert.pl/session: alpha
           app.kubernetes.io/managed-by: agents-orchestrator
         annotations:
-          agents.szymonrichert.pl/config-hash: f770003c14bf62efadb1611add4326468ab39bb436d88df8f4898ab232f1b27a
+          agents.szymonrichert.pl/config-hash: 971e976af496824df0c2487f683e6d4567bb6cf06475a6517bbc9ffdda10af5e
       spec:
         imagePullSecrets:
         - name: regcred

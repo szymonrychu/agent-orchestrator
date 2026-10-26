@@ -154,7 +154,9 @@ class Settings(BaseSettings):
     scale_drain_seconds: float = 900
 
     any_mcp_repo: str = "https://github.com/szymonrychu/any-mcp"
-    any_mcp_ref: str = "v0.4.0"
+    any_mcp_ref: str = "v0.5.0"
+    any_mcp_plugins_repo: str = "https://github.com/szymonrychu/any-mcp-tatara-plugins"
+    any_mcp_plugins_ref: str = "v0.1.0"
     on_start_timeout_seconds: float = 600
 
     cache_s3_endpoint: str = ""
@@ -321,7 +323,7 @@ class Settings(BaseSettings):
                 raise _Bad(f"ORCH_DEFAULT_{res}_REQUEST::must not exceed ORCH_DEFAULT_{res}_LIMIT")
         return v
 
-    @field_validator("any_mcp_ref")
+    @field_validator("any_mcp_ref", "any_mcp_plugins_ref")
     @classmethod
     def _check_ref(cls, v: str) -> str:
         if not _TAG_RE.match(v):
