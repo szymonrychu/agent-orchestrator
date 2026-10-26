@@ -23,6 +23,7 @@ from agents_orchestrator.api.errors import ApiError
 from agents_orchestrator.api.sessions import Cfg, Pool, edit_init_scripts, init_scripts_view
 from agents_orchestrator.db import agents as agents_repo
 from agents_orchestrator.db import file_locks, leadership
+from agents_orchestrator.db import queue as q
 from agents_orchestrator.db import sessions as sessions_repo
 from agents_orchestrator.spec import WORKDIR_ROOT
 from agents_orchestrator.tokens import tokens_for
@@ -85,6 +86,21 @@ async def require_agent(
 
 
 Caller = Annotated[agents_repo.Agent, Depends(require_agent)]
+
+
+async def _session(conn: Any, agent: agents_repo.Agent) -> sessions_repo.Session:
+    """The caller's session; `require_agent` already proved it exists."""
+    session = await sessions_repo.get(conn, agent.session_id)
+    assert session is not None
+    return session
+
+
+async def _member_id(conn: Any, session_id: uuid.UUID, pod_name: str) -> uuid.UUID:
+    """Id of the not-gone agent `pod_name` of the session; 404 when there is none."""
+    for member in await agents_repo.list_members(conn, session_id):
+        if member["pod_name"] == pod_name:
+            return member["id"]
+    raise ApiError(404, "not_found", f"agent {pod_name} not found in this session")
 
 
 @router.get("/me", response_model=Me, summary="Identity, leader and members of the caller")
@@ -150,9 +166,7 @@ async def scale(agent: Caller, body: schemas.ScaleRequest, pool: Pool) -> schema
 )
 async def init_scripts_get(agent: Caller, pool: Pool, settings: Cfg) -> schemas.InitScriptsView:
     async with pool.connection() as conn:
-        session = await sessions_repo.get(conn, agent.session_id)
-        assert session is not None
-        return init_scripts_view(conn, session, settings)
+        return init_scripts_view(conn, await _session(conn, agent), settings)
 
 
 @router.put(
@@ -178,8 +192,7 @@ async def handover(
 ) -> schemas.LeadershipRequested:
     """Queue a handover. The checks here fail fast; the dispatcher re-checks at apply time."""
     async with pool.connection() as conn:
-        session = await sessions_repo.get(conn, agent.session_id)
-        assert session is not None
+        session = await _session(conn, agent)
         if session.spec.alone:
             raise ApiError(409, "alone", "a single-agent session has no leader to change")
         leader = await leadership.current_leader(conn, agent.session_id)
@@ -189,19 +202,7 @@ async def handover(
             raise ApiError(
                 409, "stale_epoch", f"epoch {body.epoch} is not the current epoch {leader.epoch}"
             )
-        to_id = None
-        if body.to is not None:
-            member = next(
-                (
-                    m
-                    for m in await agents_repo.list_members(conn, agent.session_id)
-                    if m["pod_name"] == body.to
-                ),
-                None,
-            )
-            if member is None:
-                raise ApiError(404, "not_found", f"agent {body.to} not found in this session")
-            to_id = member["id"]
+        to_id = await _member_id(conn, agent.session_id, body.to) if body.to is not None else None
         request_id = await leadership.insert_request(
             conn, agent.session_id, "handover", agent.id, to_id, body.reason, body.epoch
         )
@@ -269,9 +270,7 @@ def _normalise(path: str, workdir: str) -> str | None:
 
 
 async def _workdir(conn: Any, agent: agents_repo.Agent) -> str:
-    session = await sessions_repo.get(conn, agent.session_id)
-    assert session is not None
-    return session.spec.workdir
+    return (await _session(conn, agent)).spec.workdir
 
 
 def _invalid(path: str) -> ApiError:
@@ -325,21 +324,124 @@ async def locks_reassign(body: LockReassignIn, agent: Caller, pool: Pool) -> Loc
         if leader is None or leader.agent_id != agent.id:
             raise ApiError(403, "not_leader", "only the current leader can reassign locks")
         (path,) = _normalise_all([body.path], await _workdir(conn, agent))
-        to_id = None
-        if body.to is not None:
-            member = next(
-                (
-                    m
-                    for m in await agents_repo.list_members(conn, agent.session_id)
-                    if m["pod_name"] == body.to
-                ),
-                None,
-            )
-            if member is None:
-                raise ApiError(404, "not_found", f"agent {body.to} not found in this session")
-            to_id = member["id"]
+        to_id = await _member_id(conn, agent.session_id, body.to) if body.to is not None else None
         await file_locks.assign(conn, agent.session_id, path, to_id)
     return LockReassigned(path=path, agent=body.to)
+
+
+# ---------------------------------------------------------------- cross-session messaging
+
+SESSION_MESSAGE_MAX_CHARS = 16000
+_RATE_WINDOW_SECONDS = 60
+_PAIR_WINDOW_SECONDS = 3600
+
+
+class SessionPeer(BaseModel):
+    slug: str
+    preset_name: str | None
+    superleader: bool
+    leader_present: bool
+
+
+class SessionPeers(BaseModel):
+    sessions: list[SessionPeer]
+
+
+class SessionMessageIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1, max_length=SESSION_MESSAGE_MAX_CHARS)
+
+
+class SessionMessageQueued(BaseModel):
+    message_id: int
+
+
+@router.get(
+    "/sessions",
+    response_model=SessionPeers,
+    summary="Sessions the caller's session may message (superleaders, or all for a superleader)",
+)
+async def sessions_list(agent: Caller, pool: Pool) -> SessionPeers:
+    async with pool.connection() as conn:
+        session = await _session(conn, agent)
+        peers = await sessions_repo.list_messaging_peers(
+            conn, agent.session_id, superleaders_only=not session.spec.session_messaging
+        )
+    return SessionPeers(
+        sessions=[
+            SessionPeer(
+                slug=p.slug,
+                preset_name=p.preset_name,
+                superleader=p.superleader,
+                leader_present=p.leader_present,
+            )
+            for p in peers
+        ]
+    )
+
+
+async def _leads(conn: Any, agent: agents_repo.Agent, session: sessions_repo.Session) -> bool:
+    """The only agent of an alone session leads it; a hive has its leader row."""
+    if session.spec.alone:
+        return True
+    leader = await leadership.current_leader(conn, agent.session_id)
+    return leader is not None and leader.agent_id == agent.id
+
+
+@router.post(
+    "/sessions/{slug}/messages",
+    status_code=202,
+    response_model=SessionMessageQueued,
+    summary="Queue a message to the leader of another session (leader only)",
+)
+async def session_send(
+    slug: str, body: SessionMessageIn, agent: Caller, pool: Pool, settings: Cfg
+) -> SessionMessageQueued:
+    """Checks in the order of D7; a refusal queues nothing. The limits are advisory: the
+    counts and the insert are not one atomic step (D10)."""
+    async with pool.connection() as conn:
+        own = await _session(conn, agent)
+        if not await _leads(conn, agent, own):
+            raise ApiError(403, "not_leader", "only the leader of a session can send to another")
+        target = await sessions_repo.get_by_slug(conn, slug)
+        if target is None:
+            raise ApiError(404, "not_found", f"session {slug} not found")
+        if target.id == own.id:
+            raise ApiError(422, "self_send", "a session cannot send a message to itself")
+        if not (own.spec.session_messaging or target.spec.session_messaging):
+            raise ApiError(
+                403,
+                "target_not_superleader",
+                f"session {slug} is not a superleader and neither is the caller's session",
+            )
+        if target.desired == "deleting":
+            raise ApiError(409, "session_deleting", f"session {slug} is being discarded")
+        previous = await q.turn_hop(conn, agent.id)
+        hop = previous + 1 if previous is not None else 1
+        if hop > settings.session_message_max_hops:
+            raise ApiError(
+                409,
+                "hop_limit",
+                f"hop {hop} exceeds the maximum of {settings.session_message_max_hops}",
+            )
+        rate = settings.session_message_rate_per_minute
+        if await q.count_sent_by(conn, own.id, _RATE_WINDOW_SECONDS) >= rate:
+            raise ApiError(429, "rate_limited", f"at most {rate} messages per minute")
+        pair = settings.session_message_pair_max_per_hour
+        if await q.count_between(conn, own.id, target.id, _PAIR_WINDOW_SECONDS) >= pair:
+            raise ApiError(
+                429, "pair_budget", f"at most {pair} messages per hour between two sessions"
+            )
+        cap = settings.session_message_queued_max
+        if await q.count_queued_session_messages(conn, target.id) >= cap:
+            raise ApiError(
+                409, "target_queue_full", f"session {slug} holds {cap} queued session messages"
+            )
+        message_id = await q.enqueue_message(
+            conn, target.id, body.text, sender_session_id=own.id, sender_slug=own.slug, hop=hop
+        )
+    return SessionMessageQueued(message_id=message_id)
 
 
 def _hook_path(body: Any) -> str | None:

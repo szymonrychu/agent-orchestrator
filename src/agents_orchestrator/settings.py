@@ -154,7 +154,7 @@ class Settings(BaseSettings):
     scale_drain_seconds: float = 900
 
     any_mcp_repo: str = "https://github.com/szymonrychu/any-mcp"
-    any_mcp_ref: str = "v0.3.0"
+    any_mcp_ref: str = "v0.4.0"
     on_start_timeout_seconds: float = 600
 
     cache_s3_endpoint: str = ""
@@ -168,6 +168,14 @@ class Settings(BaseSettings):
     cache_image: str = ""
     cache_max_bytes: int = Field(default=CACHE_MAX_BYTES_LIMIT, ge=1, le=CACHE_MAX_BYTES_LIMIT)
     cache_timeout_seconds: int = Field(default=1800, ge=60, le=86400)
+
+    kube_access_service_account: str = ""
+    agent_service_account: str = "default"
+
+    session_message_rate_per_minute: int = Field(default=10, ge=1)
+    session_message_queued_max: int = Field(default=20, ge=1)
+    session_message_max_hops: int = Field(default=8, ge=1)
+    session_message_pair_max_per_hour: int = Field(default=30, ge=1)
 
     def __init__(self, **values: object) -> None:
         try:
@@ -427,6 +435,10 @@ class Settings(BaseSettings):
     @property
     def cache_available(self) -> bool:
         return bool(self.cache_s3_bucket)
+
+    @property
+    def kube_access_available(self) -> bool:
+        return bool(self.kube_access_service_account)
 
     def require_cache(self) -> None:
         """Refuse a bucket without the credentials and image the cache Jobs need."""

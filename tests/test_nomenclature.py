@@ -24,6 +24,7 @@ ALLOWED_PHRASES = (
     "cluster-issuer",
     "ClusterRoleBinding",
     "ClusterRole",
+    "cluster-admin",
     "in-cluster",
     "In-cluster",
     "cluster-internal",

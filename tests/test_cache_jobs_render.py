@@ -189,7 +189,7 @@ def test_job_pod_hardened(action):
     pod = pod_of(job)
     assert pod["restartPolicy"] == "Never"
     assert pod["automountServiceAccountToken"] is False
-    assert "serviceAccountName" not in pod and "serviceAccount" not in pod
+    assert pod["serviceAccountName"] == "default" and "serviceAccount" not in pod
     assert pod["securityContext"] == {
         "runAsUser": 1000,
         "runAsNonRoot": True,

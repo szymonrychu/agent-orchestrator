@@ -262,6 +262,32 @@ def on_start_any_mcp(configmap: dict[str, Any]) -> dict[str, Any]:
     return json.loads(match.group(2))
 
 
+HIVE_ONLY_TOOLS = {
+    "me",
+    "leadership_handover",
+    "lock_claim",
+    "lock_release",
+    "lock_list",
+    "lock_reassign",
+    "scale",
+}
+
+
+def assert_alone_session_tools(configmap: dict[str, Any]) -> None:
+    """An alone session renders the orchestrator entry with the session and init-scripts tools."""
+    plugins = on_start_any_mcp(configmap).get("plugins", [])
+    entry = next((p for p in plugins if p.get("name") == "orchestrator"), None)
+    assert entry is not None, plugins
+    assert entry["allow"] == [
+        "sessions_list",
+        "session_send",
+        "init_scripts_get",
+        "init_scripts_edit",
+    ], entry
+    assert not set(entry["allow"]) & HIVE_ONLY_TOOLS, entry
+    assert entry["config"]["hive"] is False, entry
+
+
 def ws_url(api: httpx.Client, agent_id: str, terminal_id: str) -> str:
     """The attach WebSocket URL on the same host and port as the REST API port-forward."""
     base = str(api.base_url).rstrip("/").replace("http", "ws", 1)
@@ -1033,13 +1059,13 @@ def test_alone_session_has_no_hive_tools(api: httpx.Client, session: dict[str, A
         assert config["notes"] == {"enabled": False}, config
         assert "peers" not in config or not config["peers"].get("enabled"), config
         assert "onAgentToolCall" not in config["hooks"], config["hooks"]
-        plugins = on_start_any_mcp(configmap).get("plugins", [])
-        assert "orchestrator" not in {p.get("name") for p in plugins}, plugins
+        assert_alone_session_tools(configmap)
 
-        # the hive session of the same release renders the plugin entry, so the parse is sound
+        # the hive session of the same release renders the hive tools, so the parse is sound
         hive_map = kube_json("get", "configmap", f"agent-{SLUG}-config")
         hive_plugins = on_start_any_mcp(hive_map).get("plugins", [])
-        assert "orchestrator" in {p.get("name") for p in hive_plugins}, hive_plugins
+        hive_entry = next(p for p in hive_plugins if p.get("name") == "orchestrator")
+        assert "me" in hive_entry["allow"], hive_entry
         assert yaml.safe_load(hive_map["data"]["config.yaml"])["notes"] == {"enabled": True}
     finally:
         api.delete(f"/sessions/{alone['id']}")
@@ -1376,12 +1402,7 @@ def test_static_single_pod_is_alone(api: httpx.Client, baseline: dict) -> None:
         config = yaml.safe_load(configmap["data"]["config.yaml"])
         assert config["notes"] == {"enabled": False}, config
         assert not (config.get("peers") or {}).get("enabled"), config
-        plugins = on_start_any_mcp(configmap).get("plugins", [])
-        for plugin in plugins:
-            if plugin.get("name") == "orchestrator":
-                allow = set(plugin.get("allow", []))
-                assert not allow & {"scale", "me", "leadership_handover", "lock_claim"}, plugin
-        assert "orchestrator" not in {p.get("name") for p in plugins}, plugins
+        assert_alone_session_tools(configmap)
 
 
 def test_scale_down_waits_for_busy_agent(api: httpx.Client, baseline: dict) -> None:

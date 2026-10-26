@@ -4,7 +4,8 @@ A cache-enabled session gets Job `agent-<slug>-cache-restore` before init and Jo
 `agent-<slug>-cache-save` during the discard. Both run `orch cache restore|save` in the configured
 cache image, never the session's `spec.image`, and mount only the session's workspace PVC (the save
 read-only). The S3 credentials stay in the reconciler: the Job gets exactly one presigned, expiring
-URL in `CACHE_URL` and no Secret, `spec.env`, `envFrom` or service account token. The pod is
+URL in `CACHE_URL` and no Secret, `spec.env`, `envFrom` or service account token: it runs as
+`ORCH_AGENT_SERVICE_ACCOUNT` with no token mounted, as every Job does (D4). The pod is
 hardened (uid 1000, non-root, read-only root filesystem with an emptyDir `/tmp` as `HOME`, no
 privilege escalation, all capabilities dropped, seccomp RuntimeDefault). The save archives into an
 emptyDir `/scratch` sized to `cache_max_bytes`. Like the init Job, neither carries a TTL.
@@ -31,7 +32,12 @@ from agents_orchestrator.cache.presign import object_name, presign
 from agents_orchestrator.db.sessions import Session
 from agents_orchestrator.k8s.kube import KubeApi, KubeError, Obj, is_owned
 from agents_orchestrator.k8s.labels import object_names, prefix, session_labels
-from agents_orchestrator.k8s.render import WORKSPACE_VOLUME, workdir_mount, workdir_path
+from agents_orchestrator.k8s.render import (
+    WORKSPACE_VOLUME,
+    agent_identity,
+    workdir_mount,
+    workdir_path,
+)
 from agents_orchestrator.reconciler.checks import (
     DEADLINE_GRACE_SECONDS,
     TAIL_LINES,
@@ -118,7 +124,7 @@ def render_cache_job(session: Session, settings: Settings, action: CacheAction, 
     }
     pod_spec: dict[str, Any] = {
         "restartPolicy": "Never",
-        "automountServiceAccountToken": False,
+        **agent_identity(settings),
         "securityContext": {
             "runAsUser": 1000,
             "runAsNonRoot": True,

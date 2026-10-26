@@ -434,6 +434,12 @@ class SessionSpec(BaseModel):
     # the session still running for it. The orchestrator never acts on it, so a session a
     # user creates ignores it. Sparse: unset is not stored or dumped in a preset.
     reuse_running_agent: bool | None = Field(default=None, strict=True)
+    # Superleader: the leader may message the leaders of all sessions, and every other
+    # session's leader may message it. Sparse: unset is not stored or dumped in a preset.
+    session_messaging: bool | None = Field(default=None, strict=True)
+    # Full read-write Kubernetes access in every namespace for the agent pods; refused until
+    # ORCH_KUBE_ACCESS_SERVICE_ACCOUNT is set. Sparse: unset is not stored or dumped in a preset.
+    kube_access: bool | None = Field(default=None, strict=True)
     # Workspace cache in S3; presence enables it. Sparse: unset is not stored or dumped.
     cache: WorkspaceCache | None = None
 
@@ -556,7 +562,8 @@ def validate_spec(spec: SessionSpec, settings: Settings, stored: SessionSpec | N
     """Validate a spec.
 
     `stored` stays for the preset PUT: a model, effort or image that has since left the settings
-    lists is accepted only when unchanged from the stored preset spec. Scheduling a session passes
+    lists, and a cache or kube_access whose setting has since been unset, is accepted only when
+    unchanged from the stored preset spec. Scheduling a session passes
     no `stored` and validates fully.
     """
     from any_mcp.config import AnyMcpConfig
@@ -591,6 +598,14 @@ def validate_spec(spec: SessionSpec, settings: Settings, stored: SessionSpec | N
         and (stored is None or spec.cache != stored.cache)
     ):
         errors.append("workspace cache is not configured (ORCH_CACHE_S3_BUCKET is unset)")
+    if (
+        spec.kube_access
+        and not settings.kube_access_available
+        and (stored is None or spec.kube_access != stored.kube_access)
+    ):
+        errors.append(
+            "Kubernetes access is not configured (ORCH_KUBE_ACCESS_SERVICE_ACCOUNT is unset)"
+        )
     if spec.resources is not None:
         for key in ("cpu", "memory"):
             request = spec.resources.requests.get(key)

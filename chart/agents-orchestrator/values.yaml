@@ -28,6 +28,12 @@ serviceAccount:
   # If not set and create is true, a name is generated using the fullname template.
   name: ""
 
+# The unprivileged <fullname>-agent ServiceAccount (agent pods without kube_access, every Job).
+agentServiceAccount:
+  # Annotations of the agent ServiceAccount only. Never copied from serviceAccount.annotations, so
+  # cloud-identity annotations of the api ServiceAccount cannot reach agent pods.
+  annotations: {}
+
 # This is for setting Kubernetes Annotations to a Pod.
 # For more information checkout: https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations/
 podAnnotations: {}
@@ -77,6 +83,15 @@ serviceApi:
 # bound to the <fullname>-reconciler ServiceAccount.
 rbac:
   create: true
+
+# Kubernetes access for opted-in sessions. Renders the privileged ServiceAccount
+# <fullname>-kube-access and, with rbac.create, a ClusterRoleBinding of it to the built-in
+# ClusterRole cluster-admin (all namespaces, all resources, full read-write), and sets
+# ORCH_KUBE_ACCESS_SERVICE_ACCOUNT to it. Sessions with kube_access are refused while it is off.
+kubeAccess:
+  enabled: false
+  # Annotations of the <fullname>-kube-access ServiceAccount only. Never copied from serviceAccount.annotations.
+  annotations: {}
 
 # This block is for setting up the ingress for more information can be found here: https://kubernetes.io/docs/concepts/services-networking/ingress/
 ingress:

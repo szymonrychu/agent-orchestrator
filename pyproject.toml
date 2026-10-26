@@ -14,7 +14,7 @@ dependencies = [
     "pydantic-settings",
     "pyyaml",
     "websockets>=17.3",
-    "any-mcp @ git+https://github.com/szymonrychu/any-mcp@v0.3.0",
+    "any-mcp @ git+https://github.com/szymonrychu/any-mcp@v0.4.0",
     "zstandard>=0.25.0",
     "botocore>=1.43.118",
 ]

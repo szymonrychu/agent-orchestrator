@@ -46,6 +46,7 @@ class Claim:
     free_since: datetime
     dispatched_at: datetime
     previous_dispatched_at: datetime | None
+    sender_slug: str | None
 
 
 @dataclass(frozen=True)
@@ -131,18 +132,86 @@ async def enqueue_message(
     session_id: uuid.UUID,
     text: str,
     target_agent_id: uuid.UUID | None = None,
+    *,
+    sender_session_id: uuid.UUID | None = None,
+    sender_slug: str | None = None,
+    hop: int = 0,
 ) -> int:
+    """Queue a message; a session message carries its sender and hop (D8).
+
+    A message with a sender is untargeted, so the leader routing delivers it to whoever leads
+    the target session at claim time.
+    """
     async with conn.transaction():
         row = await _one(
             conn,
-            "INSERT INTO messages (session_id, text, target_agent_id) VALUES (%s, %s, %s)"
-            " RETURNING id",
-            (session_id, text, target_agent_id),
+            "INSERT INTO messages (session_id, text, target_agent_id, sender_session_id,"
+            " sender_slug, hop) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+            (session_id, text, target_agent_id, sender_session_id, sender_slug, hop),
         )
         assert row is not None
         await notify(conn, "message_queued", {"session_id": str(session_id)})
         await _status(conn, session_id)
         return row["id"]
+
+
+async def _count(conn: psycopg.AsyncConnection, query: str, params: Any) -> int:
+    row = await _one(conn, query, params)
+    assert row is not None
+    return row["n"]
+
+
+async def turn_hop(conn: psycopg.AsyncConnection, agent_id: uuid.UUID) -> int | None:
+    """Hop of the session message the agent's current turn delivered, or None when the current
+    turn (`agent_status.current_turn_id`) delivered no message with a sender (D10)."""
+    row = await _one(
+        conn,
+        "SELECT m.hop FROM agent_status s JOIN agents a ON a.id = s.agent_id"
+        " JOIN messages m ON m.session_id = a.session_id AND m.turn_id = s.current_turn_id"
+        " WHERE s.agent_id = %s AND m.sender_session_id IS NOT NULL"
+        " ORDER BY m.id DESC LIMIT 1",
+        (agent_id,),
+    )
+    return row["hop"] if row is not None else None
+
+
+async def count_sent_by(
+    conn: psycopg.AsyncConnection, sender_session_id: uuid.UUID, seconds: float
+) -> int:
+    """Session messages of any status the sender session sent in the last `seconds`."""
+    return await _count(
+        conn,
+        "SELECT count(*) AS n FROM messages WHERE sender_session_id = %s"
+        " AND created_at > now() - make_interval(secs => %s::float8)",
+        (sender_session_id, seconds),
+    )
+
+
+async def count_between(
+    conn: psycopg.AsyncConnection, a: uuid.UUID, b: uuid.UUID, seconds: float
+) -> int:
+    """Session messages exchanged between sessions `a` and `b`, both directions, in the last
+    `seconds`."""
+    return await _count(
+        conn,
+        "SELECT count(*) AS n FROM messages"
+        " WHERE ((sender_session_id = %(a)s AND session_id = %(b)s)"
+        " OR (sender_session_id = %(b)s AND session_id = %(a)s))"
+        " AND created_at > now() - make_interval(secs => %(secs)s::float8)",
+        {"a": a, "b": b, "secs": seconds},
+    )
+
+
+async def count_queued_session_messages(
+    conn: psycopg.AsyncConnection, session_id: uuid.UUID
+) -> int:
+    """Queued messages with a sender waiting in the session."""
+    return await _count(
+        conn,
+        "SELECT count(*) AS n FROM messages WHERE session_id = %s AND status = 'queued'"
+        " AND sender_session_id IS NOT NULL",
+        (session_id,),
+    )
 
 
 async def cancel_message(conn: psycopg.AsyncConnection, id: int) -> bool:
@@ -333,7 +402,7 @@ async def _dispatch(conn: psycopg.AsyncConnection, message_id: int, pick: Pick) 
         conn,
         "UPDATE messages SET status = 'dispatching', agent_id = %s, dispatched_at = now(),"
         " heartbeat_at = now() WHERE id = %s AND status = 'queued'"
-        " RETURNING id, session_id, text, attempts, target_agent_id, dispatched_at",
+        " RETURNING id, session_id, text, attempts, target_agent_id, dispatched_at, sender_slug",
         (pick.agent_id, message_id),
     )
     assert msg is not None  # the row is locked and was queued
@@ -350,6 +419,7 @@ async def _dispatch(conn: psycopg.AsyncConnection, message_id: int, pick: Pick) 
         free_since=pick.free_since,
         dispatched_at=msg["dispatched_at"],
         previous_dispatched_at=pick.last_dispatched_at,
+        sender_slug=msg["sender_slug"],
     )
 
 

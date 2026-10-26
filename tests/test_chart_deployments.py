@@ -78,8 +78,9 @@ def test_only_reconciler_gets_kube_token() -> None:
         d["metadata"]["name"]: d
         for d in render({**BASE}, show_only=["templates/serviceaccount.yaml"])
     }
-    assert set(sas) == {FULL, f"{FULL}-reconciler"}
+    assert set(sas) == {FULL, f"{FULL}-reconciler", f"{FULL}-agent"}
     assert sas[FULL]["automountServiceAccountToken"] is False
+    assert sas[f"{FULL}-agent"]["automountServiceAccountToken"] is False
     off = render({**BASE, "serviceAccount": {"create": False}}, show_only=None)
     assert not [d for d in off if d["kind"] == "ServiceAccount"]
 

@@ -25,26 +25,33 @@ HIVE_TOOLS = [
     "lock_list",
     "lock_reassign",
 ]
+SESSION_TOOLS = ["sessions_list", "session_send"]
+INIT_SCRIPTS_TOOLS = ["init_scripts_get", "init_scripts_edit"]
 
 
 def orchestrator_allow(spec: SessionSpec) -> list[str]:
-    """The orchestrator tools this session's agents may call; empty means no plugin entry."""
+    """The orchestrator tools this session's agents may call.
+
+    Every session gets the session tools (D11) then the init-scripts tools, alone sessions
+    included; the agent API decides what each caller may list, send and edit, so the list never
+    depends on `session_messaging`.
+    """
     if not spec.hive:
-        return []
-    return [*HIVE_TOOLS, SCALE_TOOL] if spec.scalable else list(HIVE_TOOLS)
+        return [*SESSION_TOOLS, *INIT_SCRIPTS_TOOLS]
+    scale = [SCALE_TOOL] if spec.scalable else []
+    return [*HIVE_TOOLS, *scale, *SESSION_TOOLS, *INIT_SCRIPTS_TOOLS]
 
 
 def _orchestrator_entry(
     spec: SessionSpec, settings: Settings, slug: str | None
 ) -> dict[str, Any] | None:
-    allow = orchestrator_allow(spec)
-    if not allow or not settings.agent_api_url or not slug:
+    if not settings.agent_api_url or not slug:
         return None
     return {
         "name": PLUGIN_NAME,
         "plugin": PLUGIN_CLASS,
         "namespace": PLUGIN_NAME,
-        "allow": allow,
+        "allow": orchestrator_allow(spec),
         "config": {
             "base_url": "${ORCH_AGENT_URL}",
             "token": "${ORCH_AGENT_TOKEN}",

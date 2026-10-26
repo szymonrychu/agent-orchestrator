@@ -168,6 +168,7 @@ async def meta(settings: Cfg) -> schemas.Meta:
         cache=schemas.MetaCache(
             available=settings.cache_available, max_bytes=settings.cache_max_bytes
         ),
+        kube_access=schemas.MetaKubeAccess(available=settings.kube_access_available),
     )
 
 

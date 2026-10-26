@@ -18,7 +18,12 @@ from agents_orchestrator.db import queue, sessions
 from agents_orchestrator.db.sessions import Session
 from agents_orchestrator.k8s.kube import KubeApi, Obj, is_owned
 from agents_orchestrator.k8s.labels import object_names, prefix, session_labels
-from agents_orchestrator.k8s.render import WORKSPACE_VOLUME, workdir_mount, workdir_path
+from agents_orchestrator.k8s.render import (
+    WORKSPACE_VOLUME,
+    agent_identity,
+    workdir_mount,
+    workdir_path,
+)
 from agents_orchestrator.settings import Settings
 
 log = logging.getLogger(__name__)
@@ -41,6 +46,7 @@ def render_job(session: Session, check: queue.Check, settings: Settings) -> Obj:
     labels = {**session_labels(session.slug), CHECK_LABEL: str(check.id)}
     pod_spec: dict[str, Any] = {
         "restartPolicy": "Never",
+        **agent_identity(settings),
         "securityContext": {"runAsUser": 1000, "fsGroup": 1000},
         "containers": [
             {
