@@ -248,7 +248,7 @@ def test_save_saved(tmp_path, capsys):
     request = rec.requests[0]
     assert request.method == "PUT"
     assert str(request.url) == URL
-    assert request.headers["Content-Type"] == "application/zstd"
+    assert request.headers["Content-Type"] == transfer.CONTENT_TYPE == "application/zstd"
     assert int(request.headers["Content-Length"]) == len(bodies[0])
     assert "Transfer-Encoding" not in request.headers
     assert outcome == {

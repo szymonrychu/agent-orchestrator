@@ -4,8 +4,9 @@ The reconciler alone holds the S3 credentials; each cache Job gets one SigV4 URL
 (GET to restore, PUT to save) on exactly one object, expiring after the Job's own deadline
 (`cache_timeout_seconds`) plus 600 seconds. Presigning is local: no network call is made.
 
-Only the host is signed, so the transfer CLI's `Content-Type` and `Content-Length` on the PUT do
-not need to match anything here. The secret is read from the settings (a `repr=False` field)
+A PUT URL also signs `Content-Type` (the one shared `transfer.CONTENT_TYPE` the CLI sends):
+Ceph RGW treats a PUT that carries an unsigned Content-Type as anonymous and answers 403. GET signs
+only the host. The secret is read from the settings (a `repr=False` field)
 and handed straight to botocore; it is never logged and is not part of any URL.
 """
 
@@ -17,6 +18,7 @@ from typing import Any, Literal
 from botocore.config import Config
 from botocore.session import get_session
 
+from agents_orchestrator.cache.transfer import CONTENT_TYPE
 from agents_orchestrator.settings import Settings
 
 EXPIRY_MARGIN_SECONDS = 600
@@ -64,9 +66,12 @@ def presign(settings: Settings, method: Literal["GET", "PUT"], key: str) -> str:
         settings.cache_s3_access_key_id,
         settings.cache_s3_secret_access_key,
     )
+    params = {"Bucket": settings.cache_s3_bucket, "Key": object_name(settings, key)}
+    if method == "PUT":
+        params["ContentType"] = CONTENT_TYPE
     url: str = client.generate_presigned_url(
         operation,
-        Params={"Bucket": settings.cache_s3_bucket, "Key": object_name(settings, key)},
+        Params=params,
         ExpiresIn=settings.cache_timeout_seconds + EXPIRY_MARGIN_SECONDS,
         HttpMethod=method,
     )
