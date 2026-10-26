@@ -21,6 +21,7 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 
+from agents_orchestrator.db.eligibility import ELIGIBLE, REPLICAS, STAYS
 from agents_orchestrator.db.pool import notify
 from agents_orchestrator.db.queue import _CLAIM_LOCK_NAMESPACE
 
@@ -83,18 +84,6 @@ class LeaderChange:
 
 _HIVE = "coalesce(c.spec->>'max_replicas', c.spec->>'replicas')::int > 1"
 
-# An agent stays when its ordinal is below its session's `spec.replicas` (a spec without one
-# never removes anyone). It can lead when it also is ready, not gone and has a wrapper session.
-# Both take the agent alias `a`; `ELIGIBLE` is the pick's predicate and `sessions.set_replicas`
-# shares it for its staying-peer check.
-_NO_LIMIT = 2147483647
-_REPLICAS = "coalesce((c.spec->>'replicas')::int, 2147483647)"
-STAYS = (
-    "a.ordinal < coalesce((SELECT (cs.spec->>'replicas')::int FROM sessions cs"
-    f" WHERE cs.id = a.session_id), {_NO_LIMIT})"
-)
-ELIGIBLE = f"a.ready AND a.gone_at IS NULL AND a.wrapper_session_id IS NOT NULL AND {STAYS}"
-
 # Hive sessions whose leadership needs a pass: queued requests, no leader row while an agent
 # could lead, a leader that is gone or not ready, an unready mark to clear, an expired lease,
 # a leader that compacted in its term, or a leader whose ordinal a scale-down removes.
@@ -108,11 +97,11 @@ WHERE c.desired = 'active' AND {_HIVE} AND (
     OR (l.session_id IS NULL AND EXISTS (
         SELECT 1 FROM agents x WHERE x.session_id = c.id AND x.ready
           AND x.gone_at IS NULL AND x.wrapper_session_id IS NOT NULL
-          AND x.ordinal < {_REPLICAS}))
+          AND x.ordinal < {REPLICAS}))
     OR a.gone_at IS NOT NULL OR NOT a.ready OR l.unready_since IS NOT NULL
     OR (c.spec->>'leader_lease_seconds' IS NOT NULL
         AND l.since < now() - make_interval(secs => (c.spec->>'leader_lease_seconds')::int))
-    OR (a.gone_at IS NULL AND a.ordinal >= {_REPLICAS})
+    OR (a.gone_at IS NULL AND a.ordinal >= {REPLICAS})
     OR EXISTS (SELECT 1 FROM agent_status s
                WHERE s.agent_id = l.agent_id AND s.compaction_at > l.since)
 )
@@ -169,7 +158,7 @@ async def _leader(conn: psycopg.AsyncConnection, session_id: uuid.UUID) -> dict 
         " l.unready_since IS NOT NULL AND l.unready_since"
         "   < now() - make_interval(secs => %s) AS grace_over,"
         " a.ready, a.gone_at IS NOT NULL AS gone,"
-        f" a.ordinal >= {_REPLICAS} AS leaving,"
+        f" a.ordinal >= {REPLICAS} AS leaving,"
         " coalesce((SELECT s.compaction_at > l.since FROM agent_status s"
         "   WHERE s.agent_id = l.agent_id), false) AS compacted"
         " FROM session_leaders l JOIN agents a ON a.id = l.agent_id"

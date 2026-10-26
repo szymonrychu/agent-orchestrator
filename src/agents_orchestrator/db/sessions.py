@@ -12,6 +12,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from agents_orchestrator.db import leadership
+from agents_orchestrator.db.eligibility import ELIGIBLE
 from agents_orchestrator.db.pool import notify
 from agents_orchestrator.spec import SessionSpec, validate_slug
 
@@ -218,7 +219,7 @@ async def set_replicas(
     moves the leader, deriving the move from spec.replicas).
     Refusals, in order: session_deleting, not_leader, static_session, out_of_range,
     leader_would_leave. A count at or below the leader's ordinal is refused leader_would_leave
-    only when no other agent can lead after the change (`leadership.ELIGIBLE`, the pass's
+    only when no other agent can lead after the change (`eligibility.ELIGIBLE`, the pass's
     pick predicate); accepted, it also sends `NOTIFY leadership_requested {session_id}` so the
     dispatcher hands leadership over at once. An unchanged value writes and notifies nothing.
     """
@@ -267,7 +268,7 @@ async def set_replicas(
 async def _staying_peer(conn: psycopg.AsyncConnection, session_id: uuid.UUID) -> bool:
     """True when an agent of the session could lead at its current spec.replicas."""
     cur = await conn.execute(
-        f"SELECT EXISTS (SELECT 1 FROM agents a WHERE a.session_id = %s AND {leadership.ELIGIBLE})",
+        f"SELECT EXISTS (SELECT 1 FROM agents a WHERE a.session_id = %s AND {ELIGIBLE})",
         (session_id,),
     )
     row = await cur.fetchone()
