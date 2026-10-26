@@ -227,13 +227,46 @@ async def test_no_cache_session_unchanged(env):
     assert await env.gone(c)
 
 
-async def test_save_after_extract_failed(env):
+@pytest.mark.parametrize(
+    ("restore", "reason"),
+    [
+        ({"state": "failed", "reason": "extract_failed: bad archive"}, "extract_failed"),
+        ({"state": "failed", "reason": "exit 137"}, "exit"),
+        ({"state": "failed", "reason": "bad_output"}, "bad_output"),
+        ({"state": "failed", "reason": "no_cache_key"}, "no_cache_key"),
+        ({"state": "failed", "reason": "a_future_reason"}, "a_future_reason"),
+        ({"state": "failed", "reason": None}, "restore_failed"),
+        ({"state": "skipped"}, "restore_skipped"),
+        ({"state": "saved"}, "restore_saved"),
+    ],
+)
+async def test_save_only_after_successful_restore(env, restore, reason):
     c = await env.ready()
-    await env.patch_restore(c.id, state="failed", reason="extract_failed: bad archive")
+    await env.patch_restore(c.id, **restore)
+    await env.delete(c)
+    await env.tick()
+    assert env.saves[-1]["state"] == "skipped" and env.saves[-1]["reason"] == reason
+    assert env.saves_created() == 0
+    assert await env.gone(c)
+
+
+@pytest.mark.parametrize("restore", ["restored", "miss"])
+async def test_save_runs_after_success_states(env, restore):
+    c = await env.ready(restore=restore)
     await env.delete(c)
     await env.tick()
     assert env.kube.has("Job", SAVE)
     assert env.saves[-1]["state"] == "running"
+
+
+async def test_cache_miss_then_save(env):
+    c = await env.ready(restore="miss")
+    await env.delete(c)
+    await env.tick()
+    assert env.saves_created() == 1
+    env.kube.finish_job(SAVE, exit_code=0, log=line("saved", 7))
+    await env.tick(2)
+    assert env.saves[-1]["state"] == "saved"
 
 
 async def test_autoclose_saves(env):

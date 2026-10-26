@@ -49,17 +49,9 @@ CacheAction = Literal["restore", "save"]
 BACKOFF_LIMIT = 2
 TMP_DIR = "/tmp"
 SCRATCH_DIR = "/scratch"
-# A save is pointless after a restore that failed with one of these (the head word of its reason).
-SAVE_SKIP_RESTORE_REASONS = frozenset(
-    {
-        "download_failed",
-        "timeout",
-        "job_missing",
-        "foreign_object",
-        "job_create_failed",
-        "not_configured",
-    }
-)
+# A save runs only after a restore that left the workdir trustworthy: it unpacked the archive, or
+# found none (first use). Every other outcome, present or future, skips the save.
+SAVE_OK_RESTORE_STATES = frozenset({"restored", "miss"})
 
 
 def restore_job_name(slug: str) -> str:
@@ -219,8 +211,8 @@ class CacheRunner:
     async def save_step(self, session: Session) -> bool:
         """Advance the one save run by at most one transition; True lets the discard go on.
 
-        Skipped (no Job) when the restore did not finish well enough to trust the workdir; after
-        an `extract_failed` restore it runs, so a corrupt archive is replaced. A failed or
+        Skipped (no Job) unless the restore succeeded (`restored`, or `miss` on first use), so a
+        failed restore never replaces a good archive with a partial workdir. A failed or
         timed-out save is logged and recorded, never held.
         """
         if session.spec.cache is None:
@@ -245,10 +237,11 @@ class CacheRunner:
         state = (restore or {}).get("state")
         if restore is None or state == "running":
             return "restore_running"
-        if state == "failed":
-            head = str(restore.get("reason") or "").split(":")[0].split(" ")[0]
-            if head in SAVE_SKIP_RESTORE_REASONS:
-                return head
+        if state not in SAVE_OK_RESTORE_STATES:
+            if state == "failed":
+                head = str(restore.get("reason") or "").split(":")[0].split(" ")[0]
+                return head or "restore_failed"
+            return f"restore_{state}"
         if not self.settings.cache_available:
             return "not_configured"
         return None
