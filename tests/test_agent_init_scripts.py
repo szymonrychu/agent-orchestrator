@@ -100,8 +100,8 @@ async def test_agent_token_of_other_session_cannot_name_it(pool, dsn):
 
 
 async def test_plugin_parity(pool, dsn):
-    from any_mcp.orchestrator import OrchestratorPlugin
     from any_mcp.testing import PluginHarness
+    from any_mcp_tatara_orchestrator import OrchestratorPlugin
 
     c, preset = await preset_session(pool)
     app = create_app(make_settings(dsn), pool)

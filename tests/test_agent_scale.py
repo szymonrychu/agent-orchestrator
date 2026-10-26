@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 
 import httpx
-from any_mcp.orchestrator import OrchestratorPlugin
 from any_mcp.testing import PluginHarness
+from any_mcp_tatara_orchestrator import OrchestratorPlugin
 from factories import insert_agent, insert_session
 from test_api_agent import (
     AGENT_PORT,

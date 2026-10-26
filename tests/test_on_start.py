@@ -7,7 +7,7 @@ import re
 
 import pytest
 from any_mcp.config import AnyMcpConfig
-from any_mcp.orchestrator import OrchestratorPlugin
+from any_mcp_tatara_orchestrator import OrchestratorPlugin
 
 from agents_orchestrator.k8s import on_start
 from agents_orchestrator.settings import Settings
