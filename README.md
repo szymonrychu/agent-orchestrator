@@ -478,7 +478,7 @@ NOTIFY payloads are wake-up hints that carry ids only. Every loop also polls, be
 | `agent_free` | `{session_id, agent_id}` | ingester | dispatcher |
 | `events` | `{session_id, max_id}` | ingester | events stream |
 | `status` | `{session_id}` | ingester, dispatcher, reconciler | status stream |
-| `leadership_requested` | `{session_id}` | api (leadership routes) | dispatcher |
+| `leadership_requested` | `{session_id}` | api (leadership routes); ingester on a `compacting` or `compacted` event | dispatcher |
 | `leader_changed` | `{session_id, agent_id, epoch}` | dispatcher (leadership pass) | hive-state push, session stream |
 
 Polling fallbacks: dispatcher `ORCH_DISPATCH_POLL_SECONDS` (2 s), reconciler `ORCH_RECONCILE_POLL_SECONDS` (10 s), ingester stream refresh `ORCH_INGEST_REFRESH_SECONDS` (5 s); the api SSE streams re-read on a 5 s poll when no NOTIFY arrives.
@@ -574,7 +574,7 @@ Plain SQL migrations (`src/agents_orchestrator/db/migrations`), psycopg 3, no OR
 | `sessions` | id, unique slug, `spec` (jsonb SessionSpec), `generation` / `observed_generation` (the reconcile queue), `desired` (`active`, `deleting`), `status` (phase, message and the once-per-session init run in `status.init`), `preset_id` (nullable; the `ON DELETE SET NULL` cascade sets it to null when the api deletes the preset, an api-originated write, so `sessions` keeps a single writer) and `preset_name` (the name at create, kept) |
 | `presets` | named SessionSpec templates: unique case-insensitive `name` (1 to 40 characters), `spec` (jsonb, only what the user set), `is_default`; migration `0002` seeds `Default` with `{"replicas": 1}`, which can be edited but not renamed or deleted |
 | `agents` | one row per pod: ordinal, pod name, url, readiness, the wrapper session (`wrapper_session_id`, `wrapper_session_created_at`), `last_dispatched_at`, `gone_at` |
-| `agent_status` | wrapper state (`unknown`, `booting`, `idle`, `busy`, `dead`), `free_since`, current turn, context tokens and percentage, last seq, peers |
+| `agent_status` | wrapper state (`unknown`, `booting`, `idle`, `busy`, `dead`), `free_since`, current turn, context tokens and percentage, last seq, peers, `compaction_at` (the last compaction time: the wrapper `ts` of the newest `compacting` or `compacted` event, written by the ingester and never moved backwards) |
 | `messages` | queue: text, status (`queued`, `dispatching`, `verifying`, `sent`, `failed`, `cancelled`), target and chosen agent, turn id, attempts, error, `not_before`, `ambiguous_at` |
 | `turns` | one row per wrapper turn: origin, start, completion, status, final text, usage |
 | `events` | every stored wrapper event; UNIQUE(agent_id, wrapper_session_id, seq), where wrapper_session_id is the claude-code-wrapper's own session id; the global bigserial id is the SSE id and the page cursor |

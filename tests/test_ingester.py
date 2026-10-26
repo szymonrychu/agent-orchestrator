@@ -18,6 +18,7 @@ from fakes.fake_wrapper import FakeWrapper
 from psycopg import sql
 
 from agents_orchestrator.db import status
+from agents_orchestrator.db.leadership import CHANNEL as LEADERSHIP_CHANNEL
 from agents_orchestrator.ingester import Ingester
 from agents_orchestrator.ingester.loop import map_state
 from agents_orchestrator.settings import Settings
@@ -78,7 +79,7 @@ class Listener:
 async def listener(dsn: str) -> AsyncIterator[Listener]:
     lst = Listener()
     conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True)
-    for ch in ("events", "status", "agent_free"):
+    for ch in ("events", "status", "agent_free", LEADERSHIP_CHANNEL):
         await conn.execute(sql.SQL("LISTEN {}").format(sql.Identifier(ch)))
 
     async def pump() -> None:
@@ -187,6 +188,14 @@ class Harness:
 
     def last_fake_seq(self) -> int:
         return self.fake.sessions[self.wrapper_session_id].events[-1]["seq"]
+
+    def emit_at(self, type: str, ts: str, data: dict[str, Any] | None = None) -> None:
+        """Emit an event stamped with the wrapper time `ts` instead of now.
+
+        The fake serialises an envelope only when its stream next reads it, after an await, so
+        rewriting the returned envelope here is what the ingester receives.
+        """
+        self.fake.emit(type, data)["ts"] = ts
 
 
 @pytest_asyncio.fixture
@@ -438,6 +447,96 @@ async def test_context_event_updates_status(harness, pool, listener) -> None:
     assert row["context_used_tokens"] is None
     assert row["context_window_tokens"] is None
     assert row["context_pct"] is None
+
+
+T1 = "2026-10-20T10:00:00.000+00:00"
+T2 = "2026-10-20T11:00:00.000+00:00"
+
+
+async def compaction_at(pool, agent_id: uuid.UUID) -> datetime | None:
+    return (await status_row(pool, agent_id))["compaction_at"]
+
+
+async def test_compacting_sets_compaction_at(harness, pool, listener) -> None:
+    h = await harness()
+    await h.start()
+    await h.stored_through(h.last_fake_seq())
+    assert await compaction_at(pool, h.agent_id) is None
+    listener.got.clear()
+
+    h.emit_at("compacting", T1, {"trigger": "auto"})
+    await h.stored_through(h.last_fake_seq())
+
+    # the event's own time (the wrapper's clock), not the ingest time
+    assert await compaction_at(pool, h.agent_id) == datetime.fromisoformat(T1)
+    assert [r["type"] for r in await events_rows(pool, h.agent_id)][-1] == "compacting"
+    want = {"session_id": str(h.session_id), "agent_id": str(h.agent_id)}
+    await wait_until(lambda: want in listener.on("status"))
+    await wait_until(lambda: listener.on(LEADERSHIP_CHANNEL))
+    assert listener.on(LEADERSHIP_CHANNEL) == [{"session_id": str(h.session_id)}]
+
+
+async def test_compacted_moves_compaction_at(harness, pool, listener) -> None:
+    h = await harness()
+    await h.start()
+    await h.stored_through(h.last_fake_seq())
+
+    h.emit_at("compacting", T1, {"trigger": "manual"})
+    await h.stored_through(h.last_fake_seq())
+    assert await compaction_at(pool, h.agent_id) == datetime.fromisoformat(T1)
+    listener.got.clear()
+
+    h.emit_at("compacted", T2, {"trigger": "manual"})
+    await h.stored_through(h.last_fake_seq())
+    assert await compaction_at(pool, h.agent_id) == datetime.fromisoformat(T2)
+    await wait_until(lambda: listener.on(LEADERSHIP_CHANNEL))
+    assert listener.on(LEADERSHIP_CHANNEL) == [{"session_id": str(h.session_id)}]
+
+    # no other event type writes it, whatever its time
+    later = "2026-10-20T12:00:00.000+00:00"
+    listener.got.clear()
+    h.emit_at("context", later, dict.fromkeys(("used_tokens", "window_tokens", "used_percentage")))
+    h.emit_at("assistant_text", later, {"text": "after the compaction"})
+    h.emit_at("user_message", later, {"turn_id": None, "origin": "command", "text": "/compact"})
+    h.emit_at("session_state", later, {"state": "busy"})
+    h.emit_at("session_state", later, {"state": "ready", "since": later})
+    await h.stored_through(h.last_fake_seq())
+    assert await compaction_at(pool, h.agent_id) == datetime.fromisoformat(T2)
+    assert listener.on(LEADERSHIP_CHANNEL) == []
+
+
+async def test_late_compaction_event_keeps_its_time(harness, pool, listener) -> None:
+    h = await harness()
+    await h.start()
+    await h.stored_through(h.last_fake_seq())
+
+    # a late event on an empty column sets its own (old) time, never a later one
+    h.emit_at("compacted", T1, {"trigger": "auto"})
+    await h.stored_through(h.last_fake_seq())
+    assert await compaction_at(pool, h.agent_id) == datetime.fromisoformat(T1)
+
+    h.emit_at("compacted", T2, {"trigger": "auto"})
+    await h.stored_through(h.last_fake_seq())
+    assert await compaction_at(pool, h.agent_id) == datetime.fromisoformat(T2)
+
+    # an older compaction ingested after a newer one never moves it backwards
+    h.emit_at("compacting", T1, {"trigger": "auto"})
+    h.emit_at("compacted", OLD_SINCE, {"trigger": "auto"})
+    await h.stored_through(h.last_fake_seq())
+    assert await compaction_at(pool, h.agent_id) == datetime.fromisoformat(T2)
+
+    # a replayed stream (already stored rows) is not re-projected and changes nothing
+    await h.stop()
+    h.replay_all = True
+    await h.start()
+    await wait_until(lambda: len(h.opened) >= 2)
+    await h.stored_through(h.last_fake_seq())
+    assert await compaction_at(pool, h.agent_id) == datetime.fromisoformat(T2)
+
+    # and the repository rule on its own
+    async with pool.connection() as conn:
+        await status.set_compaction(conn, h.agent_id, T1)
+    assert await compaction_at(pool, h.agent_id) == datetime.fromisoformat(T2)
 
 
 async def test_turn_projection(harness, pool) -> None:

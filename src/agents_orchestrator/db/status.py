@@ -161,6 +161,17 @@ async def set_context(
     )
 
 
+async def set_compaction(conn: psycopg.AsyncConnection, agent_id: uuid.UUID, at: Timestamp) -> None:
+    """Record a compaction reported at `at` (the event's own wrapper time, never the ingest
+    time). compaction_at only moves forward, so a late or replayed event keeps its old time."""
+    await _ensure_row(conn, agent_id)
+    await conn.execute(
+        "UPDATE agent_status SET compaction_at=GREATEST(compaction_at, %s::timestamptz),"
+        " updated_at=now() WHERE agent_id=%s",
+        (at, agent_id),
+    )
+
+
 def peer_members(view: Mapping[str, Any]) -> list[dict[str, Any]]:
     """The member list of a wrapper GET /v1/peers view; empty when the mesh is disabled."""
     if not view.get("enabled"):

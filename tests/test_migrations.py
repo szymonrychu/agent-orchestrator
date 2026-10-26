@@ -53,7 +53,7 @@ def test_fresh_database_gets_all_tables(empty_dsn):
         }
         versions = [r[0] for r in c.execute("SELECT version FROM schema_migrations")]
     assert tables >= TABLES
-    assert versions == ["0001", "0002", "0003", "0004", "0005"]
+    assert versions == ["0001", "0002", "0003", "0004", "0005", "0006"]
 
 
 def test_presets_migration_on_existing_sessions(empty_dsn, tmp_path):
@@ -65,7 +65,7 @@ def test_presets_migration_on_existing_sessions(empty_dsn, tmp_path):
             "INSERT INTO clusters (id, slug, spec) VALUES (gen_random_uuid(), 'old', %s)",
             (json.dumps(spec),),
         )
-    assert run_migrations(empty_dsn) == ["0002", "0003", "0004", "0005"]
+    assert run_migrations(empty_dsn) == ["0002", "0003", "0004", "0005", "0006"]
     with psycopg.connect(empty_dsn) as c:
         row = c.execute(
             "SELECT spec, preset_id, preset_name FROM sessions WHERE slug='old'"
@@ -99,9 +99,9 @@ def test_concurrent_migrate_serialises(empty_dsn):
     [t.start() for t in threads]
     [t.join() for t in threads]
     assert not errors
-    assert sorted(len(r) for r in results) == [0, 5]
+    assert sorted(len(r) for r in results) == [0, 6]
     with psycopg.connect(empty_dsn) as c:
-        assert c.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 5
+        assert c.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 6
 
 
 async def test_events_unique_agent_session_seq(pool):
@@ -505,7 +505,7 @@ def test_0005_renames_clusters_to_sessions(empty_dsn, tmp_path):
             "INSERT INTO file_locks (cluster_id, path, agent_id) VALUES (%s, 'a.py', %s)",
             (unit, agent),
         )
-    assert run_migrations(empty_dsn) == ["0005"]
+    assert run_migrations(empty_dsn) == ["0005", "0006"]
     with psycopg.connect(empty_dsn) as c:
         assert c.execute(
             "SELECT id, slug, preset_id::text, preset_name FROM sessions"
@@ -544,3 +544,20 @@ def test_0005_renames_clusters_to_sessions(empty_dsn, tmp_path):
     assert [n for n in names if "cluster" in n] == []
     assert {"sessions", "session_leaders"} <= set(names)
     assert {"messages_session_status_id", "events_session_id_desc"} <= indexes
+
+
+def test_0006_compaction_column(empty_dsn, tmp_path):
+    for path in sorted(MIGRATIONS_DIR.glob("000[1-6]_*.sql")):
+        shutil.copy(path, tmp_path / path.name)
+    assert run_migrations(empty_dsn, tmp_path)[-1] == "0006"
+    with psycopg.connect(empty_dsn) as c:
+        assert _cols(c, "agent_status")["compaction_at"] == ("timestamp with time zone", "YES")
+    sql = (MIGRATIONS_DIR / "0006_compaction.sql").read_text()
+    with psycopg.connect(empty_dsn, autocommit=True) as c:
+        c.execute(sql)
+        c.execute(sql)
+        c.execute("DELETE FROM schema_migrations WHERE version = '0006'")
+    assert run_migrations(empty_dsn, tmp_path) == ["0006"]
+    assert run_migrations(empty_dsn, tmp_path) == []
+    with psycopg.connect(empty_dsn) as c:
+        assert _cols(c, "agent_status")["compaction_at"] == ("timestamp with time zone", "YES")
