@@ -145,6 +145,10 @@ def remote_source_problem(source: str) -> str | None:
             "(git::https://<host>/<path> or github.com/<owner>/<repo>, with optional "
             "//<subdir> and ?ref=<ref>)"
         )
+    authority = parsed.url[len("https://") :].split("/", 1)[0]
+    if "@" in authority:
+        redacted = source.replace(authority, "***@" + authority.rsplit("@", 1)[1], 1)
+        return f"plugin source '{redacted}': credentials in the URL are not allowed"
     return None
 
 
