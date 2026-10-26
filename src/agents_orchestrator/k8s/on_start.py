@@ -32,8 +32,9 @@ INIT_SCRIPTS_TOOLS = ["init_scripts_get", "init_scripts_edit"]
 def orchestrator_allow(spec: SessionSpec) -> list[str]:
     """The orchestrator tools this session's agents may call.
 
-    Every session gets the session tools (D11) then the init-scripts tools, alone sessions included; the agent API decides
-    what each caller may list and send, so the list never depends on `session_messaging`.
+    Every session gets the session tools (D11) then the init-scripts tools, alone sessions
+    included; the agent API decides what each caller may list, send and edit, so the list never
+    depends on `session_messaging`.
     """
     if not spec.hive:
         return [*SESSION_TOOLS, *INIT_SCRIPTS_TOOLS]
