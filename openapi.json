@@ -2228,6 +2228,20 @@
             ],
             "title": "Any Mcp Config"
           },
+          "any_mcp_sources": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Any Mcp Sources"
+          },
           "auto_compact_pct": {
             "anyOf": [
               {

@@ -124,6 +124,46 @@ class Resources(BaseModel):
 WORKDIR_ROOT = "/workdir"
 # Directory under the workdir where init scripts and their log are surfaced to the agent.
 INIT_DIR = ".agent-init"
+ANY_MCP_SOURCES_MAX = 20
+ANY_MCP_SOURCE_MAX_CHARS = 500
+_PLUGIN_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,19}$")
+_PLUGIN_NAME_MAX = 20
+
+
+def remote_source_problem(source: str) -> str | None:
+    """Why a plugin source is refused, or None: only remote https git sources are accepted."""
+    from any_mcp.errors import ConfigError
+    from any_mcp.sources import parse_source
+
+    try:
+        parsed = parse_source(source)
+    except ConfigError as exc:
+        return str(exc)
+    if parsed.kind != "git" or parsed.url is None or not parsed.url.startswith("https://"):
+        return (
+            f"plugin source '{source}': only https git sources are accepted "
+            "(git::https://<host>/<path> or github.com/<owner>/<repo>, with optional "
+            "//<subdir> and ?ref=<ref>)"
+        )
+    return None
+
+
+def source_plugin_name(source: str) -> str:
+    """The plugin name of a parsed source: last subdir segment, else the repo name without .git.
+
+    Lower-cased, characters outside [a-z0-9_-] replaced by '-', cut to 20. The result is not
+    validated here; `validate_spec` reports names that do not fit.
+    """
+    from any_mcp.sources import parse_source
+
+    parsed = parse_source(source)
+    if parsed.subdir:
+        base = parsed.subdir.rsplit("/", 1)[-1]
+    else:
+        base = (parsed.url or "").rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
+    return re.sub(r"[^a-z0-9_-]", "-", base.lower())[:_PLUGIN_NAME_MAX]
+
+
 INIT_SCRIPTS_MAX = 20
 
 CACHE_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
@@ -427,6 +467,7 @@ class SessionSpec(BaseModel):
     auto_compact_pct: int | None = Field(default=None, ge=1, le=100)
     discard_hook_url: str | None = None
     init_scripts: list[str] = []
+    any_mcp_sources: list[str] | None = None
     wrapper: WrapperSettings | None = None
     leader_lease_seconds: int | None = Field(default=None, ge=60, le=604800)
     autoclose_after_seconds: int | None = Field(default=None, ge=1, le=2592000)
@@ -494,6 +535,25 @@ class SessionSpec(BaseModel):
                 )
         return v
 
+    @field_validator("any_mcp_sources")
+    @classmethod
+    def _any_mcp_sources(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return v
+        if len(v) > ANY_MCP_SOURCES_MAX:
+            raise ValueError(f"any_mcp_sources has {len(v)} entries, at most {ANY_MCP_SOURCES_MAX}")
+        for i, source in enumerate(v):
+            if not source.strip():
+                raise ValueError(f"any_mcp_sources[{i}] must not be empty")
+            if len(source) > ANY_MCP_SOURCE_MAX_CHARS:
+                raise ValueError(
+                    f"any_mcp_sources[{i}] has {len(source)} characters, "
+                    f"max {ANY_MCP_SOURCE_MAX_CHARS}"
+                )
+            if (problem := remote_source_problem(source)) is not None:
+                raise ValueError(f"any_mcp_sources[{i}]: {problem}")
+        return v
+
     @field_validator("pvc_size")
     @classmethod
     def _pvc_size(cls, v: str | None) -> str | None:
@@ -556,6 +616,13 @@ def _not_above(low: str, high: str) -> bool:
         return parse_quantity(low) <= parse_quantity(high)
     except ValueError:
         return True
+
+
+def _config_plugin_names(config: dict[str, Any]) -> set[str]:
+    plugins = config.get("plugins")
+    if not isinstance(plugins, list):
+        return set()
+    return {e["name"] for e in plugins if isinstance(e, dict) and isinstance(e.get("name"), str)}
 
 
 def validate_spec(spec: SessionSpec, settings: Settings, stored: SessionSpec | None = None) -> None:
@@ -652,5 +719,29 @@ def validate_spec(spec: SessionSpec, settings: Settings, stored: SessionSpec | N
                         f"any_mcp_config.plugins: {RESERVED_PLUGIN!r} is reserved for the "
                         f"rendered plugin (entry {entry.name!r})"
                     )
+            for i, entry in enumerate(config.plugins):
+                if entry.source is not None and (problem := remote_source_problem(entry.source)):
+                    errors.append(f"any_mcp_config.plugins[{i}].source: {problem}")
+    if spec.any_mcp_sources:
+        taken = _config_plugin_names(
+            spec.any_mcp_config
+            if spec.any_mcp_config is not None
+            else settings.default_any_mcp_config()
+        )
+        derived: dict[str, int] = {}
+        for i, source in enumerate(spec.any_mcp_sources):
+            name = source_plugin_name(source)
+            if not _PLUGIN_NAME.match(name):
+                reason = f"derived plugin name {name!r} must match {_PLUGIN_NAME.pattern}"
+            elif name == RESERVED_PLUGIN:
+                reason = f"derived plugin name {name!r} is reserved for the rendered plugin"
+            elif name in derived:
+                reason = f"derived plugin name {name!r} repeats any_mcp_sources[{derived[name]}]"
+            elif name in taken:
+                reason = f"derived plugin name {name!r} is already a plugin of the any-mcp config"
+            else:
+                derived[name] = i
+                continue
+            errors.append(f"any_mcp_sources[{i}]: {reason}")
     if errors:
         raise SpecInvalid(errors)
