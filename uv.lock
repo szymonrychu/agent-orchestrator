@@ -500,7 +500,7 @@ wheels = [
 
 [[package]]
 name = "claude-code-wrapper"
-version = "0.2.0"
+version = "0.3.0"
 source = { git = "https://github.com/szymonrychu/claude-code-wrapper?rev=ee10aa8f742c98e473287e31d0c98492a9e2c1de#ee10aa8f742c98e473287e31d0c98492a9e2c1de" }
 dependencies = [
     { name = "anyio" },
