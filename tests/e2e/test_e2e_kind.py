@@ -274,11 +274,16 @@ HIVE_ONLY_TOOLS = {
 
 
 def assert_alone_session_tools(configmap: dict[str, Any]) -> None:
-    """An alone session renders the orchestrator entry with only the session tools (D11)."""
+    """An alone session renders the orchestrator entry with only the session and init-scripts tools (D11)."""
     plugins = on_start_any_mcp(configmap).get("plugins", [])
     entry = next((p for p in plugins if p.get("name") == "orchestrator"), None)
     assert entry is not None, plugins
-    assert entry["allow"] == ["sessions_list", "session_send"], entry
+    assert entry["allow"] == [
+        "sessions_list",
+        "session_send",
+        "init_scripts_get",
+        "init_scripts_edit",
+    ], entry
     assert not set(entry["allow"]) & HIVE_ONLY_TOOLS, entry
     assert entry["config"]["hive"] is False, entry
 
