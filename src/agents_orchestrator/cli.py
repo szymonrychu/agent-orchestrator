@@ -228,6 +228,20 @@ def _cmd_bench(args: argparse.Namespace) -> int:
     return 0
 
 
+def _configure_cache(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("action", choices=["restore", "save"], help="direction of the transfer")
+
+
+def _cmd_cache(args: argparse.Namespace) -> int:
+    """Job-side workspace transfer; reads only CACHE_* and never constructs Settings."""
+    import os
+
+    from agents_orchestrator.cache import transfer
+
+    run = transfer.restore if args.action == "restore" else transfer.save
+    return run(os.environ)
+
+
 register("migrate", _cmd_migrate, "apply database migrations and exit")
 register("api", _cmd_api, "serve the HTTP API and UI")
 register("dispatcher", _cmd_dispatcher, "dispatch queued messages to agents")
@@ -238,6 +252,12 @@ register(
     _cmd_bench,
     "run the experiment arms against the API (talks only to /api/v1)",
     _configure_bench,
+)
+register(
+    "cache",
+    _cmd_cache,
+    "restore or save the session workspace through CACHE_URL (cache Job)",
+    _configure_cache,
 )
 
 

@@ -33,3 +33,41 @@ ingress:
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
 ```
+
+## Workspace cache
+
+The reconciler can restore a session workspace from, and save it to, any S3-compatible object
+store through short-lived cache Jobs. Setting `cache.s3.bucket` enables it; empty (the default)
+renders no `ORCH_CACHE_*` setting and the cache stays off.
+
+| Value | Default | Setting |
+|---|---|---|
+| `cache.s3.endpoint` | `""` (the AWS endpoint of the region) | `ORCH_CACHE_S3_ENDPOINT` |
+| `cache.s3.region` | `us-east-1` | `ORCH_CACHE_S3_REGION` |
+| `cache.s3.bucket` | `""` (cache off) | `ORCH_CACHE_S3_BUCKET` |
+| `cache.s3.prefix` | `workspace-cache/` | `ORCH_CACHE_S3_PREFIX` |
+| `cache.s3.pathStyle` | `false` | `ORCH_CACHE_S3_PATH_STYLE` |
+| `cache.s3.verifyTls` | `true` | `ORCH_CACHE_S3_VERIFY_TLS` |
+| `cache.s3.existingSecret` | `""` (required with a bucket) | - |
+| `cache.s3.accessKeyIdKey` | `AWS_ACCESS_KEY_ID` | `ORCH_CACHE_S3_ACCESS_KEY_ID` |
+| `cache.s3.secretAccessKeyKey` | `AWS_SECRET_ACCESS_KEY` | `ORCH_CACHE_S3_SECRET_ACCESS_KEY` |
+| `cache.image` | `""` (the chart image, `image.repository:image.tag`) | `ORCH_CACHE_IMAGE` |
+| `cache.maxBytes` | `5368709120` (5 GiB, the maximum) | `ORCH_CACHE_MAX_BYTES` |
+| `cache.timeoutSeconds` | `1800` | `ORCH_CACHE_TIMEOUT_SECONDS` |
+
+Everything but the access keys goes into the settings ConfigMap. The access key pair is read
+from `cache.s3.existingSecret` (keys `cache.s3.accessKeyIdKey` and `cache.s3.secretAccessKeyKey`)
+and reaches the reconciler container only, as `secretKeyRef` env: the api, dispatcher and
+ingester, the migrate init containers and the agent pods never see it, and each cache Job gets
+one presigned URL instead. A bucket without `cache.s3.existingSecret` fails the render.
+The reconciler Role allows create, get and delete on `batch` Jobs in the release
+namespace (Kubernetes RBAC cannot restrict verbs by label).
+
+```yaml
+cache:
+  s3:
+    endpoint: https://s3.example.com
+    bucket: workspace-cache
+    pathStyle: true
+    existingSecret: workspace-cache-s3
+```

@@ -13,7 +13,7 @@ from agents_orchestrator.api.errors import ApiError, not_found
 from agents_orchestrator.api.sessions import Cfg, Pool, check_spec
 from agents_orchestrator.db import presets as repo
 from agents_orchestrator.settings import Settings
-from agents_orchestrator.spec import SessionSpec
+from agents_orchestrator.spec import SessionSpec, default_cache_key
 
 router = APIRouter(prefix="/api/v1")
 
@@ -40,7 +40,10 @@ def _checked_name(name: str) -> str:
 
 
 def _validated(
-    body: schemas.PresetIn, settings: Settings, stored: dict[str, Any] | None = None
+    body: schemas.PresetIn,
+    settings: Settings,
+    stored: dict[str, Any] | None = None,
+    preset_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     """Check name and spec; return the spec as the caller sent it (no defaults filled)."""
     _checked_name(body.name)
@@ -50,7 +53,8 @@ def _validated(
             stored_spec = SessionSpec.model_validate(stored)
         except ValidationError:
             stored_spec = None
-    check_spec(body.spec, settings, stored_spec)
+    derived = default_cache_key(preset_id) if preset_id is not None else None
+    check_spec(body.spec, settings, stored_spec, derived_cache_key=derived)
     return body.spec.model_dump(mode="json", exclude_unset=True)
 
 
@@ -106,7 +110,7 @@ async def replace_preset(
         stored = await repo.get(conn, preset_id)
         if stored is None:
             raise not_found("preset")
-        spec = _validated(body, settings, stored.spec)
+        spec = _validated(body, settings, stored.spec, preset_id)
         try:
             return _view(await repo.update(conn, preset_id, body.name, spec))
         except repo.PresetNotFound:
@@ -131,6 +135,14 @@ async def delete_preset(preset_id: uuid.UUID, pool: Pool) -> Response:
     return Response(status_code=204)
 
 
+def _without_derived_key(spec: dict[str, Any], preset_id: uuid.UUID) -> dict[str, Any]:
+    """The copy derives its own key, so a key equal to the source's derived key is dropped."""
+    cache = spec.get("cache")
+    if isinstance(cache, dict) and cache.get("key") == default_cache_key(preset_id):
+        return {**spec, "cache": {k: v for k, v in cache.items() if k != "key"}}
+    return spec
+
+
 @router.post("/presets/{preset_id}/copy", status_code=201, response_model=schemas.PresetView)
 async def copy_preset(
     preset_id: uuid.UUID, pool: Pool, body: schemas.CopyPreset | None = None
@@ -142,11 +154,12 @@ async def copy_preset(
         source = await repo.get(conn, preset_id)
         if source is None:
             raise not_found("preset")
+        spec = _without_derived_key(source.spec, preset_id)
         for _ in range(_COPY_TRIES):
             taken = {p.name.lower() for p in await repo.list_presets(conn)}
             name = explicit if explicit is not None else _copy_name(source.name, taken)
             try:
-                return _view(await repo.create(conn, name, source.spec))
+                return _view(await repo.create(conn, name, spec))
             except repo.PresetExists:
                 if explicit is not None:
                     raise _exists(name) from None

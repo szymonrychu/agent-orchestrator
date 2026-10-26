@@ -6,3 +6,9 @@ masterKey:
   value: lint-master-key
 claude:
   token: lint-claude-token
+cache:
+  s3:
+    endpoint: https://s3.example.com
+    bucket: lint-cache
+    pathStyle: true
+    existingSecret: lint-cache-credentials

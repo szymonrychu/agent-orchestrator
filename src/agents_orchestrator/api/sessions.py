@@ -21,6 +21,8 @@ from agents_orchestrator.spec import (
     WORKDIR_ROOT,
     SessionSpec,
     SpecInvalid,
+    check_caller_cache_key,
+    default_cache_key,
     fill_resource_defaults,
     generated_slug,
     init_scripts_hash,
@@ -114,13 +116,21 @@ async def _one_view(conn, session: repo.Session, settings: Settings) -> schemas.
 
 
 def check_spec(
-    spec: SessionSpec, settings: Settings, stored: SessionSpec | None = None
+    spec: SessionSpec,
+    settings: Settings,
+    stored: SessionSpec | None = None,
+    derived_cache_key: str | None = None,
 ) -> SessionSpec:
     """Validate the spec and return it with empty resource keys filled from the defaults.
 
     A model, effort or image equal to the one in `stored` is accepted even when it has left the
     settings lists; scheduling and preset creation pass no `stored` and validate fully.
+    `derived_cache_key` is the one `preset-` cache key the spec may carry (its own preset's).
     """
+    try:
+        check_caller_cache_key(spec, derived_cache_key)
+    except ValueError as exc:
+        raise ApiError(422, "invalid_request", str(exc)) from None
     try:
         validate_spec(spec, settings, stored)
     except SpecInvalid as exc:
@@ -155,6 +165,9 @@ async def meta(settings: Cfg) -> schemas.Meta:
             max_sessions=settings.max_sessions,
         ),
         discard_hook=hook.kind if hook else "none",
+        cache=schemas.MetaCache(
+            available=settings.cache_available, max_bytes=settings.cache_max_bytes
+        ),
     )
 
 
@@ -177,6 +190,8 @@ async def create_session(
     if body.spec is not None:
         if body.slug is None:
             raise ApiError(422, "invalid_request", "slug is required with spec")
+        if body.spec.cache is not None and body.spec.cache.key is None:
+            raise ApiError(422, "invalid_request", "cache.key is required without a preset")
         spec = check_spec(body.spec, settings)
     if body.slug is not None:
         try:
@@ -217,11 +232,18 @@ async def _create_from_preset(
     raw = dict(preset.spec)
     raw.setdefault("replicas", settings.default_replicas)
     try:
-        spec = check_spec(SessionSpec.model_validate(raw), settings)
+        spec = check_spec(
+            SessionSpec.model_validate(raw),
+            settings,
+            derived_cache_key=default_cache_key(preset.id),
+        )
     except ValidationError as exc:
         raise ApiError(422, "invalid_request", f"preset '{preset.name}': {exc}") from None
     except ApiError as exc:
         raise ApiError(422, "invalid_request", f"preset '{preset.name}': {exc.message}") from None
+    if spec.cache is not None and spec.cache.key is None:
+        cache = spec.cache.model_copy(update={"key": default_cache_key(preset.id)})
+        spec = spec.model_copy(update={"cache": cache})
     provenance = {"preset_id": preset.id, "preset_name": preset.name}
     if slug is not None:
         return await _insert(conn, slug, spec, **provenance)

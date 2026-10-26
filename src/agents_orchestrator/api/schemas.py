@@ -146,6 +146,11 @@ class MetaCaps(BaseModel):
     max_sessions: int
 
 
+class MetaCache(BaseModel):
+    available: bool
+    max_bytes: int
+
+
 class Meta(BaseModel):
     defaults: MetaDefaults
     agent_image: str
@@ -154,6 +159,7 @@ class Meta(BaseModel):
     efforts: list[str]
     caps: MetaCaps
     discard_hook: Literal["none", "command", "url"]
+    cache: MetaCache
 
 
 MessageStatus = Literal["queued", "dispatching", "verifying", "sent", "failed", "cancelled"]

@@ -13,7 +13,7 @@ import yaml
 from pydantic import Field, ValidationError, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
-from agents_orchestrator.spec import parse_quantity
+from agents_orchestrator.spec import CACHE_MAX_BYTES_LIMIT, parse_quantity
 
 PREFIX = "ORCH_"
 MIN_MASTER_KEY_BYTES = 32
@@ -156,6 +156,18 @@ class Settings(BaseSettings):
     any_mcp_repo: str = "https://github.com/szymonrychu/any-mcp"
     any_mcp_ref: str = "v0.3.0"
     on_start_timeout_seconds: float = 600
+
+    cache_s3_endpoint: str = ""
+    cache_s3_region: str = "us-east-1"
+    cache_s3_bucket: str = ""
+    cache_s3_prefix: str = "workspace-cache/"
+    cache_s3_path_style: bool = False
+    cache_s3_verify_tls: bool = True
+    cache_s3_access_key_id: str = ""
+    cache_s3_secret_access_key: str = Field(default="", repr=False)
+    cache_image: str = ""
+    cache_max_bytes: int = Field(default=CACHE_MAX_BYTES_LIMIT, ge=1, le=CACHE_MAX_BYTES_LIMIT)
+    cache_timeout_seconds: int = Field(default=1800, ge=60, le=86400)
 
     def __init__(self, **values: object) -> None:
         try:
@@ -372,6 +384,15 @@ class Settings(BaseSettings):
             raise _Bad("must be at least ORCH_RETRY_BACKOFF_BASE_SECONDS")
         return v
 
+    @field_validator("cache_s3_endpoint")
+    @classmethod
+    def _check_cache_endpoint(cls, v: str) -> str:
+        if v:
+            parsed = urlparse(v)
+            if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                raise _Bad("must be an http or https URL")
+        return v
+
     @field_validator("discard_hook_url")
     @classmethod
     def _check_hook_url(cls, v: str, info: ValidationInfo) -> str:
@@ -402,6 +423,22 @@ class Settings(BaseSettings):
         if not self.agent_image:
             raise SettingsError({"ORCH_AGENT_IMAGE": "required"})
         return self.agent_image
+
+    @property
+    def cache_available(self) -> bool:
+        return bool(self.cache_s3_bucket)
+
+    def require_cache(self) -> None:
+        """Refuse a bucket without the credentials and image the cache Jobs need."""
+        if not self.cache_available:
+            return
+        missing = {
+            _var(name): "required when ORCH_CACHE_S3_BUCKET is set"
+            for name in ("cache_s3_access_key_id", "cache_s3_secret_access_key", "cache_image")
+            if not getattr(self, name)
+        }
+        if missing:
+            raise SettingsError(missing)
 
     def retry_delay_seconds(self, attempts: int) -> float:
         return min(

@@ -36,6 +36,7 @@ from agents_orchestrator.db.sessions import Session, SessionNotFound
 from agents_orchestrator.k8s.kube import FIELD_MANAGER, KubeApi, Obj, is_owned, pod_ready
 from agents_orchestrator.k8s.labels import object_names, prefix, session_labels
 from agents_orchestrator.k8s.render import pod_url, render_session
+from agents_orchestrator.reconciler.cache import CacheGate, CacheRunner
 from agents_orchestrator.reconciler.checks import CheckRunner
 from agents_orchestrator.reconciler.discard_hook import HookResult, resolve_hook, run_discard_hook
 from agents_orchestrator.reconciler.init import InitGate, InitRunner
@@ -49,7 +50,7 @@ CHANNELS = ("session_changed",)
 GUARDED_KINDS = frozenset({"StatefulSet", "Service", "ConfigMap", "PersistentVolumeClaim"})
 # Deletion order: the StatefulSet first so its pods stop using the config and the volume.
 PRUNE_ORDER = ("StatefulSet", "Service", "ConfigMap", "PersistentVolumeClaim")
-# A discard also deletes the check Jobs and the init Job, ahead of the PVC they mount. A converge
+# A discard also deletes the check, init and cache Jobs, ahead of the PVC they mount. A converge
 # never prunes them: they are created per check and once per session, not rendered.
 DISCARD_ORDER = ("Job", *PRUNE_ORDER)
 
@@ -70,11 +71,14 @@ class Reconciler:
         self.pool = pool
         self.kube = kube
         self.settings = settings
+        if settings.cache_available:
+            settings.require_cache()
         self.wrapper_factory = wrapper_factory
         self._warned_no_agent_url: set[UUID] = set()
         self.hook_transport: httpx.AsyncBaseTransport | None = None
         self.checks = CheckRunner(pool, kube, settings)
         self.init = InitRunner(pool, kube, settings, write_status=self._write_status)
+        self.cache = CacheRunner(pool, kube, settings, write_status=self._write_status)
         self.bootstrapper = (
             WrapperSessionBootstrapper(pool, wrapper_factory)
             if wrapper_factory is not None
@@ -233,7 +237,9 @@ class Reconciler:
             await self.kube.apply(obj, field_manager=FIELD_MANAGER, force=True)
         desired = {(o["kind"], o["metadata"]["name"]) for o in objs}
         await self._prune(slug, desired)
-        gate = await self.init.step(session)
+        cache_gate = await self.cache.restore_step(session)
+        # init waits for the restore, so a script never runs on a workspace about to be replaced
+        gate = await self.init.step(session) if not cache_gate.hold else InitGate()
 
         ready = await self._observe(session)
         draining = await self._draining(session.id, replicas)
@@ -243,11 +249,11 @@ class Reconciler:
             phase = "pending" if ready == 0 else "degraded"
             message = f"{ready} of {replicas} pods ready"
         problems: list[str] = []
-        if gate.hold:  # sessions wait for the init run
+        if gate.hold or cache_gate.hold:  # sessions wait for the restore and the init run
             phase = "pending"
         else:
             problems = await self._bootstrap_wrapper_sessions(session)
-            if gate.degraded:  # a failed init starts the sessions anyway
+            if gate.degraded or cache_gate.degraded:  # a failed restore or init starts them anyway
                 phase = "degraded"
         fields: dict[str, Any] = {"phase": phase, "ready": ready, "replicas": replicas}
         drain = ""
@@ -258,7 +264,9 @@ class Reconciler:
                 "waiting": [ordinal for ordinal, busy in draining if busy],
             }
             drain = f"draining {len(draining)} agents"
-        fields["message"] = "; ".join(filter(None, [message, drain, gate.message, *problems]))
+        fields["message"] = "; ".join(
+            filter(None, [message, drain, cache_gate.message, gate.message, *problems])
+        )
         log.debug("session %s in %s: %s", slug, ns, phase)
         await self._write_status(
             session, fields, session.generation, drop=() if draining else ("drain",)
@@ -387,6 +395,13 @@ class Reconciler:
             await queue.cancel_checks(conn, session.id)
         if not await self._quiesce(session):
             return
+        if not await self.cache.save_step(session):
+            await self._write_status(
+                session,
+                {"phase": "deleting", "message": "saving the workspace cache"},
+                session.observed_generation,
+            )
+            return
         if not await self.pre_discard(session):
             await self._write_status(
                 session,
@@ -416,21 +431,27 @@ class Reconciler:
             return (await (await conn.execute("SELECT now()")).fetchone())[0]
 
     async def _quiesce(self, session: Session) -> bool:
-        """Stop the agents and let the ingester drain before the history is exported.
+        """Stop the agents and let the ingester drain before the history is exported or saved.
 
-        Only when an export is still owed (a hook that has not delivered). The StatefulSet is
-        scaled to zero; once no agent pod is left, the ingester gets `discard_drain_seconds`
-        to store the last events of their streams. The wait is bounded by
-        `discard_quiesce_timeout_seconds` from the first pass, after which the discard goes on
-        and logs what it could not confirm. True means the export may run.
+        Only when an export is still owed (a hook that has not delivered) or a workspace cache
+        save is (`spec.cache` set, no save outcome yet). The StatefulSet is scaled to zero; once
+        no agent pod is left, the ingester gets `discard_drain_seconds` to store the last events
+        of their streams. The wait is bounded by `discard_quiesce_timeout_seconds` from the first
+        pass, after which the discard goes on and logs what it could not confirm. True means the
+        export and the save may run.
         """
-        if resolve_hook(session, self.settings) is None or session.status.get(
+        status = session.status
+        hook_owed = resolve_hook(session, self.settings) is not None and not status.get(
             "discard_hook_delivered"
-        ):
+        )
+        save = (status.get("cache") or {}).get("save")
+        save_owed = session.spec.cache is not None and (
+            save is None or save.get("state") == "running"
+        )
+        if not hook_owed and not save_owed:
             return True
         ns, slug = self.settings.namespace, session.slug
         now = await self._db_now()
-        status = session.status
         started = datetime.fromisoformat(status.get("discard_quiesce_started") or now.isoformat())
         fields: dict[str, Any] = {"discard_quiesce_started": started.isoformat()}
 
@@ -561,9 +582,11 @@ class Reconciler:
         agent = replace(agent, wrapper_session_id=None, wrapper_session_created_at=None)
         if self.bootstrapper is None or not agent.ready:
             return "done", {"cleared": True, "bootstrapped": False}
+        cache_gate = CacheGate.of(session.status.get("cache"), session.spec.cache is not None)
         gate = InitGate.of(session.status.get("init"), session.spec.init_scripts)
-        if gate.hold:  # the converge bootstraps it once the init run is over
-            return "done", {"cleared": True, "bootstrapped": False, "message": gate.message}
+        held = cache_gate if cache_gate.hold else gate
+        if held.hold:  # the converge bootstraps it once the restore and the init run are over
+            return "done", {"cleared": True, "bootstrapped": False, "message": held.message}
         token = tokens_for(self.settings, session.id).auth
         problem = await self.bootstrapper.bootstrap(agent, session.spec, token)
         if problem:  # the session stays cleared; the next reconcile tick bootstraps it again (D6)

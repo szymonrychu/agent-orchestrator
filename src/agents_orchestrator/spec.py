@@ -7,6 +7,7 @@ import json
 import re
 import secrets
 import string
+import uuid
 from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Annotated, Any, Literal
@@ -124,6 +125,14 @@ WORKDIR_ROOT = "/workdir"
 # Directory under the workdir where init scripts and their log are surfaced to the agent.
 INIT_DIR = ".agent-init"
 INIT_SCRIPTS_MAX = 20
+
+CACHE_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
+CACHE_EXCLUDE_MAX = 50
+CACHE_EXCLUDE_ENTRY_MAX = 256
+# Always left out of a cache archive, besides spec.cache.exclude.
+CACHE_ALWAYS_EXCLUDE = (INIT_DIR,)
+# S3 and RGW cap one PUT at 5 GiB.
+CACHE_MAX_BYTES_LIMIT = 5368709120
 INIT_SCRIPT_MAX_CHARS = 16384
 
 
@@ -353,6 +362,52 @@ class WrapperSettings(_Strict):
         return v
 
 
+def default_cache_key(preset_id: uuid.UUID) -> str:
+    """Stable cache key derived from the immutable preset id (a rename keeps the cache)."""
+    digest = hashlib.sha256(b"workspace-cache:" + preset_id.bytes).hexdigest()
+    return "preset-" + digest[:16]
+
+
+CACHE_KEY_RESERVED_PREFIX = "preset-"
+
+
+def check_caller_cache_key(spec: SessionSpec, derived_key: str | None = None) -> None:
+    """Reject a caller-supplied cache key in the prefix reserved for preset-derived keys.
+
+    `derived_key` is the one reserved key the spec may carry (its own preset's). Applied at the
+    API input boundary only: derived specs the server writes never pass through it.
+    """
+    key = spec.cache.key if spec.cache is not None else None
+    if key and key.startswith(CACHE_KEY_RESERVED_PREFIX) and key != derived_key:
+        raise ValueError(
+            f"cache.key prefix {CACHE_KEY_RESERVED_PREFIX} is reserved for preset-derived keys"
+        )
+
+
+class WorkspaceCache(_Strict):
+    key: str | None = None
+    exclude: list[str] = []
+
+    @field_validator("key")
+    @classmethod
+    def _check_key(cls, v: str | None) -> str | None:
+        if v is not None and not CACHE_KEY_RE.match(v):
+            raise ValueError(f"cache key must match {CACHE_KEY_RE.pattern}")
+        return v
+
+    @field_validator("exclude")
+    @classmethod
+    def _check_exclude(cls, v: list[str]) -> list[str]:
+        if len(v) > CACHE_EXCLUDE_MAX:
+            raise ValueError(f"at most {CACHE_EXCLUDE_MAX} exclude entries")
+        for entry in v:
+            if not entry or len(entry) > CACHE_EXCLUDE_ENTRY_MAX:
+                raise ValueError(f"exclude entries are 1 to {CACHE_EXCLUDE_ENTRY_MAX} characters")
+            if entry.startswith("/") or ".." in entry.split("/"):
+                raise ValueError(f"exclude {entry!r} must be relative with no '..' segment")
+        return v
+
+
 class SessionSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -379,6 +434,8 @@ class SessionSpec(BaseModel):
     # the session still running for it. The orchestrator never acts on it, so a session a
     # user creates ignores it. Sparse: unset is not stored or dumped in a preset.
     reuse_running_agent: bool | None = Field(default=None, strict=True)
+    # Workspace cache in S3; presence enables it. Sparse: unset is not stored or dumped.
+    cache: WorkspaceCache | None = None
 
     @model_validator(mode="after")
     def _cap(self) -> SessionSpec:
@@ -528,6 +585,12 @@ def validate_spec(spec: SessionSpec, settings: Settings, stored: SessionSpec | N
         and (stored is None or spec.effort != stored.effort)
     ):
         errors.append(f"effort {spec.effort!r} is not one of: {', '.join(settings.efforts)}")
+    if (
+        spec.cache is not None
+        and not settings.cache_available
+        and (stored is None or spec.cache != stored.cache)
+    ):
+        errors.append("workspace cache is not configured (ORCH_CACHE_S3_BUCKET is unset)")
     if spec.resources is not None:
         for key in ("cpu", "memory"):
             request = spec.resources.requests.get(key)

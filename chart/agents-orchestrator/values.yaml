@@ -217,3 +217,35 @@ claude:
   existingSecret: ""
   existingSecretKey: CLAUDE_CODE_OAUTH_TOKEN
   token: ""
+
+# Workspace cache: restore and save Jobs that move a capped tar.zst of a session workspace
+# to and from any S3-compatible object store. Empty cache.s3.bucket disables the cache and
+# renders no ORCH_CACHE_* setting. The access keys reach the reconciler container only
+# (the cache Jobs get one presigned URL each, agent pods and the other components none).
+cache:
+  s3:
+    # S3 endpoint URL (http or https); empty uses the AWS endpoint of the region.
+    endpoint: ""
+    # Signing region; most S3-compatible stores accept the default.
+    region: us-east-1
+    # Bucket holding the archives; setting it enables the cache and requires existingSecret.
+    bucket: ""
+    # Key prefix of every archive in the bucket.
+    prefix: workspace-cache/
+    # Path-style addressing (endpoint/bucket/key) instead of virtual-hosted (bucket.endpoint/key).
+    pathStyle: false
+    # Verify the endpoint's TLS certificate.
+    verifyTls: true
+    # Existing Secret in the release namespace holding the access key pair (required with a bucket).
+    existingSecret: ""
+    # Key of the access key id in existingSecret.
+    accessKeyIdKey: AWS_ACCESS_KEY_ID
+    # Key of the secret access key in existingSecret.
+    secretAccessKeyKey: AWS_SECRET_ACCESS_KEY
+  # Image of the cache Jobs; empty uses the chart's own image (image.repository:image.tag,
+  # the tag defaulting to the chart appVersion).
+  image: ""
+  # Largest archive in bytes the Jobs pack or unpack (at most 5 GiB).
+  maxBytes: 5368709120
+  # Deadline of one cache Job in seconds (60 to 86400).
+  timeoutSeconds: 1800

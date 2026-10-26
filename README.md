@@ -357,6 +357,84 @@ A session whose spec sets `autoclose_after_seconds` closes itself: once `created
 
 The `sessions` table keeps one writer, the api: the sweeper is an api background task that writes `desired` and `generation` (the same write as `DELETE`), never the reconciler.
 
+## Workspace cache
+
+A session can keep its workspace between runs in an S3-compatible store, so a new session of the same preset starts from the last saved workdir.
+
+### Spec and key
+
+`spec.cache` is `{"key": "<key>", "exclude": ["<glob>", ...]}`; absent means no cache. The key matches `^[a-z0-9][a-z0-9._-]{0,62}$`. `exclude` holds up to 50 relative globs (1 to 256 characters, no leading `/`, no `..` segment) that are left out of the archive. A session created from a preset whose `spec.cache` has no key gets `default_cache_key(preset.id)`: `preset-` plus 16 hex digits derived from the immutable preset id, so renaming the preset keeps its cache. A raw spec (a session created without a preset) must set the key itself. The `preset-` prefix is reserved for derived keys: a caller-supplied `cache.key` starting with `preset-` (raw spec, preset create or update, session create) is rejected with 422 `invalid_request` "cache.key prefix preset- is reserved for preset-derived keys", except a preset's own derived key on that preset. Other slugs work as before.
+
+### Lifecycle
+
+- Restore: before the init Job and the agent pods, the reconciler runs the Job `agent-<slug>-cache-restore`, which downloads and unpacks the archive into the workdir. A missing archive is a normal `miss`.
+- Save: during the discard, once the agent pods are gone and before the PVC is deleted, the reconciler runs `agent-<slug>-cache-save`, which packs the workdir and uploads it. A save never holds the discard, whatever its outcome.
+- Nothing is saved or restored on a pod restart or a node loss: the PVC is what survives those.
+
+Both Jobs run in `ORCH_CACHE_IMAGE`, never `spec.image`, are hardened (uid 1000, read-only root filesystem, all capabilities dropped) and mount only the session's workspace PVC (the save read-only).
+
+### Credentials and expiry
+
+Only the reconciler holds the S3 credentials. Each Job gets one presigned URL in its env (`CACHE_URL`, a GET for the restore, a PUT for the save) and no Secret, `spec.env`, `envFrom` or service account token. The URL expires `ORCH_CACHE_TIMEOUT_SECONDS` plus 600 seconds after it is signed; the Job itself is bounded by `ORCH_CACHE_TIMEOUT_SECONDS`.
+
+### Sharing and size
+
+Sessions sharing a key share one archive and last writer wins: each save replaces the object, with no merge or locking. The archive is capped by `ORCH_CACHE_MAX_BYTES` (at most 5 GiB, 5368709120): a save that would exceed it fails with `too_large`, sends nothing and keeps the previous archive.
+
+### `status.cache`
+
+`status.cache` is `{"key", "restore", "save"}`; `restore` and `save` are each `{"state", "job", "started_at", "finished_at", "bytes", "reason"}`.
+
+| State | Applies to | Meaning |
+|---|---|---|
+| `running` | restore, save | the Job was created and has not finished |
+| `restored` | restore | the archive was unpacked; `bytes` is its size |
+| `miss` | restore | no archive exists for the key |
+| `saved` | save | the archive was uploaded; `bytes` is its size |
+| `skipped` | save | no Job ran; `reason` says why |
+| `failed` | restore, save | `reason` holds the cause (for example `download_failed`, `upload_failed`, `extract_failed`, `too_large`, `timeout`, `job_missing`, `foreign_object`, `job_create_failed`, `not_configured`, `no_cache_key`, `bad_output`, `exit <code>`) |
+
+A save runs only after a successful restore: `restored`, or `miss` (no archive existed yet, so first use saves). Every other restore state or reason skips it (`skipped`), whether the restore is still `running` or never started (`restore_running`) or failed with any reason (`download_failed`, `extract_failed`, `exit <code>`, `bad_output`, `no_cache_key`, `timeout` and so on; the reason is the head word of the restore reason). It is also skipped when the cache is not configured (`not_configured`). A failed restore may have left a partial workdir, so a save never overwrites the stored archive then; a corrupt archive is fixed by deleting the object. A failed or timed-out save is logged and recorded, and the discard goes on.
+
+A restore reports `miss` on HTTP 404 from the presigned GET. S3 returns 404 for a missing key only when the signer can list the bucket, otherwise 403, and the CLI cannot tell a 403 for a missing key from a 403 for a denied request: it reports `download_failed: HTTP 403`, which skips the save. Grant the cache credentials `s3:ListBucket` on the bucket so a first use is a 404 and saves.
+
+Save never follows symlinks, skips sockets, FIFOs and device files, and skips every symlink whose target is absolute or resolves outside the workspace (for example a `.venv` interpreter link). The count is reported as `skipped_links`.
+
+### Job CLI
+
+The Jobs run `orch cache restore|save` with only these variables (no `ORCH_*`):
+
+| Variable | Meaning |
+|---|---|
+| `CACHE_URL` | the one presigned GET (restore) or PUT (save) URL |
+| `CACHE_DIR` | the workdir |
+| `CACHE_MAX_BYTES` | the size cap |
+| `CACHE_EXCLUDE` | JSON list of exclude globs |
+| `CACHE_SCRATCH` | where the save writes its archive (`/scratch`, an emptyDir sized to the cap) |
+| `CACHE_VERIFY_TLS` | `false` skips certificate checks for a private-CA endpoint; unset is `true` |
+
+The last stdout line is one JSON outcome object, read by the reconciler from the pod log tail: `{"outcome": "restored|miss|saved|skipped|failed", "bytes": <int or null>, "reason": <string or null>}`. A save adds `skipped_links`, the number of symlinks left out for pointing outside the workspace, for example `{"outcome": "saved", "bytes": 1048576, "reason": null, "skipped_links": 2}`. The query string of the URL (the signature) is stripped from every reason and log line.
+
+### Settings
+
+The cache is off until `ORCH_CACHE_S3_BUCKET` is set; then the access key, the secret and the image are required (startup fails naming each missing variable). Read by the api (for `meta`) and the reconciler.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ORCH_CACHE_S3_ENDPOINT` | empty | S3 endpoint URL (http or https); empty means AWS |
+| `ORCH_CACHE_S3_REGION` | `us-east-1` | region used to sign URLs |
+| `ORCH_CACHE_S3_BUCKET` | empty | bucket; empty turns the cache off |
+| `ORCH_CACHE_S3_PREFIX` | `workspace-cache/` | key prefix of every object |
+| `ORCH_CACHE_S3_PATH_STYLE` | `false` | path-style addressing (MinIO and similar) |
+| `ORCH_CACHE_S3_VERIFY_TLS` | `true` | verify the endpoint certificate |
+| `ORCH_CACHE_S3_ACCESS_KEY_ID` | empty | access key id (reconciler only; required with a bucket) |
+| `ORCH_CACHE_S3_SECRET_ACCESS_KEY` | empty | secret key (reconciler only; required with a bucket) |
+| `ORCH_CACHE_IMAGE` | empty | image the cache Jobs run (required with a bucket) |
+| `ORCH_CACHE_MAX_BYTES` | `5368709120` | archive cap, 1 to 5 GiB |
+| `ORCH_CACHE_TIMEOUT_SECONDS` | `1800` | Job deadline, 60 to 86400; also sets the presigned URL lifetime |
+
+`GET /api/v1/meta` returns `cache`: `{"available": <bool>, "max_bytes": <int>}`; `available` is true when a bucket is configured.
+
 ## Architecture
 
 One repo and one image; the entrypoint is `orch <cmd>`. The processes coordinate only through Postgres.
@@ -522,7 +600,7 @@ Error codes: `bad_request` (400), `forbidden` (403), `forbidden_origin` (403, `O
 
 ### `GET /api/v1/meta`
 
-Defaults and limits for forms: `defaults` (model, effort, replicas, auto_compact_pct, pvc_size, storage_class, max_attempts), `agent_image`, `agent_images` (the image allowlist), `models`, `caps` (`max_replicas`, `max_pvc_size`, `max_sessions`, from `ORCH_MAX_REPLICAS`, `ORCH_MAX_PVC_SIZE`, `ORCH_MAX_SESSIONS`) and `discard_hook` (`none`, `command`, `url`). Response 200.
+Defaults and limits for forms: `defaults` (model, effort, replicas, auto_compact_pct, pvc_size, storage_class, max_attempts), `agent_image`, `agent_images` (the image allowlist), `models`, `caps` (`max_replicas`, `max_pvc_size`, `max_sessions`, from `ORCH_MAX_REPLICAS`, `ORCH_MAX_PVC_SIZE`, `ORCH_MAX_SESSIONS`) `discard_hook` (`none`, `command`, `url`) and `cache` (`available`, `max_bytes`; see Workspace cache). Response 200.
 
 ### `GET /api/v1/presets`
 

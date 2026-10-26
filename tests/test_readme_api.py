@@ -148,3 +148,15 @@ def test_service_port_documented() -> None:
     for needle in ("openssl rand -hex 32", "sha256sum", "Bearer", "401", "403"):
         assert needle in body, f"Service tokens section lacks {needle!r}"
     assert "serviceApi" in section("Helm chart") and "-services" in section("Helm chart")
+
+
+def test_readme_documents_workspace_cache() -> None:
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "\n## Workspace cache\n" in text
+    section = text.split("\n## Workspace cache\n", 1)[1].split("\n## ", 1)[0]
+    names = [f"ORCH_{n.upper()}" for n in Settings.model_fields if n.startswith("cache_")]
+    assert names
+    for name in names:
+        assert f"`{name}`" in section, name
+    for word in ("spec.cache", "status.cache", "skipped_links", "last writer wins", "presigned"):
+        assert word in section, word
