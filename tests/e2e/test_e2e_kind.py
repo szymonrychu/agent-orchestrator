@@ -797,6 +797,70 @@ def test_files_list_and_read_through_api(api: httpx.Client, session: dict[str, A
             assert resp.json()["error"]["code"] == "invalid_path", (route, bad, resp.text)
 
 
+def test_files_write_through_api(api: httpx.Client, session: dict[str, Any]) -> None:
+    cid = session["id"]
+    agent_id = session["agents"][0]["id"]
+    note = f"e2e-write-{uuid.uuid4().hex[:8]}.txt"
+    text = f"hello-{uuid.uuid4().hex}"
+    # the agent writes a text file into the shared workdir through its own shell
+    with shell(api, agent_id) as term, attach(api, agent_id, term["terminal_id"]) as ws:
+        ws.send(f"printf '%s\\n' {text} > {note}\n".encode())
+        ws.send(b"echo written-$((6*7))\n")
+        read_until(ws, r"^written-42$")
+
+    # the stamp comes from the content route, never computed here
+    loaded = api.get(f"/sessions/{cid}/files/content", params={"path": note})
+    assert loaded.status_code == 200, loaded.text
+    stamp = {"mtime": loaded.json()["mtime"], "size": loaded.json()["size"]}
+
+    updated = f"saved-{uuid.uuid4().hex}\n"
+    saved = api.put(
+        f"/sessions/{cid}/files/content",
+        params={"path": note},
+        json={"content": updated, "expected": stamp},
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["path"] == note and saved.json()["size"] == len(updated), saved.json()
+    reread = api.get(f"/sessions/{cid}/files/content", params={"path": note})
+    assert reread.status_code == 200, reread.text
+    assert reread.json()["content"] == updated, reread.json()
+
+    # a second save with the old stamp finds the file changed
+    stale = api.put(
+        f"/sessions/{cid}/files/content",
+        params={"path": note},
+        json={"content": "stale\n", "expected": stamp},
+    )
+    assert stale.status_code == 409, stale.text
+    assert stale.json()["error"]["code"] == "file_changed", stale.text
+
+    # `expected: null` overwrites regardless of the stamp
+    forced = api.put(
+        f"/sessions/{cid}/files/content",
+        params={"path": note},
+        json={"content": "forced\n", "expected": None},
+    )
+    assert forced.status_code == 200, forced.text
+    reread = api.get(f"/sessions/{cid}/files/content", params={"path": note})
+    assert reread.json()["content"] == "forced\n", reread.json()
+
+    # a path that leaves the workdir is refused, a missing file is not created
+    escaped = api.put(
+        f"/sessions/{cid}/files/content",
+        params={"path": "../etc/passwd"},
+        json={"content": "x", "expected": None},
+    )
+    assert escaped.status_code == 400, escaped.text
+    assert escaped.json()["error"]["code"] == "invalid_path", escaped.text
+    missing = api.put(
+        f"/sessions/{cid}/files/content",
+        params={"path": f"missing-{uuid.uuid4().hex[:8]}.txt"},
+        json={"content": "x", "expected": None},
+    )
+    assert missing.status_code == 404, missing.text
+    assert missing.json()["error"]["code"] == "not_found", missing.text
+
+
 def test_files_download_through_api(api: httpx.Client, session: dict[str, Any]) -> None:
     cid = session["id"]
     agent_id = session["agents"][0]["id"]
