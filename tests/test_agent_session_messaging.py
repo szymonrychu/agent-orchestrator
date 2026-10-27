@@ -374,8 +374,8 @@ async def test_pair_budget_stops_cross_turn_ping_pong(pool, dsn):
 async def test_session_tools_parity(pool, dsn):
     """The released any-mcp orchestrator plugin drives sessions_list and session_send against
     the real agent routes."""
-    from any_mcp.orchestrator import OrchestratorPlugin
     from any_mcp.testing import PluginHarness
+    from any_mcp_tatara_orchestrator import OrchestratorPlugin
 
     boss = await hive(pool, "x-boss", superleader=True)
     plain = await alone(pool, "x-plain")

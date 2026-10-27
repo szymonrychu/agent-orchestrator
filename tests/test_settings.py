@@ -49,7 +49,9 @@ def test_defaults():
     assert s.log_level == "INFO"
     assert s.discard_hook_timeout_seconds == 120
     assert s.any_mcp_repo == "https://github.com/szymonrychu/any-mcp"
-    assert s.any_mcp_ref == "v0.4.0"
+    assert s.any_mcp_ref == "v0.5.0"
+    assert s.any_mcp_plugins_repo == "https://github.com/szymonrychu/any-mcp-tatara-plugins"
+    assert s.any_mcp_plugins_ref == "v0.1.0"
     assert s.on_start_timeout_seconds == 600
     assert s.discard_hook() is None
 
@@ -208,6 +210,15 @@ def test_any_mcp_ref_must_be_release_tag(monkeypatch):
     monkeypatch.setenv("ORCH_ANY_MCP_REF", "main")
     with pytest.raises(SettingsError, match="ORCH_ANY_MCP_REF"):
         Settings()
+
+
+def test_any_mcp_plugins_ref_must_be_release_tag(monkeypatch):
+    monkeypatch.setenv("ORCH_ANY_MCP_PLUGINS_REF", "v1.2.3")
+    assert Settings().any_mcp_plugins_ref == "v1.2.3"
+    for bad in ("main", "1.2.3", "v1.2", "2ca3d44"):
+        monkeypatch.setenv("ORCH_ANY_MCP_PLUGINS_REF", bad)
+        with pytest.raises(SettingsError, match="ORCH_ANY_MCP_PLUGINS_REF"):
+            Settings()
 
 
 def test_env_names_documented_in_readme():

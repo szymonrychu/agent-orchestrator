@@ -7,7 +7,7 @@ import re
 
 import pytest
 from any_mcp.config import AnyMcpConfig
-from any_mcp.orchestrator import OrchestratorPlugin
+from any_mcp_tatara_orchestrator import OrchestratorPlugin
 
 from agents_orchestrator.k8s import on_start
 from agents_orchestrator.settings import Settings
@@ -25,6 +25,9 @@ SESSION_TOOLS = ["sessions_list", "session_send"]
 INIT_SCRIPTS_TOOLS = ["init_scripts_get", "init_scripts_edit"]
 TAIL_TOOLS = [*SESSION_TOOLS, *INIT_SCRIPTS_TOOLS]
 SECRET = "s3cr3t-token-value"
+PLUGINS_REPO = "https://github.com/szymonrychu/any-mcp-tatara-plugins"
+PLUGINS_REF = Settings.model_fields["any_mcp_plugins_ref"].default
+RESERVED_SOURCE = f"git::{PLUGINS_REPO}//orchestration/orchestrator?ref={PLUGINS_REF}"
 
 
 def make_settings(**over) -> Settings:
@@ -58,6 +61,7 @@ def test_alone_session_tools_entry(messaging, static):
     spec = SessionSpec(replicas=1, static=static, session_messaging=messaging)
     assert on_start.orchestrator_allow(spec) == TAIL_TOOLS
     entry = entries(spec)["orchestrator"]
+    assert entry["source"] == RESERVED_SOURCE and "plugin" not in entry
     assert entry["allow"] == TAIL_TOOLS
     assert entry["config"]["hive"] is False
     assert entry["config"]["max_replicas"] == 1
@@ -94,7 +98,7 @@ def test_hive_entry_and_allow():
     entry = entries(spec)["orchestrator"]
     assert entry == {
         "name": "orchestrator",
-        "plugin": "any_mcp.orchestrator:OrchestratorPlugin",
+        "source": RESERVED_SOURCE,
         "namespace": "orchestrator",
         "allow": [*HIVE_TOOLS, "scale", *TAIL_TOOLS],
         "config": {
@@ -174,10 +178,55 @@ def test_user_orchestrator_entry_replaced():
     cfg = written_config(on_start.render_on_start(spec, make_settings(), "alpha"))
     names = [p["name"] for p in cfg["plugins"]]
     assert names.count("orchestrator") == 1 and "gh" in names
-    assert next(p for p in cfg["plugins"] if p["name"] == "orchestrator")["plugin"] == (
-        "any_mcp.orchestrator:OrchestratorPlugin"
-    )
+    entry = next(p for p in cfg["plugins"] if p["name"] == "orchestrator")
+    assert entry["source"] == RESERVED_SOURCE and "plugin" not in entry
     AnyMcpConfig.model_validate(cfg)
+
+
+@pytest.mark.parametrize("spec", [SessionSpec(replicas=1), SessionSpec(replicas=2, max_replicas=4)])
+def test_reserved_entry_is_plugins_repo_source(spec):
+    """D7: the reserved entry is a source in the plugins repo at the pinned ref, never a plugin."""
+    settings = make_settings(
+        any_mcp_plugins_repo="https://git.example/acme/plugins", any_mcp_plugins_ref="v7.8.9"
+    )
+    cfg = written_config(on_start.render_on_start(spec, settings, "alpha"))
+    entry = next(p for p in cfg["plugins"] if p["name"] == "orchestrator")
+    assert entry["source"] == (
+        "git::https://git.example/acme/plugins//orchestration/orchestrator?ref=v7.8.9"
+    )
+    assert set(entry) == {"name", "namespace", "source", "allow", "config"}
+    assert entry["namespace"] == "orchestrator"
+    assert entry["allow"] == on_start.orchestrator_allow(spec)
+    assert entry["config"]["slug"] == "alpha"
+    config = AnyMcpConfig.model_validate(cfg)
+    plugin = next(p for p in config.plugins if p.name == "orchestrator")
+    assert plugin.plugin is None and plugin.source == entry["source"]
+    OrchestratorPlugin.Config.model_validate(plugin.config)
+
+
+def test_any_mcp_sources_rendered():
+    """D8: each source is `{name, source}`, after the base entries and before the reserved one."""
+    sources = ["github.com/acme/tools", "git::https://git.example/x/mono.git//plugins/Lint?ref=v1"]
+    user = {"plugins": [{"name": "gh", "plugin": "x:Y"}], "tools": {}}
+    spec = SessionSpec(replicas=2, any_mcp_config=user, any_mcp_sources=sources)
+    cfg = written_config(on_start.render_on_start(spec, make_settings(), "alpha"))
+    assert cfg["plugins"][:3] == [
+        {"name": "gh", "plugin": "x:Y"},
+        {"name": "tools", "source": sources[0]},
+        {"name": "lint", "source": sources[1]},
+    ]
+    assert [p["name"] for p in cfg["plugins"]] == ["gh", "tools", "lint", "orchestrator"]
+    assert cfg["tools"] == {}
+    AnyMcpConfig.model_validate(cfg)
+
+    for settings, slug in ((make_settings(agent_api_url=None), "alpha"), (make_settings(), None)):
+        cfg = written_config(on_start.render_on_start(spec, settings, slug))
+        assert [p["name"] for p in cfg["plugins"]] == ["gh", "tools", "lint"]
+        AnyMcpConfig.model_validate(cfg)
+
+    bare = SessionSpec(replicas=1, any_mcp_sources=sources[:1])
+    cfg = written_config(on_start.render_on_start(bare, make_settings(agent_api_url=None)))
+    assert cfg == {"plugins": [{"name": "tools", "source": sources[0]}]}
 
 
 async def test_allowed_tools_exist_in_plugin():

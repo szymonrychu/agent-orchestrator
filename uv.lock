@@ -7,6 +7,9 @@ resolution-markers = [
     "python_full_version < '3.14'",
 ]
 
+[manifest]
+overrides = [{ name = "any-mcp", git = "https://github.com/szymonrychu/any-mcp?rev=v0.5.0" }]
+
 [[package]]
 name = "agents-orchestrator"
 version = "0.1.0"
@@ -28,6 +31,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "any-mcp-tatara-orchestrator" },
     { name = "claude-code-wrapper" },
     { name = "moto", extra = ["server"] },
     { name = "pytest" },
@@ -38,7 +42,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "any-mcp", git = "https://github.com/szymonrychu/any-mcp?rev=v0.4.0" },
+    { name = "any-mcp", git = "https://github.com/szymonrychu/any-mcp?rev=v0.5.0" },
     { name = "botocore", specifier = ">=1.43.118" },
     { name = "fastapi", specifier = "==0.160.0" },
     { name = "httpx" },
@@ -54,6 +58,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "any-mcp-tatara-orchestrator", git = "https://github.com/szymonrychu/any-mcp-tatara-plugins?subdirectory=orchestration%2Forchestrator&rev=v0.1.0" },
     { name = "claude-code-wrapper", git = "https://github.com/szymonrychu/claude-code-wrapper?rev=ee10aa8f742c98e473287e31d0c98492a9e2c1de" },
     { name = "moto", extras = ["server"], specifier = ">=5.2.4" },
     { name = "pytest" },
@@ -103,14 +108,22 @@ wheels = [
 
 [[package]]
 name = "any-mcp"
-version = "0.4.0"
-source = { git = "https://github.com/szymonrychu/any-mcp?rev=v0.4.0#9f506b2314f279dc2b5ca0678a91a8c0f54d5542" }
+version = "0.5.0"
+source = { git = "https://github.com/szymonrychu/any-mcp?rev=v0.5.0#4a73c79f99a5c6db3b03d43a756f78bcc04e7c9a" }
 dependencies = [
     { name = "fastmcp" },
     { name = "httpx" },
     { name = "jsonschema" },
     { name = "pydantic" },
     { name = "pyyaml" },
+]
+
+[[package]]
+name = "any-mcp-tatara-orchestrator"
+version = "0.1.0"
+source = { git = "https://github.com/szymonrychu/any-mcp-tatara-plugins?subdirectory=orchestration%2Forchestrator&rev=v0.1.0#2ca3d44a9046d7cb3b4b670dec88783ac2232481" }
+dependencies = [
+    { name = "any-mcp" },
 ]
 
 [[package]]

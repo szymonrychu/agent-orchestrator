@@ -108,5 +108,20 @@ def test_pyproject_any_mcp_pin_matches_settings_ref():
     pin = next(d for d in deps if d.startswith("any-mcp"))
     tag = re.search(r"any-mcp@(v[\w.]+)$", pin).group(1)
     assert tag == Settings.model_fields["any_mcp_ref"].default
+    # uv refuses the plugins workspace's own any-mcp source, so an override keeps one any-mcp.
+    assert _pyproject()["tool"]["uv"]["override-dependencies"] == [pin]
     lock = (ROOT / "uv.lock").read_text()
     assert f"any-mcp?rev={tag}#" in lock
+    assert lock.count('\nname = "any-mcp"\n') == 1
+
+
+def test_plugins_dev_pin_matches_settings_ref():
+    dev = _pyproject()["dependency-groups"]["dev"]
+    pin = next(d for d in dev if d.startswith("any-mcp-tatara-orchestrator"))
+    m = re.search(r"git\+(\S+?)@(v[\w.]+)#subdirectory=", pin)
+    assert m, pin
+    repo, tag = m.groups()
+    assert repo == Settings.model_fields["any_mcp_plugins_repo"].default
+    assert tag == Settings.model_fields["any_mcp_plugins_ref"].default
+    lock = (ROOT / "uv.lock").read_text()
+    assert f"any-mcp-tatara-plugins?subdirectory=orchestration%2Forchestrator&rev={tag}#" in lock
