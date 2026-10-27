@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from agents_orchestrator.spec import SessionSpec
 
@@ -271,6 +271,38 @@ class FileContent(BaseModel):
     mime: str | None
     kind: Literal["text", "binary", "too_large"]
     content: str | None
+
+
+class FileStamp(BaseModel):
+    """The `mtime` and `size` of a file as the content route (or the last save) reported them."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mtime: str
+    size: int = Field(ge=0)
+
+
+class WriteFile(BaseModel):
+    """Body of a file save: both keys required; `expected: null` overwrites unconditionally."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    content: str
+    expected: FileStamp | None
+
+    @field_validator("content")
+    @classmethod
+    def _utf8(cls, value: str) -> str:
+        value.encode("utf-8")  # a lone surrogate is not text a file can hold (the wrapper's rule)
+        return value
+
+
+class FileWritten(BaseModel):
+    session_id: uuid.UUID
+    agent_id: uuid.UUID
+    path: str
+    size: int
+    mtime: str
 
 
 class CreateTerminal(BaseModel):

@@ -838,6 +838,62 @@
         "title": "FileListing",
         "type": "object"
       },
+      "FileStamp": {
+        "additionalProperties": false,
+        "description": "The `mtime` and `size` of a file as the content route (or the last save) reported them.",
+        "properties": {
+          "mtime": {
+            "title": "Mtime",
+            "type": "string"
+          },
+          "size": {
+            "minimum": 0.0,
+            "title": "Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "mtime",
+          "size"
+        ],
+        "title": "FileStamp",
+        "type": "object"
+      },
+      "FileWritten": {
+        "properties": {
+          "agent_id": {
+            "format": "uuid",
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "mtime": {
+            "title": "Mtime",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session_id",
+          "agent_id",
+          "path",
+          "size",
+          "mtime"
+        ],
+        "title": "FileWritten",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -3236,6 +3292,32 @@
         },
         "title": "WrapperSettings",
         "type": "object"
+      },
+      "WriteFile": {
+        "additionalProperties": false,
+        "description": "Body of a file save: both keys required; `expected: null` overwrites unconditionally.",
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "expected": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FileStamp"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "content",
+          "expected"
+        ],
+        "title": "WriteFile",
+        "type": "object"
       }
     }
   },
@@ -5349,6 +5431,82 @@
           }
         },
         "summary": "File Content"
+      },
+      "put": {
+        "description": "Replace one existing file of the session workdir with `content`; the wrapper answers\n409 `file_changed` when the file no longer matches `expected` (null: overwrite).",
+        "operationId": "write_file_content_api_v1_sessions__session_id__files_content_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "path",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "agent_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Agent Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WriteFile"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileWritten"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Write File Content"
       }
     },
     "/api/v1/sessions/{session_id}/files/download": {

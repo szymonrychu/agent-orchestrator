@@ -242,7 +242,7 @@ Browsers apply no CORS to WebSocket upgrades, so any web page opened on a LAN ma
 - `Origin: null` or an origin not in the list: the upgrade is closed with code 1008 before it is accepted;
 - an empty list refuses every upgrade that carries an `Origin`, so the setting is mandatory for any deployment that serves the UI: list the UI origin exactly as the browser sends it (`scheme://host[:port]`), for example the ingress origin `https://orchestrator.example.com`.
 
-The POST and DELETE terminal routes apply the same rule and answer `403 forbidden_origin`. For local UI development list the dev server: `ORCH_ALLOWED_ORIGINS=http://localhost:5173`. An entry with a path, a trailing slash, userinfo or a scheme other than http or https fails settings validation naming `ORCH_ALLOWED_ORIGINS`.
+The POST and DELETE terminal routes and the file write (`PUT /api/v1/sessions/{session_id}/files/content`) apply the same rule and answer `403 forbidden_origin`. For local UI development list the dev server: `ORCH_ALLOWED_ORIGINS=http://localhost:5173`. An entry with a path, a trailing slash, userinfo or a scheme other than http or https fails settings validation naming `ORCH_ALLOWED_ORIGINS`.
 
 ### Service tokens
 
@@ -641,7 +641,7 @@ Documented exception, 2026-10-25: the orchestrator's unit is a session. Every `/
 
 Source allowlist: the api checks the direct socket peer against `ORCH_ALLOWED_CIDRS` (default `192.168.1.0/24`). `Forwarded`, `X-Forwarded-For` and `X-Real-IP` are never read. A caller outside the list gets `403 forbidden`. `/healthz` and `/readyz` are exempt.
 
-Error codes: `bad_request` (400), `forbidden` (403), `forbidden_origin` (403, `Origin` not in `ORCH_ALLOWED_ORIGINS` on a terminal POST or DELETE or a WebSocket upgrade), `not_found` (404), `conflict` (409, slug or preset name exists), `preset_default` (409, renaming or deleting the default preset), `last_preset` (409, deleting the only preset), `session_deleting` (409, also a scale of a session being deleted), `static_session` (409, scaling a static session), `leader_would_leave` (409, a scale-down that would remove the leader while no ready agent that stays can take over), `out_of_range` (422, replicas outside 1..`max_replicas`), `session_limit` (409, `ORCH_MAX_SESSIONS` reached), `not_queued` (409), `not_failed` (409), `agent_gone` (409), `agent_not_ready` (409, no ready agent for a file or terminal proxy), `invalid_path` (400, a file path is absolute, holds a NUL byte or leaves the workdir), `not_a_directory` (400, listing a file), `not_a_file` (400, reading a directory or special file), `terminal_limit` (409, the wrapper's per-pod terminal cap is reached), `session_not_active` (409, the agent's wrapper session is not active), `terminal_not_found` (404, no such shell on that agent), `invalid_size` (422, rows or cols outside 1..1000), `invalid_request` (422, also a terminal id that is not `term_` plus 12 lowercase hex digits), `target_gone` (422), `internal` (500, 503 on `/readyz`), `wrapper_error` (502, the wrapper answered 5xx), `wrapper_unreachable` (502, the wrapper pod could not be reached), `unavailable` (503, no master key for the proxies).
+Error codes: `bad_request` (400), `forbidden` (403), `forbidden_origin` (403, `Origin` not in `ORCH_ALLOWED_ORIGINS` on a terminal POST or DELETE, a file write or a WebSocket upgrade), `not_found` (404), `conflict` (409, slug or preset name exists), `preset_default` (409, renaming or deleting the default preset), `last_preset` (409, deleting the only preset), `session_deleting` (409, also a scale of a session being deleted), `static_session` (409, scaling a static session), `leader_would_leave` (409, a scale-down that would remove the leader while no ready agent that stays can take over), `out_of_range` (422, replicas outside 1..`max_replicas`), `session_limit` (409, `ORCH_MAX_SESSIONS` reached), `not_queued` (409), `not_failed` (409), `agent_gone` (409), `agent_not_ready` (409, no ready agent for a file or terminal proxy), `invalid_path` (400, a file path is absolute, holds a NUL byte or leaves the workdir), `not_a_directory` (400, listing a file), `not_a_file` (400, reading or writing a directory or special file), `file_changed` (409, a file write whose `expected` stamp no longer matches the file), `too_large` (413, a file write whose content is over the wrapper's `limits.file_preview_max_bytes`), `terminal_limit` (409, the wrapper's per-pod terminal cap is reached), `session_not_active` (409, the agent's wrapper session is not active), `terminal_not_found` (404, no such shell on that agent), `invalid_size` (422, rows or cols outside 1..1000), `invalid_request` (422, also a terminal id that is not `term_` plus 12 lowercase hex digits), `target_gone` (422), `internal` (500, 503 on `/readyz`), `wrapper_error` (502, the wrapper answered 5xx), `wrapper_unreachable` (502, the wrapper pod could not be reached), `unavailable` (503, no master key for the proxies).
 
 ### `GET /api/v1/meta`
 
@@ -766,7 +766,7 @@ SSE stream of the session's stored events after a cursor: query `after_id` or th
 
 ### `GET /api/v1/sessions/{session_id}/files`
 
-Lists one directory of the session's shared workdir, read through the wrapper of the first ready agent (lowest ordinal) or of `agent_id`. Read-only; dotfiles and `.git` are included. Query: `path` (relative to the workdir, default empty is the workdir root), `offset` (integer >= 0, default 0; pass the previous `next_offset`), `agent_id` (optional; an agent of this session, else 404 `not_found`). Response 200:
+Lists one directory of the session's shared workdir, read through the wrapper of the first ready agent (lowest ordinal) or of `agent_id`. Dotfiles and `.git` are included. Query: `path` (relative to the workdir, default empty is the workdir root), `offset` (integer >= 0, default 0; pass the previous `next_offset`), `agent_id` (optional; an agent of this session, else 404 `not_found`). Response 200:
 
 ```json
 {
@@ -796,6 +796,22 @@ Reads one file of the session workdir through the same agent choice as the listi
 ```
 
 `mime` is guessed from the file name (null when unknown). `kind` is `too_large` when `size` exceeds the wrapper's `limits.file_preview_max_bytes` (default 1 MiB; `content` null), `binary` when the first 8 KiB hold a NUL byte or the file is not valid UTF-8 (`content` null), else `text` with the decoded `content`. The content is relayed as stored and is not passed through the secret redactor. Errors: 400 `invalid_path`, 400 `not_a_file`, 404 `not_found`, 409 `agent_not_ready`, 502 `wrapper_unreachable`, 502 `wrapper_error`, 503 `unavailable`.
+
+### `PUT /api/v1/sessions/{session_id}/files/content`
+
+Saves one existing file of the session workdir, through the same agent choice as the listing. Query: `path` (relative to the workdir), `agent_id` (optional; an agent of this session, else 404 `not_found`). Body, both keys required and no other key:
+
+```json
+{"content": "print('hi')\n", "expected": {"mtime": "2026-10-23T09:02:10.500Z", "size": 812}}
+```
+
+`content` is the file's full new text, written as UTF-8. `expected` is the `mtime` and `size` the editor loaded (the `files/content` answer, or the previous save's answer); the wrapper refuses with 409 `file_changed` when the file on disk no longer has that stamp, and the file stays untouched. `expected: null` overwrites unconditionally (sent only after the user chose to overwrite a changed file). Response 200, the new stamp (the next save's `expected`):
+
+```json
+{"session_id": "5b7e...", "agent_id": "0c1d...", "path": "src/main.py", "size": 12, "mtime": "2026-10-23T09:05:41.120Z"}
+```
+
+The orchestrator calls the wrapper's `PUT /v1/sessions/{id}/files/content` with the derived bearer in the `Authorization` header only. The wrapper replaces the file atomically and never creates one: a missing path is 404 `not_found`. The content is never logged. The route carries the Origin guard (see Security, Origin allowlist): a request whose `Origin` is not in `ORCH_ALLOWED_ORIGINS` is 403 `forbidden_origin` before anything is forwarded; a request without `Origin` passes. A body that does not match is 422 `invalid_request` before any wrapper call. The route is not on the service port. 409 `file_changed` and 409 `agent_not_ready` share a status; clients tell them apart by `error.code`. Errors: 400 `invalid_path`, 400 `not_a_file`, 403 `forbidden_origin`, 404 `not_found` (session, agent or path), 409 `agent_not_ready`, 409 `file_changed`, 413 `too_large` (content over the wrapper's `limits.file_preview_max_bytes`, default 1 MiB), 422 `invalid_request`, 502 `wrapper_unreachable`, 502 `wrapper_error`, 503 `unavailable`. The wrapper status and code are passed through unchanged for 4xx.
 
 ### `GET /api/v1/sessions/{session_id}/files/download`
 
