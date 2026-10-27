@@ -1,4 +1,4 @@
-"""File proxy routes: GET /api/v1/sessions/{id}/files and .../files/content (D1, D4)."""
+"""File proxy routes: GET /api/v1/sessions/{id}/files, .../files/content and .../files/download."""
 
 from __future__ import annotations
 
@@ -104,7 +104,8 @@ async def test_list_proxied_from_first_ready_agent(rig):
         ("README.md", "file"),
     ]
     readme = body["entries"][2]
-    assert set(readme) == {"name", "type", "size", "mtime"}
+    assert set(readme) == {"name", "type", "size", "mtime", "target_type"}
+    assert readme["target_type"] is None
     assert readme["size"] == len("# demo\n") and readme["mtime"]
     assert body["entries"][1]["size"] is None
 
@@ -139,11 +140,15 @@ async def test_agent_id_selects_and_scopes(rig):
         )
     ).json()
     assert got["agent_id"] == str(row2["id"]) and got["content"] == "second"
+    raw = await rig.http.get(
+        rig.url("files/download"), params={"agent_id": str(row2["id"]), "path": "b.txt"}
+    )
+    assert raw.status_code == 200 and raw.content == b"second"
 
     # an agent of another session, or an unknown one, is not_found; so is an unknown session
     foreign_session = await insert_session(rig.pool)
     _, _, foreign = await rig.agent(0, session=foreign_session)
-    for route in ("files", "files/content"):
+    for route in ("files", "files/content", "files/download"):
         r = await rig.http.get(rig.url(route), params={"agent_id": str(foreign["id"])})
         assert_error(r, 404, "not_found")
         r = await rig.http.get(rig.url(route), params={"agent_id": str(uuid.uuid4())})
@@ -222,10 +227,10 @@ async def test_errors_pass_through(rig):
 
 
 async def test_no_ready_agent(rig):
-    for route in ("files", "files/content"):
+    for route in ("files", "files/content", "files/download"):
         assert_error(await rig.http.get(rig.url(route)), 409, "agent_not_ready")
     await rig.agent(0, ready=False)
-    for route in ("files", "files/content"):
+    for route in ("files", "files/content", "files/download"):
         assert_error(await rig.http.get(rig.url(route)), 409, "agent_not_ready")
 
 

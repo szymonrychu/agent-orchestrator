@@ -773,14 +773,15 @@ Lists one directory of the session's shared workdir, read through the wrapper of
   "session_id": "5b7e...", "agent_id": "0c1d...",
   "root": "/workdir/proj", "path": "src",
   "entries": [
-    {"name": "pkg", "type": "dir", "size": null, "mtime": "2026-10-23T09:01:00.011Z"},
-    {"name": "main.py", "type": "file", "size": 812, "mtime": "2026-10-23T09:02:10.500Z"}
+    {"name": "pkg", "type": "dir", "size": null, "mtime": "2026-10-23T09:01:00.011Z", "target_type": null},
+    {"name": "latest", "type": "symlink", "size": null, "mtime": "2026-10-23T09:01:30.000Z", "target_type": "file"},
+    {"name": "main.py", "type": "file", "size": 812, "mtime": "2026-10-23T09:02:10.500Z", "target_type": null}
   ],
   "next_offset": null
 }
 ```
 
-`root` is the absolute real path of the workdir and `path` the normalised relative path. `type` is `dir`, `file`, `symlink` (listed, never followed) or `other`; `size` is bytes for a `file` and null otherwise; `mtime` is UTC ISO-8601. Directories come first, then the rest, each by name; a page holds at most the wrapper's `limits.files_max_entries` entries and `next_offset` is the `offset` of the next page, or null on the last. A workdir that does not exist yet answers 404 `not_found` for the empty path. Errors: 400 `invalid_path`, 400 `not_a_directory`, 404 `not_found` (session, agent, path or workdir), 409 `agent_not_ready` (no usable agent), 422 `invalid_request` (bad `offset`), 502 `wrapper_unreachable`, 502 `wrapper_error`, 503 `unavailable` (no master key). The wrapper status and code are passed through unchanged for 4xx.
+`root` is the absolute real path of the workdir and `path` the normalised relative path. `type` is `dir`, `file`, `symlink` (listed, never followed) or `other`; `size` is bytes for a `file` and null otherwise; `mtime` is UTC ISO-8601. `target_type` is, for a `symlink` that resolves to an existing path inside the workdir, the type of that target (`dir`, `file` or `other`); it is null for every other entry and for a link that dangles, loops or leaves the workdir, so nothing about paths outside the workdir is revealed. Directories come first, then the rest, each by name; a page holds at most the wrapper's `limits.files_max_entries` entries and `next_offset` is the `offset` of the next page, or null on the last. A workdir that does not exist yet answers 404 `not_found` for the empty path. Errors: 400 `invalid_path`, 400 `not_a_directory`, 404 `not_found` (session, agent, path or workdir), 409 `agent_not_ready` (no usable agent), 422 `invalid_request` (bad `offset`), 502 `wrapper_unreachable`, 502 `wrapper_error`, 503 `unavailable` (no master key). The wrapper status and code are passed through unchanged for 4xx.
 
 ### `GET /api/v1/sessions/{session_id}/files/content`
 
@@ -795,6 +796,12 @@ Reads one file of the session workdir through the same agent choice as the listi
 ```
 
 `mime` is guessed from the file name (null when unknown). `kind` is `too_large` when `size` exceeds the wrapper's `limits.file_preview_max_bytes` (default 1 MiB; `content` null), `binary` when the first 8 KiB hold a NUL byte or the file is not valid UTF-8 (`content` null), else `text` with the decoded `content`. The content is relayed as stored and is not passed through the secret redactor. Errors: 400 `invalid_path`, 400 `not_a_file`, 404 `not_found`, 409 `agent_not_ready`, 502 `wrapper_unreachable`, 502 `wrapper_error`, 503 `unavailable`.
+
+### `GET /api/v1/sessions/{session_id}/files/download`
+
+Downloads one file of the session workdir as raw bytes, through the same agent choice as the listing; text and binary files of any size, with no preview cap. Query: `path` (relative to the workdir), `agent_id` (optional; an agent of this session, else 404 `not_found`). The orchestrator opens the wrapper's `GET /v1/sessions/{id}/files/download` with the derived bearer in the `Authorization` header only, and maps the wrapper's status before any byte is sent, so every refusal is a JSON error envelope. Response 200 streams the wrapper's bytes unchanged (`application/octet-stream` in the OpenAPI document) with the wrapper's `Content-Type` (the mime guessed from the file name, else `application/octet-stream`), `Content-Length` (the file size) and `Content-Disposition` (`attachment` with an ASCII `filename` and an RFC 6266 `filename*`), plus `X-Content-Type-Options: nosniff` and `Cache-Control: no-store` set by the orchestrator. Nothing is buffered and there is no total timeout; connect and each read keep the wrapper client's 30 s timeout. The content is relayed as stored and is not passed through the secret redactor. A symlink to a file downloads the target's bytes only when the wrapper's path guards allow it.
+
+Errors: 400 `invalid_path` (absolute, NUL, `..` or a symlink leaving the workdir), 400 `not_a_file` (a directory, the workdir itself, a FIFO, socket or device), 404 `not_found` (session, agent or path), 409 `agent_not_ready` (no usable agent), 502 `wrapper_unreachable`, 502 `wrapper_error` (a wrapper 5xx; its body is not relayed), 503 `unavailable` (no master key). The wrapper status and code are passed through unchanged for 4xx, a rejected bearer included, and the bearer never appears in an answer. When the wrapper stream fails after the response started, the orchestrator aborts the connection instead of ending the body, so the browser marks the download failed rather than saving a short file. The upstream response is closed when the relay ends, fails or the browser goes away. The route is not served on the service port.
 
 ### `POST /api/v1/agents/{agent_id}/terminals`
 

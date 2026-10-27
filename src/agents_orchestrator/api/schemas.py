@@ -249,6 +249,8 @@ class FileEntry(BaseModel):
     type: Literal["dir", "file", "symlink", "other"]
     size: int | None
     mtime: str
+    # a symlink's followed target inside the workdir; null otherwise (and for links leaving it)
+    target_type: Literal["dir", "file", "other"] | None
 
 
 class FileListing(BaseModel):
