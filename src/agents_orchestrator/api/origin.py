@@ -3,7 +3,8 @@
 Browsers apply no CORS to WebSocket upgrades, so any web page can open a socket to a LAN
 orchestrator. Every upgrade carrying an Origin header must name a configured origin; a missing
 Origin (a non-browser client) passes, `null` never does, and an empty list refuses every
-Origin-bearing upgrade. The same rule guards the mutating terminal HTTP routes.
+Origin-bearing upgrade. The same rule guards the mutating terminal HTTP routes and the file write
+route.
 """
 
 from __future__ import annotations
