@@ -253,3 +253,33 @@ class WrapperClient:
                         yield Envelope.model_validate_json(ev.data)
         except httpx.HTTPError as exc:
             raise WrapperUnreachable(f"{type(exc).__name__}: {exc}") from exc
+
+    # file download
+
+    async def open_download(self, session_id: str, path: str) -> httpx.Response:
+        """Open the wrapper's raw file download; the caller relays aiter_raw() and aclose()s it.
+
+        Status >= 300 is read, closed and raised as WrapperError before any byte is handed
+        out. No total timeout (any size): connect and each read keep DEFAULT_TIMEOUT.
+        """
+        request = self._http.build_request(
+            "GET",
+            self._url(f"/sessions/{session_id}/files/download"),
+            params={"path": path},
+            headers=self._headers,
+            timeout=httpx.Timeout(DEFAULT_TIMEOUT),
+        )
+        try:
+            resp = await self._http.send(request, stream=True)
+        except httpx.HTTPError as exc:
+            raise WrapperUnreachable(f"{type(exc).__name__}: {exc}") from exc
+        if resp.status_code < 300:
+            return resp
+        try:
+            await resp.aread()
+        except httpx.HTTPError as exc:
+            raise WrapperUnreachable(f"{type(exc).__name__}: {exc}") from exc
+        finally:
+            await resp.aclose()
+        _raise_for_error(resp)
+        return resp
