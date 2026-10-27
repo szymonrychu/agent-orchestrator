@@ -797,6 +797,42 @@ def test_files_list_and_read_through_api(api: httpx.Client, session: dict[str, A
             assert resp.json()["error"]["code"] == "invalid_path", (route, bad, resp.text)
 
 
+def test_files_download_through_api(api: httpx.Client, session: dict[str, Any]) -> None:
+    cid = session["id"]
+    agent_id = session["agents"][0]["id"]
+    suffix = uuid.uuid4().hex[:8]
+    note = f"e2e-dl-{suffix}.txt"
+    blob = f"e2e-dl-{suffix}.bin"
+    text = f"download-{uuid.uuid4().hex}"
+    # the agent writes a text file and a binary file (every byte 0-255) through its own shell
+    with shell(api, agent_id) as term, attach(api, agent_id, term["terminal_id"]) as ws:
+        ws.send(f"printf '%s\\n' {text} > {note}\n".encode())
+        ws.send(f"python3 -c \"open('{blob}','wb').write(bytes(range(256)))\"\n".encode())
+        ws.send(b"echo written-$((6*7))\n")
+        read_until(ws, r"^written-42$")
+
+    listing = api.get(f"/sessions/{cid}/files")
+    assert listing.status_code == 200, listing.text
+    for name, size in ((note, len(text) + 1), (blob, 256)):
+        entry = next(e for e in listing.json()["entries"] if e["name"] == name)
+        assert entry["type"] == "file" and entry["size"] == size, entry
+        assert entry["target_type"] is None, entry
+
+    for name, expected in ((note, (text + "\n").encode()), (blob, bytes(range(256)))):
+        resp = api.get(f"/sessions/{cid}/files/download", params={"path": name})
+        assert resp.status_code == 200, resp.text
+        assert resp.content == expected, (name, resp.content)
+        disposition = resp.headers["content-disposition"]
+        assert disposition.startswith("attachment"), disposition
+        assert name in disposition, disposition
+
+    # a path that leaves the workdir is refused
+    for bad in ("..", "../etc/passwd", "/etc/passwd"):
+        resp = api.get(f"/sessions/{cid}/files/download", params={"path": bad})
+        assert resp.status_code == 400, (bad, resp.text)
+        assert resp.json()["error"]["code"] == "invalid_path", (bad, resp.text)
+
+
 def test_terminal_lifecycle_over_websocket(api: httpx.Client, session: dict[str, Any]) -> None:
     cid = session["id"]
     agent_id = session["agents"][0]["id"]
