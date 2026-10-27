@@ -111,6 +111,49 @@ class _Err(Exception):
         self.status, self.code, self.message = status, code, message or code
 
 
+def _write_body(body: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
+    """The wrapper's write body: `content` (text a file can hold) and `expected`, both required,
+    no other key; `expected` is null or exactly `{mtime: str, size: int >= 0}`."""
+    content, expected = body.get("content"), body.get("expected")
+    stamp_ok = expected is None or (
+        isinstance(expected, dict)
+        and set(expected) == {"mtime", "size"}
+        and isinstance(expected["mtime"], str)
+        and isinstance(expected["size"], int)
+        and not isinstance(expected["size"], bool)
+        and expected["size"] >= 0
+    )
+    if isinstance(content, str):
+        try:
+            content.encode("utf-8")
+        except UnicodeEncodeError:
+            content = None  # a lone surrogate is not text a file can hold
+    if set(body) != {"content", "expected"} or not isinstance(content, str) or not stamp_ok:
+        raise _Err(422, "invalid_request", "body must be {content: str, expected: stamp | null}")
+    return content, expected
+
+
+def _replace_file(target: Path, data: bytes, mode: int) -> os.stat_result:
+    """The wrapper's atomic replace: a temporary file next to the target, created exclusively
+    with the target's permission bits, renamed over it; removed again on a failure."""
+    tmp = target.with_name(f".{target.name[:200]}.{secrets.token_hex(8)}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        try:
+            os.fchmod(fd, mode)
+            os.write(fd, data)
+            os.fsync(fd)
+            new = os.fstat(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, target)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        raise
+    return new
+
+
 @dataclass
 class _Turn:
     turn_id: str
@@ -775,6 +818,37 @@ class FakeWrapper:
             except UnicodeDecodeError:
                 out["kind"] = "binary"
             return out
+
+        @app.put("/v1/sessions/{session_id}/files/content")
+        async def write_file_content(
+            session_id: str, request: Request, path: str = ""
+        ) -> dict[str, Any]:
+            self._auth(request)
+            content, expected = _write_body(await self._json_body(request))
+            ses = self._get(session_id)
+            root, resolved = self._locate(ses, path)
+            data = content.encode("utf-8")
+            if len(data) > self.file_preview_max_bytes:
+                limit = self.file_preview_max_bytes
+                raise _Err(413, "too_large", f"content is over the {limit} byte limit")
+            if resolved == root:
+                raise _Err(400, "not_a_file", "path is not a regular file")
+            if not resolved.exists():
+                raise _Err(404, "not_found", "no such file or directory")
+            st = resolved.stat()
+            if not stat.S_ISREG(st.st_mode):
+                raise _Err(400, "not_a_file", "path is not a regular file")
+            if expected is not None and (
+                expected["mtime"] != _iso(st.st_mtime) or expected["size"] != st.st_size
+            ):
+                raise _Err(409, "file_changed", "the file changed since it was read")
+            new = _replace_file(resolved, data, stat.S_IMODE(st.st_mode))
+            return {
+                "session_id": session_id,
+                "path": resolved.relative_to(root).as_posix(),
+                "size": new.st_size,
+                "mtime": _iso(new.st_mtime),
+            }
 
         @app.get("/v1/sessions/{session_id}/files/download")
         async def file_download(

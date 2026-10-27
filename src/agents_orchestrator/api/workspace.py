@@ -3,7 +3,10 @@
 This is the only api module allowed to import `agents_orchestrator.wrapper` or
 `agents_orchestrator.tokens` (tests/test_api_sessions.py pins it). The file and terminal proxy
 routes resolve an agent with `resolve_agent`, validate a terminal id with
-`validate_terminal_id`, and call the wrapper with `forward`; the file download relays the
+`validate_terminal_id`, and call the wrapper with `forward`; the file listing, read and write
+share `_file_call`, and the write and the terminal POST and DELETE carry the Origin guard
+(`guarded`). A written file's content travels only in the request body and is never logged
+(the `forward` debug lines carry the method and path only). The file download relays the
 wrapper's raw byte stream (`download_file`); the terminal attach route relays a WebSocket to
 the wrapper with `websockets` (`attach_terminal`). `forward` and the download share one
 wrapper error map (`_wrapper_errors`). There is no Kubernetes import:
@@ -22,7 +25,7 @@ import contextlib
 import logging
 import re
 import uuid
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterator
 from dataclasses import dataclass, field
 from typing import Annotated, Any
 from urllib.parse import quote, urlsplit
@@ -30,6 +33,7 @@ from urllib.parse import quote, urlsplit
 import httpx
 import psycopg
 from fastapi import APIRouter, Depends, FastAPI, Query, Request, Response, WebSocket
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, ValidationError
 from starlette.responses import StreamingResponse
 from starlette.types import Receive, Scope, Send
@@ -260,6 +264,8 @@ async def forward(
 # ------------------------------------------------------------------------------ file routes
 
 router = APIRouter(prefix="/api/v1")
+# the Origin rule (403 forbidden_origin) on every mutating route a browser can reach
+guarded = [Depends(require_allowed_origin)]
 
 
 async def _file_call[M: BaseModel](
@@ -268,15 +274,19 @@ async def _file_call[M: BaseModel](
     settings: Cfg,
     session_id: uuid.UUID,
     agent_id: uuid.UUID | None,
+    method: str,
     tail: str,
     params: dict[str, Any],
     model: type[M],
+    json: Any = None,
 ) -> M:
-    """Forward one file read to the agent chosen by `resolve_agent` and add the ids."""
+    """Forward one file call (with its JSON body, if any) to the agent chosen by
+    `resolve_agent` and add the ids to the wrapper's answer."""
     async with pool.connection() as conn:
         target = await resolve_agent(conn, settings, session_id=session_id, agent_id=agent_id)
     sid = quote(target.wrapper_session_id, safe="")
-    body = await forward(request.app, target, "GET", f"/sessions/{sid}/{tail}", params=params)
+    path = f"/sessions/{sid}/{tail}"
+    body = await forward(request.app, target, method, path, params=params, json=json)
     try:
         return model.model_validate(
             {**body, "session_id": target.session_id, "agent_id": target.agent_id}
@@ -304,6 +314,7 @@ async def list_files(
         settings,
         session_id,
         agent_id,
+        "GET",
         "files",
         {"path": path, "offset": offset},
         schemas.FileListing,
@@ -326,10 +337,88 @@ async def file_content(
         settings,
         session_id,
         agent_id,
+        "GET",
         "files/content",
         {"path": path},
         schemas.FileContent,
     )
+
+
+def _too_large_body() -> ApiError:
+    return ApiError(
+        413,
+        "too_large",
+        f"request body is over the {schemas.WRITE_BODY_MAX_BYTES} byte limit of a file write",
+    )
+
+
+class _CappedRequest(Request):
+    """A request whose body stream stops at `schemas.WRITE_BODY_MAX_BYTES`: a declared
+    Content-Length over it is refused unread, and a chunked body as soon as it passes it."""
+
+    async def stream(self) -> AsyncIterator[bytes]:
+        declared = self.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > schemas.WRITE_BODY_MAX_BYTES:
+            raise _too_large_body()
+        seen = 0
+        async for chunk in super().stream():
+            seen += len(chunk)
+            if seen > schemas.WRITE_BODY_MAX_BYTES:
+                raise _too_large_body()
+            yield chunk
+
+
+class _CappedBodyRoute(APIRoute):
+    """Route class of the file write: FastAPI reads the whole body before it validates it, so the
+    capped read happens first and the handler reuses the cached body (413 `too_large`, the
+    API's envelope)."""
+
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        handler = super().get_route_handler()
+
+        async def capped(request: Request) -> Response:
+            capped_request = _CappedRequest(request.scope, request.receive)
+            # read here, not inside FastAPI, which turns any error while reading into a 400
+            await capped_request.body()
+            return await handler(capped_request)
+
+        return capped
+
+
+async def write_file_content(
+    request: Request,
+    pool: Pool,
+    settings: Cfg,
+    session_id: uuid.UUID,
+    body: schemas.WriteFile,
+    path: str = "",
+    agent_id: uuid.UUID | None = None,
+) -> schemas.FileWritten:
+    """Replace one existing file of the session workdir with `content`; the wrapper answers
+    409 `file_changed` when the file no longer matches `expected` (null: overwrite)."""
+    return await _file_call(
+        request,
+        pool,
+        settings,
+        session_id,
+        agent_id,
+        "PUT",
+        "files/content",
+        {"path": path},
+        schemas.FileWritten,
+        json=body.model_dump(mode="json"),
+    )
+
+
+router.add_api_route(
+    "/sessions/{session_id}/files/content",
+    write_file_content,
+    methods=["PUT"],
+    response_model=schemas.FileWritten,
+    dependencies=guarded,
+    responses={413: {"description": "The request body is over the limit of a file write"}},
+    route_class_override=_CappedBodyRoute,
+)
 
 
 # ---------------------------------------------------------------------------- file download
@@ -415,8 +504,6 @@ async def download_file(
 
 
 # -------------------------------------------------------------------------- terminal routes
-
-guarded = [Depends(require_allowed_origin)]
 
 
 def _terminal_view(target: WrapperTarget, body: Any) -> schemas.TerminalView:

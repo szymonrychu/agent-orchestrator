@@ -1,4 +1,5 @@
-"""File proxy routes: GET /api/v1/sessions/{id}/files, .../files/content and .../files/download."""
+"""File proxy routes: GET /api/v1/sessions/{id}/files, GET and PUT .../files/content and GET
+.../files/download."""
 
 from __future__ import annotations
 
@@ -80,6 +81,18 @@ def put(fake: FakeWrapper, sid: str, rel: str, data: str | bytes = "x") -> None:
     path.write_bytes(data.encode() if isinstance(data, str) else data)
 
 
+async def write(
+    rig: Rig, rel: str, *, agent_id=None, session: dict | None = None
+) -> httpx.Response:
+    """An unconditional save (`expected: null`) of `saved` to `rel` through the PUT route."""
+    params = {"path": rel} if agent_id is None else {"path": rel, "agent_id": str(agent_id)}
+    return await rig.http.put(
+        rig.url("files/content", session),
+        params=params,
+        json={"content": "saved", "expected": None},
+    )
+
+
 async def test_list_proxied_from_first_ready_agent(rig):
     await rig.agent(0, ready=False)  # never ready: skipped
     fake, sid, row = await rig.agent(1)
@@ -144,6 +157,15 @@ async def test_agent_id_selects_and_scopes(rig):
         rig.url("files/download"), params={"agent_id": str(row2["id"]), "path": "b.txt"}
     )
     assert raw.status_code == 200 and raw.content == b"second"
+    saved = await write(rig, "b.txt", agent_id=row2["id"])
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["agent_id"] == str(row2["id"])
+    assert (second.workdir(ssid) / "b.txt").read_bytes() == b"saved"
+    # without agent_id the write goes to the first ready agent, like the reads
+    default = await write(rig, "a.txt")
+    assert default.status_code == 200, default.text
+    assert default.json()["agent_id"] != str(row2["id"])
+    assert (first.workdir(fsid) / "a.txt").read_bytes() == b"saved"
 
     # an agent of another session, or an unknown one, is not_found; so is an unknown session
     foreign_session = await insert_session(rig.pool)
@@ -155,6 +177,10 @@ async def test_agent_id_selects_and_scopes(rig):
         assert_error(r, 404, "not_found")
         r = await rig.http.get(f"/api/v1/sessions/{uuid.uuid4()}/{route}")
         assert_error(r, 404, "not_found")
+    for agent in (foreign["id"], uuid.uuid4()):
+        assert_error(await write(rig, "b.txt", agent_id=agent), 404, "not_found")
+    assert_error(await write(rig, "b.txt", session={"id": uuid.uuid4()}), 404, "not_found")
+    assert (second.workdir(ssid) / "b.txt").read_bytes() == b"saved"
 
 
 async def test_content_proxied(rig):
@@ -229,9 +255,13 @@ async def test_errors_pass_through(rig):
 async def test_no_ready_agent(rig):
     for route in ("files", "files/content", "files/download"):
         assert_error(await rig.http.get(rig.url(route)), 409, "agent_not_ready")
-    await rig.agent(0, ready=False)
+    assert_error(await write(rig, "a.txt"), 409, "agent_not_ready")
+    fake, sid, _ = await rig.agent(0, ready=False)
+    put(fake, sid, "a.txt", "kept")
     for route in ("files", "files/content", "files/download"):
         assert_error(await rig.http.get(rig.url(route)), 409, "agent_not_ready")
+    assert_error(await write(rig, "a.txt"), 409, "agent_not_ready")
+    assert (fake.workdir(sid) / "a.txt").read_bytes() == b"kept"
 
 
 async def test_missing_root_not_found_passes_through(rig):
