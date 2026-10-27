@@ -20,7 +20,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from agents_orchestrator.db.eligibility import ELIGIBLE, REPLICAS
+from agents_orchestrator.db.eligibility import ELIGIBLE, HANDOVER_TRIGGER
 from agents_orchestrator.db.pool import notify
 
 COMMAND_KINDS = frozenset({"interrupt", "compact", "restart", "rebootstrap"})
@@ -314,16 +314,15 @@ async def _target_gone(
 
 # A leader whose handover is pending (it compacted in its term, or its pod is leaving) while an
 # agent that could take over exists: the pass's pick predicate (`ELIGIBLE`), so the hold never
-# outlives a possible move. `a` is the candidate peer, `la` the leader, `c` the session.
+# outlives a possible move. Outside the subquery `a` is the leader's agent, `l` its row and `c`
+# the session (the trigger's aliases); inside it `a` is the candidate peer.
 _HANDOVER_PENDING = f"""
-SELECT (coalesce(s.compaction_at > l.since, false)
-        OR (la.gone_at IS NULL AND la.ordinal >= {REPLICAS}))
+SELECT {HANDOVER_TRIGGER}
        AND EXISTS (SELECT 1 FROM agents a WHERE a.session_id = l.session_id AND {ELIGIBLE}
                    AND a.id <> l.agent_id) AS pending
 FROM session_leaders l
-JOIN agents la ON la.id = l.agent_id
+JOIN agents a ON a.id = l.agent_id
 JOIN sessions c ON c.id = l.session_id
-LEFT JOIN agent_status s ON s.agent_id = l.agent_id
 WHERE l.session_id = %s
 """
 

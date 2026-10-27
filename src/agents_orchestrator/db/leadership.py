@@ -21,7 +21,13 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 
-from agents_orchestrator.db.eligibility import ELIGIBLE, REPLICAS, STAYS
+from agents_orchestrator.db.eligibility import (
+    COMPACTED,
+    ELIGIBLE,
+    HANDOVER_TRIGGER,
+    LEAVING,
+    READY_STAYS,
+)
 from agents_orchestrator.db.pool import notify
 from agents_orchestrator.db.queue import _CLAIM_LOCK_NAMESPACE
 
@@ -95,15 +101,11 @@ WHERE c.desired = 'active' AND {_HIVE} AND (
     EXISTS (SELECT 1 FROM leadership_requests r
             WHERE r.session_id = c.id AND r.status = 'queued')
     OR (l.session_id IS NULL AND EXISTS (
-        SELECT 1 FROM agents x WHERE x.session_id = c.id AND x.ready
-          AND x.gone_at IS NULL AND x.wrapper_session_id IS NOT NULL
-          AND x.ordinal < {REPLICAS}))
+        SELECT 1 FROM agents a WHERE a.session_id = c.id AND {ELIGIBLE}))
     OR a.gone_at IS NOT NULL OR NOT a.ready OR l.unready_since IS NOT NULL
     OR (c.spec->>'leader_lease_seconds' IS NOT NULL
         AND l.since < now() - make_interval(secs => (c.spec->>'leader_lease_seconds')::int))
-    OR (a.gone_at IS NULL AND a.ordinal >= {REPLICAS})
-    OR EXISTS (SELECT 1 FROM agent_status s
-               WHERE s.agent_id = l.agent_id AND s.compaction_at > l.since)
+    OR {HANDOVER_TRIGGER}
 )
 ORDER BY c.id
 """
@@ -158,9 +160,8 @@ async def _leader(conn: psycopg.AsyncConnection, session_id: uuid.UUID) -> dict 
         " l.unready_since IS NOT NULL AND l.unready_since"
         "   < now() - make_interval(secs => %s) AS grace_over,"
         " a.ready, a.gone_at IS NOT NULL AS gone,"
-        f" a.ordinal >= {REPLICAS} AS leaving,"
-        " coalesce((SELECT s.compaction_at > l.since FROM agent_status s"
-        "   WHERE s.agent_id = l.agent_id), false) AS compacted"
+        f" {LEAVING} AS leaving,"
+        f" {COMPACTED} AS compacted"
         " FROM session_leaders l JOIN agents a ON a.id = l.agent_id"
         " JOIN sessions c ON c.id = l.session_id"
         " WHERE l.session_id = %s FOR UPDATE OF l",
@@ -182,8 +183,7 @@ async def _target_ready(
         return False
     row = await _one(
         conn,
-        f"SELECT 1 AS ok FROM agents a WHERE a.id = %s AND a.session_id = %s AND a.ready"
-        f" AND a.gone_at IS NULL AND {STAYS}",
+        f"SELECT 1 AS ok FROM agents a WHERE a.id = %s AND a.session_id = %s AND {READY_STAYS}",
         (agent_id, session_id),
     )
     return row is not None
