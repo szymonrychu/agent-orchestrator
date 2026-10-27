@@ -583,6 +583,124 @@ async def test_files_download_errors(leg: Leg) -> None:
         assert (await anon.get(unknown)).status_code == 401
 
 
+async def _put(
+    leg: Leg, sid: str, path: str, content: Any, expected: Any, **body: Any
+) -> httpx.Response:
+    payload = {"content": content, "expected": expected, **body}
+    return await leg.http.put(
+        f"/v1/sessions/{sid}/files/content", params={"path": path}, json=payload
+    )
+
+
+async def _stamp(leg: Leg, sid: str, path: str) -> dict[str, Any]:
+    """The `expected` an editor sends: the mtime and size of the files/content answer."""
+    resp = await leg.http.get(f"/v1/sessions/{sid}/files/content", params={"path": path})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    return {"mtime": body["mtime"], "size": body["size"]}
+
+
+async def _read(leg: Leg, sid: str, path: str) -> dict[str, Any]:
+    resp = await leg.http.get(f"/v1/sessions/{sid}/files/content", params={"path": path})
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+async def test_files_write(leg: Leg) -> None:
+    sid = await _tree(leg)
+    text = "caf\u00e9 \u0141\u00f3d\u017a\r\nsecond line\r\n"
+    stamp = await _stamp(leg, sid, "src/main.py")
+    resp = await _put(leg, sid, "src/main.py", text, stamp)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert set(body) == {"session_id", "path", "size", "mtime"}
+    assert body["session_id"] == sid and body["path"] == "src/main.py"
+    assert body["size"] == len(text.encode("utf-8"))
+    after = await _read(leg, sid, "src/main.py")
+    assert after["kind"] == "text" and after["content"] == text  # CRLF kept byte for byte
+    assert (after["size"], after["mtime"]) == (body["size"], body["mtime"])
+
+
+async def test_files_write_conflict(leg: Leg) -> None:
+    sid = await _tree(leg)
+    path = "src/main.py"
+    loaded = await _stamp(leg, sid, path)
+    first = await _put(leg, sid, path, "one\n", loaded)
+    assert first.status_code == 200, first.text
+    saved = first.json()
+    # the answer of a save is the stamp for the next one
+    second = await _put(leg, sid, path, "two\n", {"mtime": saved["mtime"], "size": saved["size"]})
+    assert second.status_code == 200, second.text
+    current = await _stamp(leg, sid, path)
+    for stale in (
+        {"mtime": "1970-01-01T00:00:00.000Z", "size": current["size"]},
+        {"mtime": current["mtime"], "size": current["size"] + 1},
+        loaded,
+    ):
+        resp = await _put(leg, sid, path, "stale\n", stale)
+        assert resp.status_code == 409, (stale, resp.text)
+        assert resp.json()["error"]["code"] == "file_changed"
+        assert (await _read(leg, sid, path))["content"] == "two\n"
+    forced = await _put(leg, sid, path, "forced\n", None)  # an explicit unconditional overwrite
+    assert forced.status_code == 200, forced.text
+    assert (await _read(leg, sid, path))["content"] == "forced\n"
+
+
+async def test_files_write_errors(leg: Leg) -> None:
+    sid = await _tree(leg)
+    url = f"/v1/sessions/{sid}/files/content"
+
+    async def expect(path: str, status: int, code: str) -> None:
+        resp = await _put(leg, sid, path, "x", None)
+        assert resp.status_code == status, (path, resp.text)
+        assert resp.json()["error"]["code"] == code, (path, resp.text)
+
+    await expect("../outside", 400, "invalid_path")
+    await expect("/etc/passwd", 400, "invalid_path")
+    await expect("a\x00b", 400, "invalid_path")
+    await expect("src/../../x", 400, "invalid_path")
+    await expect("src", 400, "not_a_file")
+    await expect("", 400, "not_a_file")  # the workdir itself is a directory
+    await expect("missing", 404, "not_found")
+    names = [e["name"] for e in (await leg.http.get(f"/v1/sessions/{sid}/files")).json()["entries"]]
+    assert "missing" not in names  # a write never creates a file
+    unknown = await leg.http.put(
+        "/v1/sessions/ses_unknown/files/content",
+        params={"path": "a"},
+        json={"content": "x", "expected": None},
+    )
+    assert unknown.status_code == 404 and unknown.json()["error"]["code"] == "not_found"
+    async with httpx.AsyncClient(base_url=leg.base_url) as anon:
+        resp = await anon.put(
+            url, params={"path": "src/main.py"}, json={"content": "x", "expected": None}
+        )
+        assert resp.status_code == 401
+    stamp = {"mtime": "2020-01-01T00:00:00.000Z", "size": 0}
+    bad_bodies: list[dict[str, Any]] = [
+        {"content": "x"},  # expected is required
+        {"expected": None},  # content is required
+        {"content": "x", "expected": None, "force": True},  # no other key
+        {"content": 5, "expected": None},
+        {"content": None, "expected": None},
+        {"content": "x", "expected": {"mtime": stamp["mtime"]}},  # a stamp has both keys
+        {"content": "x", "expected": {**stamp, "extra": 1}},
+        {"content": "x", "expected": {"mtime": stamp["mtime"], "size": -1}},
+        {"content": "x", "expected": {"mtime": 5, "size": 0}},
+    ]
+    for payload in bad_bodies:
+        resp = await leg.http.put(url, params={"path": "src/main.py"}, json=payload)
+        assert resp.status_code == 422, (payload, resp.text)
+        assert resp.json()["error"]["code"] == "invalid_request", (payload, resp.text)
+    lone = await leg.http.put(  # a lone surrogate is not text a file can hold
+        url,
+        params={"path": "src/main.py"},
+        content=b'{"content": "\\ud800", "expected": null}',
+        headers={"Content-Type": "application/json"},
+    )
+    assert lone.status_code == 422 and lone.json()["error"]["code"] == "invalid_request"
+    assert (await _read(leg, sid, "src/main.py"))["content"] == "print('hi')\n"
+
+
 @pytest.fixture
 async def fake_leg(fake: FakeWrapper) -> AsyncIterator[Leg]:
     """A Leg over the fake alone, for controls the real image does not expose."""
@@ -669,6 +787,56 @@ async def test_fake_files_symlink_target_type(fake_leg: Leg, fake: FakeWrapper) 
     assert by_name["link_escape_file"]["target_type"] is None
     for name in ("pipe", "README.md", "src"):
         assert by_name[name]["target_type"] is None, name
+
+
+async def test_fake_files_write_cap(fake_leg: Leg, fake: FakeWrapper) -> None:
+    """The cap is config on the wrapper (file_preview_max_bytes, counted in UTF-8 bytes)."""
+    leg = fake_leg
+    sid = await _tree(leg)
+    fake.file_preview_max_bytes = 8
+    path = "README.md"
+    for over in ("123456789", "\u00e9\u00e9\u00e9\u00e9\u00e9"):  # 9 bytes, 5 chars / 10 bytes
+        resp = await _put(leg, sid, path, over, None)
+        assert resp.status_code == 413, resp.text
+        assert resp.json()["error"]["code"] == "too_large"
+    assert (fake.workdir(sid) / path).read_text() == "# demo\n"
+    assert sorted(p.name for p in fake.workdir(sid).iterdir() if p.name.endswith(".tmp")) == []
+    resp = await _put(leg, sid, path, "12345678", None)  # exactly at the cap
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["size"] == 8
+    assert (fake.workdir(sid) / path).read_text() == "12345678"
+    resp = await _put(leg, sid, path, "\u00e9\u00e9\u00e9\u00e9", None)  # 4 chars, 8 bytes
+    assert resp.status_code == 200, resp.text
+    assert (fake.workdir(sid) / path).read_text(encoding="utf-8") == "\u00e9\u00e9\u00e9\u00e9"
+
+
+async def test_fake_files_write_through_symlink(fake_leg: Leg, fake: FakeWrapper) -> None:
+    """The real image cannot be given links; a write follows one inside the workdir to its
+    target and keeps the link, and never reaches a target outside it. Permission bits survive."""
+    leg = fake_leg
+    sid = await _tree(leg)
+    workdir = fake.workdir(sid)
+    outside = workdir.parent / f"{workdir.name}-outside"
+    outside.mkdir()
+    secret = outside / "secret.txt"
+    secret.write_text("s")
+    (workdir / "link_file").symlink_to("README.md")
+    (workdir / "link_escape").symlink_to(secret)
+    (workdir / "README.md").chmod(0o640)
+
+    resp = await _put(leg, sid, "link_file", "via link\n", None)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["path"] == "README.md"  # the target, as the wrapper reports it
+    assert (workdir / "link_file").is_symlink()
+    assert (workdir / "link_file").readlink().as_posix() == "README.md"
+    assert (workdir / "README.md").read_text() == "via link\n"
+    assert (workdir / "README.md").stat().st_mode & 0o777 == 0o640
+
+    resp = await _put(leg, sid, "link_escape", "pwned", None)
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["error"]["code"] == "invalid_path"
+    assert secret.read_text() == "s"
+    assert (workdir / "link_escape").is_symlink()
 
 
 # ------------------------------------------------------------------------------ terminals
