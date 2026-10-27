@@ -282,8 +282,19 @@ class FileStamp(BaseModel):
     size: int = Field(ge=0)
 
 
+# The wrapper refuses content over 1 MiB of UTF-8 (`limits.file_preview_max_bytes`, 413
+# `too_large`). A JSON body spends at most 6 bytes per content byte (every byte written as a
+# `\u00XX` escape) plus the key framing and the `expected` stamp, so a body over this size
+# cannot hold an acceptable content and the orchestrator refuses it before parsing it.
+WRITE_CONTENT_MAX_BYTES = 1024 * 1024
+WRITE_BODY_MAX_BYTES = 6 * WRITE_CONTENT_MAX_BYTES + 16 * 1024
+
+
 class WriteFile(BaseModel):
-    """Body of a file save: both keys required; `expected: null` overwrites unconditionally."""
+    """Body of a file save: both keys required; `expected: null` overwrites unconditionally.
+
+    A body over 6 MiB + 16 KiB (1 MiB of content, every byte escaped) is 413 `too_large`
+    before it is read in full."""
 
     model_config = ConfigDict(extra="forbid")
 

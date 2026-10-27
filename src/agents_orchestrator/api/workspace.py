@@ -25,7 +25,7 @@ import contextlib
 import logging
 import re
 import uuid
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterator
 from dataclasses import dataclass, field
 from typing import Annotated, Any
 from urllib.parse import quote, urlsplit
@@ -33,6 +33,7 @@ from urllib.parse import quote, urlsplit
 import httpx
 import psycopg
 from fastapi import APIRouter, Depends, FastAPI, Query, Request, Response, WebSocket
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, ValidationError
 from starlette.responses import StreamingResponse
 from starlette.types import Receive, Scope, Send
@@ -343,11 +344,47 @@ async def file_content(
     )
 
 
-@router.put(
-    "/sessions/{session_id}/files/content",
-    response_model=schemas.FileWritten,
-    dependencies=guarded,
-)
+def _too_large_body() -> ApiError:
+    return ApiError(
+        413,
+        "too_large",
+        f"request body is over the {schemas.WRITE_BODY_MAX_BYTES} byte limit of a file write",
+    )
+
+
+class _CappedRequest(Request):
+    """A request whose body stream stops at `schemas.WRITE_BODY_MAX_BYTES`: a declared
+    Content-Length over it is refused unread, and a chunked body as soon as it passes it."""
+
+    async def stream(self) -> AsyncIterator[bytes]:
+        declared = self.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > schemas.WRITE_BODY_MAX_BYTES:
+            raise _too_large_body()
+        seen = 0
+        async for chunk in super().stream():
+            seen += len(chunk)
+            if seen > schemas.WRITE_BODY_MAX_BYTES:
+                raise _too_large_body()
+            yield chunk
+
+
+class _CappedBodyRoute(APIRoute):
+    """Route class of the file write: FastAPI reads the whole body before it validates it, so the
+    capped read happens first and the handler reuses the cached body (413 `too_large`, the
+    API's envelope)."""
+
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        handler = super().get_route_handler()
+
+        async def capped(request: Request) -> Response:
+            capped_request = _CappedRequest(request.scope, request.receive)
+            # read here, not inside FastAPI, which turns any error while reading into a 400
+            await capped_request.body()
+            return await handler(capped_request)
+
+        return capped
+
+
 async def write_file_content(
     request: Request,
     pool: Pool,
@@ -371,6 +408,17 @@ async def write_file_content(
         schemas.FileWritten,
         json=body.model_dump(mode="json"),
     )
+
+
+router.add_api_route(
+    "/sessions/{session_id}/files/content",
+    write_file_content,
+    methods=["PUT"],
+    response_model=schemas.FileWritten,
+    dependencies=guarded,
+    responses={413: {"description": "The request body is over the limit of a file write"}},
+    route_class_override=_CappedBodyRoute,
+)
 
 
 # ---------------------------------------------------------------------------- file download

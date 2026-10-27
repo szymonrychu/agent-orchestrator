@@ -17,7 +17,7 @@ from test_api_file_download import AGENT, SESSION, TOKEN, Rig
 from test_api_file_download import rig as rig  # the shared fixture
 from test_api_sessions import assert_error
 
-from agents_orchestrator.api import workspace
+from agents_orchestrator.api import schemas, workspace
 from agents_orchestrator.api.errors import ApiError
 
 CONTENT = "def main():\r\n    print('zażółć')\n\tpass\n"
@@ -162,6 +162,76 @@ async def test_write_body_lone_surrogate_validated(rig):
     )
     assert_error(r, 422, "invalid_request")
     assert rig.resolved == [] and rig.fake.requests == []
+
+
+WRAPPER_CAP = 1048576  # the wrapper's default `limits.file_preview_max_bytes`
+ESCAPED_X = "\\u0078"  # six bytes of JSON for one byte of content: the worst case
+
+
+def escaped_body(count: int, tail: str = "") -> bytes:
+    """A JSON write body whose `content` is `count` bytes of "x", every one written as \\u0078."""
+    return ('{"content": "' + ESCAPED_X * count + tail + '", "expected": null}').encode()
+
+
+async def put_raw(rig: Rig, body, **headers) -> httpx.Response:
+    return await rig.http.put(
+        content_url(rig),
+        params={"path": "a.txt"},
+        content=body,
+        headers={"content-type": "application/json", **headers},
+    )
+
+
+async def chunks(body: bytes, size: int = 65536):
+    for i in range(0, len(body), size):
+        yield body[i : i + size]
+
+
+async def test_write_body_too_large(rig):
+    """A body no cap-sized content can produce is 413 before it is parsed or forwarded."""
+    rig.put("a.txt", b"a")
+    body = escaped_body(WRAPPER_CAP)
+    body += b" " * (schemas.WRITE_BODY_MAX_BYTES + 1 - len(body))  # the smallest refused body
+
+    # declared up front (Content-Length): refused without reading the body
+    r = await put_raw(rig, body)
+    assert_error(r, 413, "too_large")
+    # chunked, no Content-Length: refused as soon as the stream passes the cap
+    r = await put_raw(rig, chunks(body))
+    assert_error(r, 413, "too_large")
+    # a plain oversized content too
+    r = await write(rig, "a.txt", "x" * schemas.WRITE_BODY_MAX_BYTES, None)
+    assert_error(r, 413, "too_large")
+
+    assert rig.resolved == [] and rig.fake.requests == []  # before any wrapper request
+    assert on_disk(rig, "a.txt") == b"a"
+
+
+async def test_write_at_cap_forwarded(rig):
+    """Content at the wrapper's cap is forwarded, plain or with every byte escaped (6x)."""
+    rig.put("a.txt", b"a")
+    loaded = await stamp(rig, "a.txt")
+    rig.fake.requests.clear()
+
+    full = "x" * WRAPPER_CAP
+    r = await write(rig, "a.txt", full, loaded)
+    assert r.status_code == 200, r.text
+    assert r.json()["size"] == WRAPPER_CAP
+    assert on_disk(rig, "a.txt") == full.encode()
+    assert rig.fake.requests == [("PUT", f"/v1/sessions/{rig.sid}/files/content")]
+
+    escaped = escaped_body(WRAPPER_CAP)
+    assert 6 * WRAPPER_CAP < len(escaped) <= schemas.WRITE_BODY_MAX_BYTES
+    for payload in (escaped, chunks(escaped)):
+        rig.put("a.txt", b"a")
+        r = await put_raw(rig, payload)
+        assert r.status_code == 200, r.text
+        assert r.json()["size"] == WRAPPER_CAP
+
+    # one byte over the wrapper's cap is the wrapper's own 413, relayed
+    r = await write(rig, "a.txt", "x" * (WRAPPER_CAP + 1), None)
+    assert_error(r, 413, "too_large")
+    assert on_disk(rig, "a.txt") == full.encode()
 
 
 async def test_write_origin_guarded(rig):

@@ -3295,7 +3295,7 @@
       },
       "WriteFile": {
         "additionalProperties": false,
-        "description": "Body of a file save: both keys required; `expected: null` overwrites unconditionally.",
+        "description": "Body of a file save: both keys required; `expected: null` overwrites unconditionally.\n\nA body over 6 MiB + 16 KiB (1 MiB of content, every byte escaped) is 413 `too_large`\nbefore it is read in full.",
         "properties": {
           "content": {
             "title": "Content",
@@ -5494,6 +5494,9 @@
               }
             },
             "description": "Successful Response"
+          },
+          "413": {
+            "description": "The request body is over the limit of a file write"
           },
           "422": {
             "content": {
