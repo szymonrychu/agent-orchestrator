@@ -466,7 +466,8 @@ async def test_files_list(leg: Leg) -> None:
     ]
     assert dict(names)["src"] == "dir" and dict(names)["README.md"] == "file"
     by_name = {e["name"]: e for e in body["entries"]}
-    assert set(by_name["README.md"]) == {"name", "type", "size", "mtime"}
+    assert set(by_name["README.md"]) == {"name", "type", "size", "mtime", "target_type"}
+    assert by_name["README.md"]["target_type"] is None and by_name["src"]["target_type"] is None
     assert by_name["README.md"]["size"] == len("# demo\n")
     assert by_name["src"]["size"] is None
     assert by_name["README.md"]["mtime"].endswith("Z")
@@ -523,6 +524,65 @@ async def test_files_errors(leg: Leg) -> None:
             assert (await anon.get(url)).status_code == 401
 
 
+async def test_files_download(leg: Leg) -> None:
+    sid = await _tree(leg)
+    url = f"/v1/sessions/{sid}/files/download"
+    resp = await leg.http.get(url, params={"path": "src/main.py"})
+    assert resp.status_code == 200, resp.text
+    assert resp.content == b"print('hi')\n"
+    assert resp.headers["content-length"] == str(len(b"print('hi')\n"))
+    assert resp.headers["content-type"] == "text/x-python"
+    assert resp.headers["content-disposition"] == (
+        "attachment; filename=\"main.py\"; filename*=UTF-8''main.py"
+    )
+    assert resp.headers["x-content-type-options"] == "nosniff"
+    assert resp.headers["cache-control"] == "no-store"
+    blob = await leg.http.get(url, params={"path": "blob.bin"})
+    assert blob.status_code == 200, blob.text
+    assert blob.content == b"\x00\x01\x02 binary"
+    assert blob.headers["content-length"] == str(len(b"\x00\x01\x02 binary"))
+    assert blob.headers["content-type"] == "application/octet-stream"
+    assert blob.headers["content-disposition"] == (
+        "attachment; filename=\"blob.bin\"; filename*=UTF-8''blob.bin"
+    )
+    # the name is the last segment of the normalised requested path
+    nested = await leg.http.get(url, params={"path": "src/./pkg/../pkg/mod.py"})
+    assert nested.status_code == 200 and nested.content == b"x = 1\n"
+    assert 'filename="mod.py"' in nested.headers["content-disposition"]
+    # a non-ASCII name: ASCII fallback plus the percent-encoded UTF-8 form
+    await leg.turn(sid, "more", files={'caf\u00e9 "q".txt': "x"})
+    odd = await leg.http.get(url, params={"path": 'caf\u00e9 "q".txt'})
+    assert odd.status_code == 200, odd.text
+    assert odd.headers["content-disposition"] == (
+        "attachment; filename=\"caf_ _q_.txt\"; filename*=UTF-8''caf%C3%A9%20%22q%22.txt"
+    )
+
+
+async def test_files_download_errors(leg: Leg) -> None:
+    sid = await _tree(leg)
+    url = f"/v1/sessions/{sid}/files/download"
+
+    async def expect(params: dict[str, str], status: int, code: str) -> None:
+        resp = await leg.http.get(url, params=params)
+        assert resp.status_code == status, (params, resp.text)
+        assert resp.json()["error"]["code"] == code, (params, resp.text)
+
+    await expect({"path": "../outside"}, 400, "invalid_path")
+    await expect({"path": "/etc/passwd"}, 400, "invalid_path")
+    await expect({"path": "a\x00b"}, 400, "invalid_path")
+    await expect({"path": "src/../../x"}, 400, "invalid_path")
+    await expect({"path": "src"}, 400, "not_a_file")
+    await expect({}, 400, "not_a_file")  # the workdir itself is a directory
+    await expect({"path": ""}, 400, "not_a_file")
+    await expect({"path": "missing"}, 404, "not_found")
+    unknown = "/v1/sessions/ses_unknown/files/download"
+    resp = await leg.http.get(unknown)
+    assert resp.status_code == 404 and resp.json()["error"]["code"] == "not_found"
+    async with httpx.AsyncClient(base_url=leg.base_url) as anon:
+        assert (await anon.get(url, params={"path": "README.md"})).status_code == 401
+        assert (await anon.get(unknown)).status_code == 401
+
+
 @pytest.fixture
 async def fake_leg(fake: FakeWrapper) -> AsyncIterator[Leg]:
     """A Leg over the fake alone, for controls the real image does not expose."""
@@ -555,6 +615,60 @@ async def test_fake_files_paging_and_too_large(fake_leg: Leg, fake: FakeWrapper)
     assert small["kind"] == "text" and small["content"] == "dot\n"
     long = (await leg.http.get(url, params={"path": "src/main.py"})).json()  # 12 bytes
     assert long["kind"] == "too_large" and long["content"] is None and long["size"] == 12
+
+
+async def test_fake_files_download_ignores_preview_cap(fake_leg: Leg, fake: FakeWrapper) -> None:
+    """Download is not capped by the preview limit: a file over it arrives whole."""
+    leg = fake_leg
+    sid = await _tree(leg)
+    fake.file_preview_max_bytes = 8
+    data = bytes(range(256)) * 4096  # 1 MiB, every byte value, spans several chunks
+    (fake.workdir(sid) / "big.dat").write_bytes(data)
+    preview = (
+        await leg.http.get(f"/v1/sessions/{sid}/files/content", params={"path": "big.dat"})
+    ).json()
+    assert preview["kind"] == "too_large"
+    resp = await leg.http.get(f"/v1/sessions/{sid}/files/download", params={"path": "big.dat"})
+    assert resp.status_code == 200, resp.text[:200]
+    assert resp.headers["content-length"] == str(len(data))
+    assert resp.content == data
+
+
+async def test_fake_files_symlink_target_type(fake_leg: Leg, fake: FakeWrapper) -> None:
+    """The real image cannot be given links or a FIFO; the fake must classify them as it does."""
+    leg = fake_leg
+    sid = await _tree(leg)
+    workdir = fake.workdir(sid)
+    outside = workdir.parent / f"{workdir.name}-outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("s")
+    os.mkfifo(workdir / "pipe")
+    (workdir / "link_file").symlink_to("README.md")
+    (workdir / "link_dir").symlink_to("src")
+    (workdir / "link_fifo").symlink_to("pipe")
+    (workdir / "link_dangling").symlink_to("nowhere")
+    (workdir / "link_escape_dir").symlink_to(outside)
+    (workdir / "link_escape_file").symlink_to(outside / "secret.txt")
+    resp = await leg.http.get(f"/v1/sessions/{sid}/files")
+    assert resp.status_code == 200, resp.text
+    by_name = {e["name"]: e for e in resp.json()["entries"]}
+    for name in (
+        "link_file",
+        "link_dir",
+        "link_fifo",
+        "link_dangling",
+        "link_escape_dir",
+        "link_escape_file",
+    ):
+        assert by_name[name]["type"] == "symlink", name
+    assert by_name["link_file"]["target_type"] == "file"
+    assert by_name["link_dir"]["target_type"] == "dir"
+    assert by_name["link_fifo"]["target_type"] == "other"
+    assert by_name["link_dangling"]["target_type"] is None
+    assert by_name["link_escape_dir"]["target_type"] is None
+    assert by_name["link_escape_file"]["target_type"] is None
+    for name in ("pipe", "README.md", "src"):
+        assert by_name[name]["target_type"] is None, name
 
 
 # ------------------------------------------------------------------------------ terminals

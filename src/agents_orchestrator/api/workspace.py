@@ -3,8 +3,10 @@
 This is the only api module allowed to import `agents_orchestrator.wrapper` or
 `agents_orchestrator.tokens` (tests/test_api_sessions.py pins it). The file and terminal proxy
 routes resolve an agent with `resolve_agent`, validate a terminal id with
-`validate_terminal_id`, and call the wrapper with `forward`; the terminal attach route relays
-a WebSocket to the wrapper with `websockets` (`attach_terminal`). There is no Kubernetes import:
+`validate_terminal_id`, and call the wrapper with `forward`; the file download relays the
+wrapper's raw byte stream (`download_file`); the terminal attach route relays a WebSocket to
+the wrapper with `websockets` (`attach_terminal`). `forward` and the download share one
+wrapper error map (`_wrapper_errors`). There is no Kubernetes import:
 agents come from the database and the token is derived from the master key.
 
 Token hygiene: the derived bearer lives in `WrapperTarget.token` (excluded from repr) and
@@ -20,6 +22,7 @@ import contextlib
 import logging
 import re
 import uuid
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from typing import Annotated, Any
 from urllib.parse import quote, urlsplit
@@ -28,6 +31,8 @@ import httpx
 import psycopg
 from fastapi import APIRouter, Depends, FastAPI, Query, Request, Response, WebSocket
 from pydantic import BaseModel, ValidationError
+from starlette.responses import StreamingResponse
+from starlette.types import Receive, Scope, Send
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus
@@ -203,29 +208,16 @@ def _scrub(text: str, token: str) -> str:
     return text.replace(token, _MASK) if token else text
 
 
-async def forward(
-    app: FastAPI,
-    target: WrapperTarget,
-    method: str,
-    path: str,
-    *,
-    params: dict[str, Any] | None = None,
-    json: Any = None,
-    timeout: float | None = None,
-) -> Any:
-    """Call the wrapper `/v1{path}` of `target` and map the outcome.
+@contextlib.contextmanager
+def _wrapper_errors(target: WrapperTarget, method: str, path: str) -> Iterator[None]:
+    """The one map from a wrapper failure inside the block to the api's error.
 
-    2xx returns the wrapper's JSON; a wrapper 4xx is re-raised as `ApiError` with the wrapper's
-    status and code; a wrapper 5xx is 502 `wrapper_error` (its body is not relayed); a
+    A wrapper 4xx is re-raised as `ApiError` with the wrapper's status and code (the bearer
+    scrubbed); a wrapper 3xx or 5xx is 502 `wrapper_error` (its body is not relayed); a
     transport failure is 502 `wrapper_unreachable`.
     """
-    client = WrapperClient(target.url, target.token, http=get_client(app))
-    extra = {} if timeout is None else {"timeout": timeout}
-    log.debug(
-        "wrapper request %s %s agent=%s pod=%s", method, path, target.agent_id, target.pod_name
-    )
     try:
-        status, body = await client.request_json(method, path, params=params, json=json, **extra)
+        yield
     except WrapperError as exc:
         log.debug("wrapper answered %s %s on %s %s", exc.status, exc.code, method, path)
         if exc.status >= 500 or exc.status < 400:
@@ -240,6 +232,27 @@ async def forward(
         raise ApiError(
             502, "wrapper_unreachable", f"wrapper of {target.pod_name} is unreachable"
         ) from None
+
+
+async def forward(
+    app: FastAPI,
+    target: WrapperTarget,
+    method: str,
+    path: str,
+    *,
+    params: dict[str, Any] | None = None,
+    json: Any = None,
+    timeout: float | None = None,
+) -> Any:
+    """Call the wrapper `/v1{path}` of `target`: 2xx returns the wrapper's JSON, every
+    failure is mapped by `_wrapper_errors`."""
+    client = WrapperClient(target.url, target.token, http=get_client(app))
+    extra = {} if timeout is None else {"timeout": timeout}
+    log.debug(
+        "wrapper request %s %s agent=%s pod=%s", method, path, target.agent_id, target.pod_name
+    )
+    with _wrapper_errors(target, method, path):
+        status, body = await client.request_json(method, path, params=params, json=json, **extra)
     log.debug("wrapper answered %s on %s %s", status, method, path)
     return body
 
@@ -317,6 +330,88 @@ async def file_content(
         {"path": path},
         schemas.FileContent,
     )
+
+
+# ---------------------------------------------------------------------------- file download
+
+# headers of the wrapper's download answer that are relayed; the rest are the orchestrator's
+_RELAYED = ("content-type", "content-length", "content-disposition")
+_DOWNLOAD_OPENAPI: dict[int | str, dict[str, Any]] = {
+    200: {
+        "description": "The file's raw bytes, with download headers",
+        "content": {"application/octet-stream": {"schema": {"type": "string", "format": "binary"}}},
+    }
+}
+
+
+class DownloadAborted(RuntimeError):
+    """The wrapper stream failed after the download started; raised so the server aborts the
+    connection and the browser marks the download failed instead of saving a short file."""
+
+
+class _DownloadRelay(StreamingResponse):
+    """Relays an open wrapper download; the upstream is closed on every exit.
+
+    `__call__`'s `finally` covers a complete relay, a failed one, a browser that went away
+    (either ASGI disconnect style) and cancellation, so no exit path leaves it open.
+    """
+
+    media_type = "application/octet-stream"
+
+    def __init__(self, upstream: httpx.Response, pod_name: str) -> None:
+        self._upstream = upstream
+        self._pod_name = pod_name
+        self._chunks = self._relay()
+        headers = {k: upstream.headers[k] for k in _RELAYED if k in upstream.headers}
+        headers["X-Content-Type-Options"] = "nosniff"
+        headers["Cache-Control"] = "no-store"
+        super().__init__(self._chunks, headers=headers)
+
+    async def _relay(self) -> AsyncIterator[bytes]:
+        try:
+            # raw chunks: no decoding, so the bytes and Content-Length stay the wrapper's
+            async for chunk in self._upstream.aiter_raw():
+                yield chunk
+        except httpx.HTTPError as exc:
+            log.warning(
+                "download from %s failed mid-stream: %s", self._pod_name, type(exc).__name__
+            )
+            raise DownloadAborted(f"download from {self._pod_name} failed mid-stream") from None
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await self._chunks.aclose()
+            await self._upstream.aclose()
+
+
+@router.get(
+    "/sessions/{session_id}/files/download",
+    status_code=200,
+    response_class=_DownloadRelay,
+    responses=_DOWNLOAD_OPENAPI,
+)
+async def download_file(
+    request: Request,
+    pool: Pool,
+    settings: Cfg,
+    session_id: uuid.UUID,
+    path: str = "",
+    agent_id: uuid.UUID | None = None,
+) -> _DownloadRelay:
+    """One file of the session workdir as raw bytes, streamed from the wrapper (any size).
+
+    The wrapper's status is mapped before any byte is sent, so every refusal is a JSON error.
+    """
+    async with pool.connection() as conn:
+        target = await resolve_agent(conn, settings, session_id=session_id, agent_id=agent_id)
+    client = WrapperClient(target.url, target.token, http=get_client(request.app))
+    sid = quote(target.wrapper_session_id, safe="")
+    log.debug("wrapper download agent=%s pod=%s", target.agent_id, target.pod_name)
+    with _wrapper_errors(target, "GET", f"/sessions/{sid}/files/download"):
+        upstream = await client.open_download(sid, path)
+    return _DownloadRelay(upstream, target.pod_name)
 
 
 # -------------------------------------------------------------------------- terminal routes

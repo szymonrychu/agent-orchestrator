@@ -751,6 +751,22 @@
             ],
             "title": "Size"
           },
+          "target_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "dir",
+                  "file",
+                  "other"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Type"
+          },
           "type": {
             "enum": [
               "dir",
@@ -766,7 +782,8 @@
           "name",
           "type",
           "size",
-          "mtime"
+          "mtime",
+          "target_type"
         ],
         "title": "FileEntry",
         "type": "object"
@@ -5332,6 +5349,75 @@
           }
         },
         "summary": "File Content"
+      }
+    },
+    "/api/v1/sessions/{session_id}/files/download": {
+      "get": {
+        "description": "One file of the session workdir as raw bytes, streamed from the wrapper (any size).\n\nThe wrapper's status is mapped before any byte is sent, so every refusal is a JSON error.",
+        "operationId": "download_file_api_v1_sessions__session_id__files_download_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "path",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "agent_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Agent Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The file's raw bytes, with download headers"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download File"
       }
     },
     "/api/v1/sessions/{session_id}/init-scripts": {

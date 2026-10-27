@@ -23,8 +23,9 @@ import tempfile
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import quote
 
 import uvicorn
 from claude_code_wrapper.events import EVENT_TYPES
@@ -37,6 +38,9 @@ MAX_SESSIONS = 4
 REPLAY = 100
 MAX_PAGE = 1000
 BINARY_SNIFF_BYTES = 8192
+DOWNLOAD_CHUNK_BYTES = 1 << 20
+# RFC 5987 attr-char punctuation `quote` does not already leave alone (as in the wrapper)
+_ATTR_CHAR_SAFE = "!#$&+^`|"
 RESUMABLE = ("stopped", "failed", "dead")
 _NOTE_KEY = re.compile(r"^[a-z0-9_]{1,40}$")
 _CLOSE = object()
@@ -80,6 +84,26 @@ def _entry_type(mode: int) -> str:
     if stat.S_ISLNK(mode):
         return "symlink"
     return "other"
+
+
+def _target_type(root: Path, resolved: Path, name: str) -> str | None:
+    """The wrapper's rule: `dir`, `file` or `other` for a symlink resolving to an existing path
+    inside the workdir; None for a dangling or looping link and one leaving the workdir."""
+    rel = "" if resolved == root else resolved.relative_to(root).as_posix()
+    try:
+        target = _confine(root, f"{rel}/{name}" if rel else name)
+        return _entry_type(os.stat(target).st_mode)
+    except (_Err, OSError):
+        return None
+
+
+def _content_disposition(name: str) -> str:
+    """The wrapper's RFC 6266 `attachment` value: ASCII `filename` fallback (everything outside
+    printable ASCII, `"` and backslash becomes `_`) plus the RFC 5987 `filename*`."""
+    printable = name.encode("utf-8", "replace").decode("utf-8")
+    fallback = "".join(c if " " <= c <= "~" and c not in '"\\' else "_" for c in printable)
+    encoded = quote(printable, safe=_ATTR_CHAR_SAFE)
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded}"
 
 
 class _Err(Exception):
@@ -695,6 +719,9 @@ class FakeWrapper:
             for entry in os.scandir(resolved):
                 st = entry.stat(follow_symlinks=False)
                 kind = _entry_type(st.st_mode)
+                target_type = (
+                    _target_type(root, resolved, entry.name) if kind == "symlink" else None
+                )
                 rows.append(
                     (
                         kind != "dir",
@@ -704,6 +731,7 @@ class FakeWrapper:
                             "type": kind,
                             "size": st.st_size if kind == "file" else None,
                             "mtime": _iso(st.st_mtime),
+                            "target_type": target_type,
                         },
                     )
                 )
@@ -747,6 +775,38 @@ class FakeWrapper:
             except UnicodeDecodeError:
                 out["kind"] = "binary"
             return out
+
+        @app.get("/v1/sessions/{session_id}/files/download")
+        async def file_download(
+            session_id: str, request: Request, path: str = ""
+        ) -> StreamingResponse:
+            self._auth(request)
+            ses = self._get(session_id)
+            _, resolved = self._locate(ses, path)
+            if not resolved.exists():
+                raise _Err(404, "not_found", "no such file or directory")
+            size = resolved.stat().st_size
+            if not resolved.is_file():
+                raise _Err(400, "not_a_file", "path is not a regular file")
+
+            async def stream() -> AsyncIterator[bytes]:
+                with resolved.open("rb") as handle:
+                    while chunk := await asyncio.to_thread(handle.read, DOWNLOAD_CHUNK_BYTES):
+                        yield chunk
+
+            return StreamingResponse(
+                stream(),
+                headers={
+                    "Content-Type": mimetypes.guess_type(resolved.name)[0]
+                    or "application/octet-stream",
+                    "Content-Length": str(size),
+                    "Content-Disposition": _content_disposition(
+                        PurePosixPath(os.path.normpath(path)).name
+                    ),
+                    "X-Content-Type-Options": "nosniff",
+                    "Cache-Control": "no-store",
+                },
+            )
 
         @app.post("/v1/sessions/{session_id}/terminals", status_code=201)
         async def create_terminal(session_id: str, request: Request) -> dict[str, Any]:

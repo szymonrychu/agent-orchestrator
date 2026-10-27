@@ -425,3 +425,75 @@ async def test_post_note_body_and_outcomes():
         raise httpx.ConnectError("down")
 
     assert await client(boom).post_note("s", "x") == "failed"
+
+
+class _TrackedStream(httpx.AsyncByteStream):
+    def __init__(self, chunks: list[bytes]) -> None:
+        self.chunks = chunks
+        self.closed = False
+
+    async def __aiter__(self):
+        for chunk in self.chunks:
+            yield chunk
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+async def test_open_download_streams_raw_bytes():
+    seen = {}
+    chunks = [b"\x00\xff\xfe binary", b"\x1f\x8b not really gzip \x00"]
+    stream = _TrackedStream(chunks)
+
+    def h(r: httpx.Request) -> httpx.Response:
+        seen["method"] = r.method
+        seen["path"] = r.url.path
+        seen["query"] = dict(r.url.params)
+        seen["url"] = str(r.url)
+        seen["auth"] = r.headers.get("authorization")
+        return httpx.Response(
+            200,
+            stream=stream,
+            headers={
+                "content-type": "application/octet-stream",
+                "content-length": str(sum(map(len, chunks))),
+                "content-encoding": "gzip",
+                "content-disposition": 'attachment; filename="a b.bin"',
+            },
+        )
+
+    resp = await client(h).open_download("ses_1", "dir/a b.bin")
+    try:
+        assert seen["method"] == "GET"
+        assert seen["path"] == "/v1/sessions/ses_1/files/download"
+        assert seen["query"] == {"path": "dir/a b.bin"}
+        assert seen["auth"] == "Bearer tok"
+        assert "tok" not in seen["url"]
+        assert resp.status_code == 200 and not stream.closed
+        assert resp.headers["content-disposition"] == 'attachment; filename="a b.bin"'
+        assert resp.headers["content-type"] == "application/octet-stream"
+        assert b"".join([c async for c in resp.aiter_raw()]) == b"".join(chunks)
+    finally:
+        await resp.aclose()
+    assert stream.closed
+
+
+async def test_open_download_errors():
+    body = {"error": {"code": "not_a_file", "message": "is a directory"}}
+    for status, payload, code, message in [
+        (400, body, "not_a_file", "is a directory"),
+        (404, {"error": {"code": "not_found", "message": "gone"}}, "not_found", "gone"),
+        (503, None, "http_503", "down"),
+    ]:
+        stream = _TrackedStream([json.dumps(payload).encode() if payload else b"down"])
+        c = client(lambda r, s=status, st=stream: httpx.Response(s, stream=st))
+        with pytest.raises(WrapperError) as ei:
+            await c.open_download("ses_1", "x")
+        assert (ei.value.status, ei.value.code, ei.value.message) == (status, code, message)
+        assert stream.closed
+
+    def boom(req: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    with pytest.raises(WrapperUnreachable):
+        await client(boom).open_download("ses_1", "x")
