@@ -25,6 +25,7 @@ from agents_orchestrator.wrapper.client import WrapperClient
 from agents_orchestrator.wrapper.models import (
     Ambiguous,
     Busy,
+    CommandAccepted,
     ConfigError,
     Gone,
     Rejected,
@@ -283,11 +284,13 @@ class Dispatcher:
         if not cmd.agent_url or not cmd.wrapper_session_id:
             return "failed", {"error": "agent has no session"}
         client = self._client(cmd.session_id, cmd.agent_url)
-        try:
-            if cmd.kind == "interrupt":
+        if cmd.kind == "interrupt":
+            try:
                 response = await client.interrupt(cmd.wrapper_session_id)
-            else:
-                response = await client.command(cmd.wrapper_session_id, cmd.kind)
-        except Exception as exc:
-            return "failed", {"error": f"{type(exc).__name__}: {exc}"}
-        return "done", {"response": response}
+            except Exception as exc:
+                return "failed", {"error": f"{type(exc).__name__}: {exc}"}
+            return "done", {"response": response}
+        outcome = await client.command(cmd.wrapper_session_id, cmd.kind)
+        if isinstance(outcome, CommandAccepted):
+            return "done", {"response": outcome.record}
+        return "failed", {"error": outcome.reason}

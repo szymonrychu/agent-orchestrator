@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from datetime import UTC, datetime
 
 import pytest_asyncio
 from factories import (
@@ -16,6 +17,7 @@ from factories import (
 )
 from fakes.fake_wrapper import FakeWrapper
 from psycopg.rows import dict_row
+from psycopg_pool import AsyncConnectionPool
 
 from agents_orchestrator.db import queue as q
 from agents_orchestrator.dispatcher import Dispatcher
@@ -244,6 +246,42 @@ async def test_interrupt_and_compact_commands(env):
     await d.aclose()
     row = (await env.rows("SELECT * FROM commands WHERE id=%s", (cf["id"],)))[0]
     assert row["status"] == "failed" and "404" in row["result"]["error"]
+
+
+async def test_compact_command_outcome_mapping():
+    """`_run_command` without a database: the wrapper record on accept, the reason otherwise."""
+    cid = uuid.uuid4()
+    fake = FakeWrapper(token=derive_tokens(KEY.encode(), cid).auth)
+    await fake.start()
+    dsn = "postgresql://unused"
+    d = Dispatcher(AsyncConnectionPool(dsn, open=False), make_settings(dsn))
+    try:
+        client = WrapperClient(fake.base_url, fake.token)
+        session = (await client.create_session("c", "/w")).wrapper_session_id
+        await client.aclose()
+
+        def cmd(wrapper_session_id: str | None = session) -> q.Command:
+            now = datetime.now(UTC)
+            return q.Command(
+                1, uuid.uuid4(), "compact", "running", now, now, cid, fake.base_url,
+                wrapper_session_id,
+            )  # fmt: skip
+
+        status, result = await d._run_command(cmd())
+        assert status == "done"
+        record = result["response"]
+        assert (record["name"], record["args"], record["state"]) == ("compact", "", "queued")
+        assert record["id"].startswith("cmd_")
+        fake.commands_client = ["context"]
+        status, result = await d._run_command(cmd())
+        assert status == "failed" and "403 command_not_allowed" in result["error"]
+        fake.commands_client = ["*"]
+        status, result = await d._run_command(cmd("ses_nope"))
+        assert status == "failed" and "404" in result["error"]
+        assert await d._run_command(cmd(None)) == ("failed", {"error": "agent has no session"})
+    finally:
+        await d.aclose()
+        await fake.stop()
 
 
 async def test_every_non_accept_status_releases_agent(pool, dsn):
