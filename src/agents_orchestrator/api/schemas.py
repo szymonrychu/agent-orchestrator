@@ -49,6 +49,27 @@ class SessionSummary(BaseModel):
     auto_compact_pct: int
     queued: int
     failed: int
+    oldest_queued_at: datetime | None  # created_at of the oldest queued message
+
+
+class BackupRun(BaseModel):
+    """A finished transcripts save: when it finished and the archive size."""
+
+    finished_at: datetime
+    bytes: int
+
+
+class SessionBackup(BaseModel):
+    """What a discard would save now; each flag is true only when that save would really run.
+
+    `reason` is null when both run, else `no_session_cache` (no `spec.cache`),
+    `cache_not_configured` (no S3 cache configured) or the save's skip reason, the workdir's first.
+    """
+
+    workdir: bool
+    transcripts: bool
+    reason: str | None
+    last_transcripts_backup: BackupRun | None
 
 
 class SessionView(BaseModel):
@@ -72,6 +93,7 @@ class SessionView(BaseModel):
     leader_reason: str | None
     closes_at: datetime | None
     init_edited_since_run: bool
+    backup: SessionBackup
 
 
 class InitScriptsIn(BaseModel):

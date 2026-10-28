@@ -176,12 +176,14 @@ async def _session_state(conn, session: repo.Session, settings) -> dict[str, Any
     agg = aggs.get(session.id) or {}
     rows = await views.agent_rows(conn, session.id)
     msgs = await views.list_messages(conn, session.id, None, _RECENT_MESSAGES, _DEFAULT_ATTEMPTS)
+    view = session_view(session, agg, settings).model_dump(mode="json")
     return {
-        "session": session_view(session, agg, settings).model_dump(mode="json"),
+        "session": view,
         "agents": {str(r["id"]): agent_view(r).model_dump(mode="json") for r in rows},
         "messages": {m["id"]: _message_view(m).model_dump(mode="json") for m in msgs},
         "queued": agg.get("queued", 0),
         "failed": agg.get("failed", 0),
+        "oldest_queued_at": view["summary"]["oldest_queued_at"],
     }
 
 
@@ -201,7 +203,8 @@ def _deltas(cid: str, old: dict[str, Any] | None, new: dict[str, Any]) -> list[S
             )
     old_msgs = old["messages"] if old else {}
     changed = [m for mid, m in new["messages"].items() if old_msgs.get(mid) != m]
-    counts_changed = old is None or (old["queued"], old["failed"]) != (new["queued"], new["failed"])
+    counts = ("queued", "failed", "oldest_queued_at")
+    counts_changed = old is None or any(old[k] != new[k] for k in counts)
     if changed or counts_changed:
         out.append(
             ServerSentEvent(
@@ -209,6 +212,7 @@ def _deltas(cid: str, old: dict[str, Any] | None, new: dict[str, Any]) -> list[S
                     "session_id": cid,
                     "queued": new["queued"],
                     "failed": new["failed"],
+                    "oldest_queued_at": new["oldest_queued_at"],
                     "messages": changed,
                 },
                 event="message_status",

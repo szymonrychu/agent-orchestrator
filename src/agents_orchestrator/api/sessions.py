@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from agents_orchestrator.api import schemas
 from agents_orchestrator.api.errors import ApiError, not_found
+from agents_orchestrator.cache.save_rule import save_skip
 from agents_orchestrator.db import agents as agents_repo
 from agents_orchestrator.db import leadership, presets, views
 from agents_orchestrator.db import sessions as repo
@@ -60,6 +61,30 @@ def _closes_at(session: repo.Session) -> datetime | None:
     return None if after is None else session.created_at + timedelta(seconds=after)
 
 
+def _last_backup(run: object) -> schemas.BackupRun | None:
+    if not isinstance(run, dict) or run.get("state") != "saved":
+        return None
+    return schemas.BackupRun(finished_at=run["finished_at"], bytes=run["bytes"])
+
+
+def _backup(session: repo.Session, settings: Settings) -> schemas.SessionBackup:
+    """What the discard would save, by the reconciler's own save rule (`save_skip`)."""
+    cache = session.status.get("cache")
+    cache = cache if isinstance(cache, dict) else {}
+    if session.spec.cache is None:
+        skips = ["no_session_cache"] * 2
+    elif not settings.cache_available:
+        skips = ["cache_not_configured"] * 2
+    else:
+        skips = [save_skip(True, cache, target) for target in ("workdir", "sessions")]
+    return schemas.SessionBackup(
+        workdir=skips[0] is None,
+        transcripts=skips[1] is None,
+        reason=next((s for s in skips if s is not None), None),
+        last_transcripts_backup=_last_backup(cache.get("sessions_save")),
+    )
+
+
 def _view(session: repo.Session, agg: dict | None, settings: Settings) -> schemas.SessionView:
     agg = agg or {}
     return schemas.SessionView(
@@ -83,6 +108,7 @@ def _view(session: repo.Session, agg: dict | None, settings: Settings) -> schema
         leader_reason=agg.get("leader_reason"),
         closes_at=_closes_at(session),
         init_edited_since_run=_init_edited(session),
+        backup=_backup(session, settings),
     )
 
 

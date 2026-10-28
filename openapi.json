@@ -184,6 +184,26 @@
         "title": "AutoCompact",
         "type": "object"
       },
+      "BackupRun": {
+        "description": "A finished transcripts save: when it finished and the archive size.",
+        "properties": {
+          "bytes": {
+            "title": "Bytes",
+            "type": "integer"
+          },
+          "finished_at": {
+            "format": "date-time",
+            "title": "Finished At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "finished_at",
+          "bytes"
+        ],
+        "title": "BackupRun",
+        "type": "object"
+      },
       "CheckAccepted": {
         "properties": {
           "check_id": {
@@ -2206,6 +2226,48 @@
         "title": "ScaleResult",
         "type": "object"
       },
+      "SessionBackup": {
+        "description": "What a discard would save now; each flag is true only when that save would really run.\n\n`reason` is null when both run, else `no_session_cache` (no `spec.cache`),\n`cache_not_configured` (no S3 cache configured) or the save's skip reason, the workdir's first.",
+        "properties": {
+          "last_transcripts_backup": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BackupRun"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "transcripts": {
+            "title": "Transcripts",
+            "type": "boolean"
+          },
+          "workdir": {
+            "title": "Workdir",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "workdir",
+          "transcripts",
+          "reason",
+          "last_transcripts_backup"
+        ],
+        "title": "SessionBackup",
+        "type": "object"
+      },
       "SessionMessageIn": {
         "additionalProperties": false,
         "properties": {
@@ -2557,6 +2619,18 @@
             "title": "Failed",
             "type": "integer"
           },
+          "oldest_queued_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Queued At"
+          },
           "queued": {
             "title": "Queued",
             "type": "integer"
@@ -2588,13 +2662,17 @@
           "context_pct_max",
           "auto_compact_pct",
           "queued",
-          "failed"
+          "failed",
+          "oldest_queued_at"
         ],
         "title": "SessionSummary",
         "type": "object"
       },
       "SessionView": {
         "properties": {
+          "backup": {
+            "$ref": "#/components/schemas/SessionBackup"
+          },
           "closes_at": {
             "anyOf": [
               {
@@ -2754,7 +2832,8 @@
           "leader_since",
           "leader_reason",
           "closes_at",
-          "init_edited_since_run"
+          "init_edited_since_run",
+          "backup"
         ],
         "title": "SessionView",
         "type": "object"

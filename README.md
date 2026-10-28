@@ -431,6 +431,10 @@ A restore reports `miss` on HTTP 404 from the presigned GET. S3 returns 404 for 
 
 Save never follows symlinks, skips sockets, FIFOs and device files, and skips every symlink whose target is absolute or resolves outside the workspace (for example a `.venv` interpreter link). The count is reported as `skipped_links`.
 
+### Transcripts
+
+The Claude transcripts of a cache-enabled session (the PVC subtree `sessions`, every agent pod's `/sessions`) are backed up as their own object `<ORCH_CACHE_S3_PREFIX>sessions/<slug>.tar.zst` by the same Jobs, in `agent-<slug>-sessions-restore|save`, recorded in `status.cache.sessions_restore` and `status.cache.sessions_save` with the run shape above. On a session's first converge with `spec.cache` set the restore runs before its agent pods start (the StatefulSet is held at zero replicas meanwhile), unless a pod or the StatefulSet of the session already exists (`skipped`, reason `pods_exist`) or the cache is not configured (`skipped`, reason `not_configured`); the agents then resume the restored wrapper sessions. At discard the transcripts save runs after the workdir save, by the workdir rule on `sessions_restore`, except that a session without a sessions restore record (older than the feature) or one skipped with `pods_exist` saves too. Without `spec.cache` or a configured cache nothing is backed up; the session view's `backup` says what a discard would save and `backup.last_transcripts_backup` is the last finished transcripts save.
+
 ### Job CLI
 
 The Jobs run `orch cache restore|save` with only these variables (no `ORCH_*`):
@@ -688,7 +692,7 @@ Response 201 with the session view. Errors: 422 `invalid_request` (bad slug, bot
 
 ### `GET /api/v1/sessions/{session_id}`
 
-One session view: `id`, `slug`, `spec`, `desired`, `status`, `generation`, `observed_generation`, `created_at`, `preset_id` (null for a raw-spec session or once the preset is deleted), `preset_name`, `summary` (`state` of `working`, `waiting`, `booting`, `error`, `deleting`; `ready`, `replicas`, `context_pct_max`, `auto_compact_pct`, `queued`, `failed`), `hive`, `max_replicas` (the cap), `static`, `leader_agent_id` and `leader_epoch` (both null for an alone session or before the first election), `leader_since` and `leader_reason` (when the current leader's term began and why it began: `initial`, `user`, `handover: <reason>`, `leader_lost`, `lease_expired`, `scale_down` or `compaction`; null without a leader), `closes_at` (`created_at` plus `spec.autoclose_after_seconds`, null when unset), and `init_edited_since_run` (same rule as `edited_since_run` of the init-scripts view; also in the list and the status stream). Response 200. Errors: 404 `not_found`.
+One session view: `id`, `slug`, `spec`, `desired`, `status`, `generation`, `observed_generation`, `created_at`, `preset_id` (null for a raw-spec session or once the preset is deleted), `preset_name`, `summary` (`state` of `working`, `waiting`, `booting`, `error`, `deleting`; `ready`, `replicas`, `context_pct_max`, `auto_compact_pct`, `queued`, `failed`, `oldest_queued_at`: the `created_at` of the session's oldest `queued` message, null when none is queued), `hive`, `max_replicas` (the cap), `static`, `leader_agent_id` and `leader_epoch` (both null for an alone session or before the first election), `leader_since` and `leader_reason` (when the current leader's term began and why it began: `initial`, `user`, `handover: <reason>`, `leader_lost`, `lease_expired`, `scale_down` or `compaction`; null without a leader), `closes_at` (`created_at` plus `spec.autoclose_after_seconds`, null when unset), `init_edited_since_run` (same rule as `edited_since_run` of the init-scripts view; also in the list and the status stream), and `backup`, what a discard would save now: `{"workdir": bool, "transcripts": bool, "reason": string or null, "last_transcripts_backup": {"finished_at", "bytes"} or null}`. Each flag is true only when the discard would really run that save (the reconciler's own save rule, see [Transcripts](#transcripts)): `spec.cache` is set, the cache is configured and the target's restore allows the save. `reason` is null when both run, else `no_session_cache` (no `spec.cache`, nothing is backed up), `cache_not_configured` (the orchestrator has no S3 cache, nothing is backed up) or the skip reason of the save (for example `restore_running`, `download_failed`, `restore_skipped`), the workdir's before the transcripts'. `last_transcripts_backup` is the `finished_at` and `bytes` of `status.cache.sessions_save` once it is `saved`, null otherwise. Response 200. Errors: 404 `not_found`.
 
 ### `DELETE /api/v1/sessions/{session_id}`
 
@@ -929,7 +933,7 @@ The `/sessions/{session_id}/events/stream` frames are named by the stored wrappe
 | `snapshot` | `/stream` | `{"sessions": [{"session": <session view>, "agents": [<agent view>]}]}`, sent once on connect |
 | `session_status` | `/stream` | `{"session": <session view>}` when a session changed |
 | `agent_status` | `/stream` | `{"session_id", "agent": <agent view>}` when an agent changed |
-| `message_status` | `/stream` | `{"session_id", "queued", "failed", "messages": [<changed message views>]}` |
+| `message_status` | `/stream` | `{"session_id", "queued", "failed", "oldest_queued_at", "messages": [<changed message views>]}`; `oldest_queued_at` as in the session `summary`, sent also when only it changed |
 | `session_removed` | `/stream` | `{"session_id"}` when a discard completed |
 | `leader_changed` | `/stream` | `{"session_id", "agent_id", "epoch", "reason"}` on NOTIFY `leader_changed`; the `session_status` and `agent_status` frames that follow carry the new leader |
 
