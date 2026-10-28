@@ -11,8 +11,10 @@ session, which the controller recreates on the new template:
 - never while its agent is busy (`BUSY`, the predicate the scale-down drain shares: state
   `busy`, or a message dispatched to it is still `dispatching` or `verifying`) or leads
   (`LEADS`). There is no deadline: a pod running a deploy is never rolled by that deploy (D2)
-- the leader last: once every other pod is current and an idle eligible member exists, a
-  `handover` request with reason `rollout` is queued from the leader; the dispatcher's pass
+- the leader last: once every other pod is current, the leader is idle (`BUSY`, so leadership
+  never moves mid-turn for a rollout, like the lease and compaction handovers) and an idle
+  eligible member exists, a `handover` request with reason `rollout` is queued from the leader,
+  the one request the reconciler inserts; the dispatcher's pass
   applies it like every handover, and the old leader's pod is deleted only once
   `session_leaders` names another agent. A session of one agent rolls its pod when idle.
 
@@ -21,9 +23,9 @@ test is read again; a message claimed between that read and the delete is retrie
 verify path, never dropped. The step reports `status.rollout`
 `{revision, pending, waiting, leader_pending}`, None once nothing is pending.
 
-Assumed, confirmed on a real cluster by orch-e2e-rollout-mid-turn: the controller labels every
-pod it creates `controller-revision-hash: <the ControllerRevision name>`, the name that
-`status.updateRevision` holds.
+Assumed, confirmed on a real Kubernetes cluster by orch-e2e-rollout-mid-turn: the controller
+labels every pod it creates `controller-revision-hash: <the ControllerRevision name>`, the name
+that `status.updateRevision` holds.
 """
 
 from __future__ import annotations
@@ -180,7 +182,7 @@ class Replacer:
         if idle:
             await self._delete(session, agents[idle[0]], pods[idle[0]], single)
             return
-        if not rollout.leader_pending or rollout.pending != [leader]:
+        if not rollout.leader_pending or rollout.pending != [leader] or leader in rollout.waiting:
             return
         if any(a["can_lead"] for o, a in agents.items() if o != leader):
             assert leader is not None

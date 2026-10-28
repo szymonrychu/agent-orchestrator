@@ -28,6 +28,7 @@ from lightkube.resources.core_v1 import (
     Secret,
     Service,
 )
+from lightkube.types import PatchType
 
 from agents_orchestrator.k8s.labels import MANAGED_BY, MANAGED_BY_LABEL, SESSION_LABEL
 
@@ -72,6 +73,10 @@ class KubeApi(Protocol):
 
     async def list_objects(self, kind: str, namespace: str, selector: Selector) -> list[Obj]:
         """Objects of `kind` matching every label of `selector`. Never called for Secrets."""
+        ...
+
+    async def merge_patch(self, kind: str, namespace: str, name: str, patch: Obj) -> Obj:
+        """JSON merge patch (RFC 7386, a null removes a field); returns the stored object."""
         ...
 
     async def delete(self, kind: str, namespace: str, name: str) -> bool:
@@ -160,6 +165,19 @@ class LightkubeApi:
                     res, namespace=namespace, labels=dict(selector) or None
                 )
             ]
+
+    async def merge_patch(self, kind: str, namespace: str, name: str, patch: Obj) -> Obj:
+        res = _resource(kind)
+        with _mapped():
+            out = await self.client.patch(
+                res,
+                name,
+                patch,
+                namespace=namespace,
+                patch_type=PatchType.MERGE,
+                field_manager=FIELD_MANAGER,
+            )
+        return out.to_dict()
 
     async def delete(self, kind: str, namespace: str, name: str) -> bool:
         res = _resource(kind)

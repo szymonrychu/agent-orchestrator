@@ -13,6 +13,7 @@ import inspect
 import uuid
 from datetime import UTC, datetime
 
+import pytest
 import pytest_asyncio
 from factories import insert_message, set_agent_status
 from fakes.fake_kube import FakeKube
@@ -22,7 +23,8 @@ from psycopg.types.json import Jsonb
 from agents_orchestrator.db import agents as agents_repo
 from agents_orchestrator.db import leadership, sessions
 from agents_orchestrator.db.sessions import Session
-from agents_orchestrator.k8s.render import render_session
+from agents_orchestrator.k8s.kube import KubeError
+from agents_orchestrator.k8s.render import HASH_ANNOTATION, render_session
 from agents_orchestrator.reconciler import Reconciler
 from agents_orchestrator.settings import Settings
 from agents_orchestrator.spec import SessionSpec
@@ -32,6 +34,7 @@ KEY = "k" * 32
 IMAGE = "harbor.example/containers/claude-code-wrapper:ca2ddf3"
 NS = "agents"
 REVISION = "controller-revision-hash"  # the label the StatefulSet controller puts on its pods
+TO_ON_DELETE = {"spec": {"updateStrategy": {"type": "OnDelete", "rollingUpdate": None}}}
 
 
 def make_settings(dsn: str = "postgresql://u:p@db/orch", **kw) -> Settings:
@@ -241,12 +244,18 @@ async def test_fake_kube_on_delete_revisions():
     assert revision_of("agent-x-1") == rev2
     assert "deletionTimestamp" not in kube.get("Pod", "agent-x-1")["metadata"]
 
-    # RollingUpdate keeps today's behaviour: no pod is recreated by a template change
+    # RollingUpdate, the API server's default with a defaulted partition: a template change
+    # makes the controller replace every pod at the update revision, recorded in `rolled`
     await kube.apply(_sts("agent-y", env="1", strategy=None))
+    assert kube.get("StatefulSet", "agent-y")["spec"]["updateStrategy"] == {
+        "type": "RollingUpdate",
+        "rollingUpdate": {"partition": 0},
+    }
     before = {p: kube.get("Pod", p)["metadata"]["uid"] for p in ("agent-y-0", "agent-y-1")}
     await kube.apply(_sts("agent-y", env="2", strategy="RollingUpdate"))
     rev = kube.get("StatefulSet", "agent-y")["status"]["updateRevision"]
-    assert {p: kube.get("Pod", p)["metadata"]["uid"] for p in before} == before
+    assert kube.rolled == ["agent-y-0", "agent-y-1"]
+    assert all(kube.get("Pod", p)["metadata"]["uid"] != uid for p, uid in before.items())
     assert [revision_of(p) for p in before] == [rev, rev]
 
     # a paused controller lags: neither the status nor the pods follow the new template
@@ -257,49 +266,120 @@ async def test_fake_kube_on_delete_revisions():
     assert sts["status"] == {"updateRevision": rev2, "observedGeneration": 2}
 
 
+async def test_fake_kube_strategy_patch_rolls_nothing():
+    kube = FakeKube(namespace=NS, pods_ready=True)
+
+    def revision_of(pod: str) -> str:
+        return kube.get("Pod", pod)["metadata"]["labels"][REVISION]
+
+    await kube.apply(_sts("agent-z", env="1", strategy=None))
+    rev1 = kube.get("StatefulSet", "agent-z")["status"]["updateRevision"]
+    uids = {p: kube.get("Pod", p)["metadata"]["uid"] for p in ("agent-z-0", "agent-z-1")}
+
+    # server-side apply keeps the defaulted, unowned partition next to OnDelete: rejected
+    with pytest.raises(KubeError, match="only allowed for updateStrategy 'RollingUpdate'"):
+        await kube.apply(_sts("agent-z", env="2"))
+    assert kube.get("StatefulSet", "agent-z")["spec"]["updateStrategy"]["type"] == "RollingUpdate"
+
+    # a strategy-only merge patch changes no template: the controller rolls nothing
+    out = await kube.merge_patch("StatefulSet", NS, "agent-z", TO_ON_DELETE)
+    sts = kube.get("StatefulSet", "agent-z")
+    assert out == sts and sts["spec"]["updateStrategy"] == {"type": "OnDelete"}
+    assert sts["status"]["updateRevision"] == rev1
+    assert sts["metadata"]["generation"] == sts["status"]["observedGeneration"] == 2
+    assert kube.patches == [("StatefulSet", "agent-z", TO_ON_DELETE)]
+
+    # from then on a template change leaves every pod where it was
+    await kube.apply(_sts("agent-z", env="2"))
+    assert kube.get("StatefulSet", "agent-z")["status"]["updateRevision"] != rev1
+    assert kube.rolled == []
+    assert {p: kube.get("Pod", p)["metadata"]["uid"] for p in uids} == uids
+    assert [revision_of(p) for p in uids] == [rev1, rev1]
+
+
 # ---------------------------------------------------------------- the deploy of this epic
 
 
-async def test_on_delete_switch_rides_the_template_apply(env):
-    """The release that switches to OnDelete also changes the template (D1, deploy note).
+def previous_release(env: Env, session: Session) -> tuple[dict, dict]:
+    """(previous, target): the session's StatefulSet as the release before OnDelete rendered it.
 
-    The previous release's StatefulSet has no updateStrategy (RollingUpdate by default) and an
-    older template. The one StatefulSet apply of the next tick carries OnDelete together with the
-    new template, so the controller replaces no pod: they stay on the old revision and only the
-    replacer rolls them, one idle pod at a time.
+    No updateStrategy (so RollingUpdate with a defaulted partition) and another config hash,
+    as the default `restart_continue_prompt` of this release changes every session's config.
     """
-    c = await env.session("alpha", replicas=3, max_replicas=3)
-    session = await env.get(c.id)
-    (previous,) = [
-        copy.deepcopy(o)
-        for o in render_session(session, env.settings, tokens_for(env.settings, c.id))
+    (target,) = [
+        o
+        for o in render_session(session, env.settings, tokens_for(env.settings, session.id))
         if o["kind"] == "StatefulSet"
     ]
+    previous = copy.deepcopy(target)
     del previous["spec"]["updateStrategy"]
-    previous["spec"]["template"]["metadata"]["annotations"] = {"previous": "release"}
+    previous["spec"]["template"]["metadata"]["annotations"][HASH_ANNOTATION] = "previous"
+    return previous, target
+
+
+async def test_rolling_update_statefulset_moves_to_on_delete_without_a_roll(env):
+    """The deploy that introduces OnDelete rolls no pod by the controller (D1, amended).
+
+    Before the apply the reconciler moves the live RollingUpdate StatefulSet to OnDelete with a
+    strategy-only merge patch, which changes no template; the apply then brings the new
+    template, the pods stay on the old revision and only the replacer rolls them, one idle pod
+    at a time.
+    """
+    c = await env.session("alpha", replicas=3, max_replicas=3)
+    previous, target = previous_release(env, await env.get(c.id))
     await env.kube.apply(previous)
+    assert env.kube.get("StatefulSet", "agent-alpha")["spec"]["updateStrategy"] == {
+        "type": "RollingUpdate",
+        "rollingUpdate": {"partition": 0},
+    }
     old = env.revision()
     uids = {i: env.uid(i) for i in range(3)}
     env.kube.reset_records()
     env.kube.pods_ready = False
 
     await env.tick()
-    applied = env.kube.applied("StatefulSet")
-    assert len(applied) == 1
-    (target,) = [
-        o
-        for o in render_session(session, env.settings, tokens_for(env.settings, c.id))
-        if o["kind"] == "StatefulSet"
-    ]
-    assert applied[0].obj == target
-    assert applied[0].obj["spec"]["updateStrategy"] == {"type": "OnDelete"}
+    assert env.kube.patches == [("StatefulSet", "agent-alpha", TO_ON_DELETE)]
+    assert env.kube.get("StatefulSet", "agent-alpha")["spec"]["updateStrategy"] == {
+        "type": "OnDelete"
+    }
+    assert [a.obj for a in env.kube.applied("StatefulSet")] == [target]
     new = env.revision()
     assert new != old
     # the controller replaced nothing; the replacer took exactly one idle pod
+    assert env.kube.rolled == []
     assert env.pod_deletes() == ["agent-alpha-0"]
     assert [env.pod_revision(i) for i in (1, 2)] == [old, old]
     assert [env.uid(i) for i in (1, 2)] == [uids[1], uids[2]]
     assert env.pod_revision(0) == new
+
+    for ordinal in range(3):
+        env.ready(ordinal)
+        await env.tick()
+    assert env.pod_deletes() == ["agent-alpha-0", "agent-alpha-1", "agent-alpha-2"]
+    assert [env.pod_revision(i) for i in range(3)] == [new, new, new]
+    assert await env.rollout(c.id) is None
+    # an OnDelete StatefulSet is never patched again, and the controller still rolled nothing
+    assert env.kube.patches == [("StatefulSet", "agent-alpha", TO_ON_DELETE)]
+    assert env.kube.rolled == []
+
+
+async def test_discard_moves_a_rolling_update_statefulset_before_scaling_down(pool, dsn):
+    # a session discarded across the deploy: the quiesce scale-down moves it to OnDelete first
+    env = Env(pool, dsn, discard_hook_command="true", discard_drain_seconds=0)
+    c = await env.session("alpha", replicas=2)
+    previous, _ = previous_release(env, await env.get(c.id))
+    await env.kube.apply(previous)
+    env.kube.reset_records()
+    env.kube.controller_paused = True  # the pods linger, so the discard stays in its quiesce
+    async with env.pool.connection() as conn:
+        await sessions.request_delete(conn, c.id)
+
+    await env.tick()
+    sts = env.kube.get("StatefulSet", "agent-alpha")
+    assert env.kube.patches == [("StatefulSet", "agent-alpha", TO_ON_DELETE)]
+    assert sts["spec"]["updateStrategy"] == {"type": "OnDelete"}
+    assert sts["spec"]["replicas"] == 0
+    assert env.kube.rolled == []
 
 
 # ---------------------------------------------------------------- the replacer
@@ -452,6 +532,35 @@ async def test_leader_rolled_last_after_handover(env):
     assert await env.rollout(c.id) is None
     rows = await env.rows("SELECT agent_id FROM session_leaders WHERE session_id = %s", (c.id,))
     assert rows == [{"agent_id": change.agent_id}]
+
+
+async def test_rollout_handover_waits_for_an_idle_leader(env):
+    # like the lease and compaction handovers: leadership never moves mid-turn for a rollout
+    c, agents, _ = await rolling(env, replicas=2)
+    await lead(env, c.id, agents[0].id)
+    await env.tick()
+    assert env.pod_deletes() == ["agent-alpha-1"]
+    env.ready(1)
+
+    await set_agent_status(env.pool, agents[0].id, state="busy")
+    await env.tick(3)
+    assert await env.handovers(c.id) == []
+    rollout = await env.rollout(c.id)
+    assert rollout is not None and rollout["leader_pending"] is True
+    assert (rollout["pending"], rollout["waiting"]) == ([0], [0])
+
+    # a message still dispatching to the leader holds it the same way
+    await set_agent_status(env.pool, agents[0].id, state="idle")
+    held = await insert_message(env.pool, c.id, status="dispatching", agent_id=agents[0].id)
+    await env.tick(2)
+    assert await env.handovers(c.id) == []
+
+    await env.execute("UPDATE messages SET status = 'sent' WHERE id = %s", (held["id"],))
+    await env.tick()
+    assert [r["reason"] for r in await env.handovers(c.id)] == ["rollout"]
+    await env.tick(2)  # queued once
+    assert [r["reason"] for r in await env.handovers(c.id)] == ["rollout"]
+    assert env.pod_deletes() == ["agent-alpha-1"]
 
 
 async def test_leader_held_without_idle_eligible_member(env):

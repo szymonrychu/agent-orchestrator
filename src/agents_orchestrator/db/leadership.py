@@ -7,7 +7,10 @@ out (`lease_expired`, at its turn boundary). Every pick is restricted to agents 
 (`ordinal < spec.replicas`). A dead agent (`agent_status.state`) never leads: it is not
 eligible, and a leader whose agent is dead is a lost leader (D4).
 
-The api only inserts `leadership_requests` rows (status `queued`) and reads the leader record.
+The api and the reconciler only insert `leadership_requests` rows (status `queued`) and read the
+leader record: the api the agents' handovers and the user overrides, the reconciler one
+`handover` with reason `rollout` from an idle leader whose pod a rollout replaces next
+(`reconciler/rollout.py`).
 `session_leaders` and every request decision belong to the dispatcher, through
 `leadership_pass`, which runs under the per-session claim lock of `db/queue.py` so a leader
 change and a message claim never interleave.

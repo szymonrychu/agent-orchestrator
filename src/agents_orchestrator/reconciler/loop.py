@@ -7,6 +7,8 @@ shared with the orchestrator's own objects (D26). The guards that keep the recon
   the session label are ever deleted
 - before applying a StatefulSet, Service, ConfigMap or PVC it reads the object; one that exists
   without both labels is foreign, and then nothing of that session is applied
+- a live StatefulSet whose updateStrategy is not OnDelete is moved there by a strategy-only
+  merge patch before it is applied (`_apply`, D1)
 - Secrets are never read or listed: the session Secret is applied with the rest and deleted by
   its deterministic name
 
@@ -54,6 +56,11 @@ PRUNE_ORDER = ("StatefulSet", "Service", "ConfigMap", "PersistentVolumeClaim")
 # A discard also deletes the check, init and cache Jobs, ahead of the PVC they mount. A converge
 # never prunes them: they are created per check and once per session, not rendered.
 DISCARD_ORDER = ("Job", *PRUNE_ORDER)
+
+# Moves a live StatefulSet to OnDelete. A RollingUpdate one carries a defaulted, unowned
+# `rollingUpdate.partition` that a server-side apply would keep next to `type: OnDelete`, which
+# the API server rejects; the patch changes no template, so the controller rolls no pod (D1).
+TO_ON_DELETE: Obj = {"spec": {"updateStrategy": {"type": "OnDelete", "rollingUpdate": None}}}
 
 _HOOK_FAILURE_KEYS = ("discard_hook_failed", "discard_hook_failures", "discard_hook_next_at")
 
@@ -253,7 +260,7 @@ class Reconciler:
         for obj in objs:
             if sessions_gate.hold and obj["kind"] == "StatefulSet":
                 obj = {**obj, "spec": {**obj["spec"], "replicas": 0}}
-            await self.kube.apply(obj, field_manager=FIELD_MANAGER, force=True)
+            await self._apply(obj)
         desired = {(o["kind"], o["metadata"]["name"]) for o in objs}
         await self._prune(slug, desired)
         cache_gate = await self.cache.restore_step(session)
@@ -293,6 +300,17 @@ class Reconciler:
         log.debug("session %s in %s: %s", slug, ns, phase)
         drop = (*(() if draining else ("drain",)), *(() if rollout else ("rollout",)))
         await self._write_status(session, fields, session.generation, drop=drop)
+
+    async def _apply(self, obj: Obj) -> None:
+        """Server-side apply; a live StatefulSet not on OnDelete is first moved there."""
+        if obj["kind"] == "StatefulSet":
+            ns, name = self.settings.namespace, obj["metadata"]["name"]
+            live = await self.kube.get_object("StatefulSet", ns, name)
+            strategy = ((live or {}).get("spec") or {}).get("updateStrategy") or {}
+            if live is not None and strategy.get("type") != "OnDelete":
+                log.info("statefulset %s: moving to updateStrategy OnDelete", name)
+                await self.kube.merge_patch("StatefulSet", ns, name, TO_ON_DELETE)
+        await self.kube.apply(obj, field_manager=FIELD_MANAGER, force=True)
 
     async def _draining(self, session_id: UUID, replicas: int) -> list[tuple[int, bool]]:
         """(ordinal, busy) of each agent at or above `replicas` that is not gone (D3).
@@ -494,7 +512,7 @@ class Reconciler:
             ):
                 if obj["kind"] == "StatefulSet":
                     obj["spec"]["replicas"] = 0
-                    await self.kube.apply(obj, field_manager=FIELD_MANAGER, force=True)
+                    await self._apply(obj)
 
         running = sorted(
             p["metadata"]["name"]

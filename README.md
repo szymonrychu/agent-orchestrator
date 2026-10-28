@@ -629,7 +629,7 @@ Plain SQL migrations (`src/agents_orchestrator/db/migrations`), psycopg 3, no OR
 | `turns` | one row per wrapper turn: origin, start, completion, status, final text, usage |
 | `events` | every stored wrapper event; UNIQUE(agent_id, wrapper_session_id, seq), where wrapper_session_id is the claude-code-wrapper's own session id; the global bigserial id is the SSE id and the page cursor |
 | `commands` | queue: `interrupt`, `compact`, `restart`, `rebootstrap` with status and result |
-| `leadership_requests` | queue: `handover` (from the leader) or `user` requests with target agent, epoch, status (`queued`, `applied`, `rejected`); the api inserts, the dispatcher decides |
+| `leadership_requests` | queue: `handover` (from the leader) or `user` requests with target agent, epoch, status (`queued`, `applied`, `rejected`); the api inserts, and the reconciler a `rollout` handover from an idle leader; the dispatcher decides |
 | `session_leaders` | one row per hive: leader agent, `epoch`, `since`, `reason` (`initial`, `user`, `handover: <reason>`, `leader_lost`, `lease_expired`, `scale_down`, `compaction`), `unready_since`, feed cursor and pushed hive-state hash; the dispatcher is the only writer (see Leadership) |
 | `checks` | queue: a shell command run as a Kubernetes Job; exit code and log tail |
 
