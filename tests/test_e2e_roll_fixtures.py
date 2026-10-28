@@ -1,0 +1,120 @@
+"""The files the kind roll-mid-turn e2e depends on (orch-e2e-rollout-mid-turn, design D11).
+
+tests/e2e/test_e2e_kind.py rolls the agent image while a long turn runs. It needs a long
+scenario turn of its own (the 4 s "slow" turn other tests rely on stays as it is), a turn that
+answers the default restart continue prompt, a second image tag the kind node can pull, and an api
+port-forward that survives the api pod being replaced by the helm upgrade. None of that can be
+exercised without kind, so these checks pin the pieces the e2e reads.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import re
+import sys
+from functools import cache
+from pathlib import Path
+from types import ModuleType
+from typing import Any
+
+import yaml
+
+from agents_orchestrator.settings import Settings
+
+ROOT = Path(__file__).resolve().parents[1]
+SCENARIO = ROOT / "e2e" / "agent-test.scenario.json"
+SCRIPT = ROOT / "scripts" / "e2e.sh"
+VALUES = ROOT / "e2e" / "values-kind.yaml"
+MARATHON_MIN_SECONDS = 300  # the roll (helm upgrade, reconciler restart) plus the checks
+
+
+@cache
+def e2e_module() -> ModuleType:
+    path = ROOT / "tests" / "e2e" / "test_e2e_kind.py"
+    spec = importlib.util.spec_from_file_location("e2e_kind_constants", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # dataclasses resolve their string annotations through it
+    spec.loader.exec_module(module)
+    return module
+
+
+def turns() -> list[dict[str, Any]]:
+    return json.loads(SCENARIO.read_text())["turns"]
+
+
+def turn_for(prompt: str) -> dict[str, Any] | None:
+    """The turn the wrapper's fake claude runs for `prompt`: the first whose regex matches."""
+    return next((t for t in turns() if re.search(t["match"], prompt)), None)
+
+
+def slept(turn: dict[str, Any]) -> float:
+    return sum(step["sleep"] for step in turn["steps"] if "sleep" in step)
+
+
+def test_slow_turn_keeps_its_four_seconds() -> None:
+    slow = next(t for t in turns() if t["match"] == "slow")
+    assert {"sleep": 4} in slow["steps"]
+    turn = turn_for(e2e_module().SLOW_PROMPT.format(n=1))
+    assert turn is slow or turn == slow
+
+
+def test_marathon_turn_outlasts_the_roll() -> None:
+    module = e2e_module()
+    turn = turn_for(module.MARATHON_PROMPT.format(n=1))
+    assert turn is not None and turn["match"] == "marathon", turn
+    assert slept(turn) >= MARATHON_MIN_SECONDS, turn
+    assert module.marathon_seconds() == slept(turn)
+
+
+def test_no_other_prompt_runs_the_marathon_turn() -> None:
+    module = e2e_module()
+    default_continue = Settings.model_fields["default_restart_continue_prompt"].default
+    for prompt in (
+        module.SLOW_PROMPT.format(n=1),
+        module.COMPACT_PROMPT,
+        module.WRITE_PROMPT,
+        "say hello",
+        default_continue,
+    ):
+        turn = turn_for(prompt)
+        assert turn is None or turn["match"] != "marathon", prompt
+
+
+def test_default_continue_prompt_completes_a_continued_turn() -> None:
+    prompt = Settings.model_fields["default_restart_continue_prompt"].default
+    turn = turn_for(prompt)
+    assert turn is not None, "the continue prompt would run the fake's default echo turn"
+    assert turn["match"] != "slow" and slept(turn) < 10, turn
+    assert any("text" in step for step in turn["steps"]), turn
+
+
+def test_scenario_keeps_at_least_five_turns() -> None:
+    assert len(turns()) >= 5
+
+
+def test_values_allow_both_agent_images() -> None:
+    values = yaml.safe_load(VALUES.read_text())
+    allowed = set(values["env"]["ORCH_AGENT_IMAGES"].split(","))
+    assert {values["agentImage"], e2e_module().AGENT_IMAGE_NEXT} <= allowed, allowed
+    assert values["agentImage"] != e2e_module().AGENT_IMAGE_NEXT
+
+
+def test_script_tags_loads_and_exports_the_second_image() -> None:
+    text = SCRIPT.read_text()
+    next_image = e2e_module().AGENT_IMAGE_NEXT
+    assert f"AGENT_IMAGE_NEXT={next_image}" in text
+    assert 'docker tag "$AGENT_IMAGE" "$AGENT_IMAGE_NEXT"' in text
+    assert 'load_image "$AGENT_IMAGE"' in text
+    assert 'load_image "$AGENT_IMAGE_NEXT"' in text
+    assert '"ORCH_E2E_AGENT_IMAGE_NEXT=$AGENT_IMAGE_NEXT"' in text
+
+
+def test_script_port_forward_reconnects() -> None:
+    """The helm upgrade replaces the api pod, which ends a port-forward bound to it."""
+    text = SCRIPT.read_text()
+    assert "port_forward &" in text
+    body = text.split("port_forward() {", 1)[1].split("\n}\n", 1)[0]
+    assert "while true" in body and 'port-forward "svc/$RELEASE"' in body, body
+    assert "trap" in body, "the loop must take its kubectl child down with it"

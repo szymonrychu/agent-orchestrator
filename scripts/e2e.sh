@@ -25,6 +25,8 @@ NS=agents
 RELEASE=agents-orchestrator
 ORCH_IMAGE=agents-orchestrator:e2e
 AGENT_IMAGE=agents-orchestrator-agent-test:e2e
+# a second tag of the same image: the roll-mid-turn e2e upgrades the release to it
+AGENT_IMAGE_NEXT=agents-orchestrator-agent-test:e2e-next
 PORT="${E2E_PORT:-18080}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/orch-e2e.XXXXXX")"
 export KUBECONFIG="$WORK/kubeconfig"
@@ -246,10 +248,12 @@ mkdir -p "$WORK/agent-context/e2e"
 cp e2e/agent-test.scenario.json "$WORK/agent-context/e2e/"
 docker build -f e2e/agent-test.Dockerfile --build-arg "BASE_IMAGE=$BASE" \
   -t "$AGENT_IMAGE" "$WORK/agent-context"
+docker tag "$AGENT_IMAGE" "$AGENT_IMAGE_NEXT"
 
 log "loading images into kind"
 load_image "$ORCH_IMAGE"
 load_image "$AGENT_IMAGE"
+load_image "$AGENT_IMAGE_NEXT"
 
 log "probing a ReadWriteMany StorageClass"
 STORAGE_CLASS="$(choose_rwx_storage_class)"
@@ -276,8 +280,22 @@ helm install "$RELEASE" chart/agents-orchestrator -n "$NS" -f e2e/values-kind.ya
 log "helm test $RELEASE"
 helm test "$RELEASE" -n "$NS" --timeout 5m
 
+# A helm upgrade replaces the api pod, which ends a port-forward bound to it (the roll-mid-turn
+# e2e upgrades the release), so the forward is re-established until the script exits. The
+# TERM trap takes the running kubectl down with the loop.
+port_forward() {
+  local child=""
+  trap 'if [ -n "$child" ]; then kill "$child" 2>/dev/null; fi; exit 0' TERM
+  while true; do
+    kubectl -n "$NS" port-forward "svc/$RELEASE" "$PORT:80" >>"$WORK/port-forward.log" 2>&1 &
+    child=$!
+    wait "$child" || true
+    sleep 1
+  done
+}
+
 log "port-forwarding svc/$RELEASE to 127.0.0.1:$PORT"
-kubectl -n "$NS" port-forward "svc/$RELEASE" "$PORT:80" >"$WORK/port-forward.log" 2>&1 &
+port_forward &
 PF_PID=$!
 for _ in $(seq 1 60); do
   if curl -fsS "http://127.0.0.1:$PORT/api/v1/meta" >/dev/null 2>&1; then break; fi
@@ -290,6 +308,7 @@ E2E_ENV=(
   "ORCH_E2E_NAMESPACE=$NS"
   "ORCH_E2E_RELEASE=$RELEASE"
   "ORCH_E2E_KUBE_CONTEXT=kind-$KIND_CLUSTER"
+  "ORCH_E2E_AGENT_IMAGE_NEXT=$AGENT_IMAGE_NEXT"
 )
 
 if [ -n "${E2E_HOLD_FILE:-}" ]; then
