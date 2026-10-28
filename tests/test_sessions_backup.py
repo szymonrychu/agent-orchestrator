@@ -28,7 +28,7 @@ from agents_orchestrator.k8s import labels, render
 from agents_orchestrator.k8s.labels import object_names
 from agents_orchestrator.reconciler import cache as cache_mod
 from agents_orchestrator.reconciler.cache import CACHE_LABEL, job_name, render_cache_job
-from agents_orchestrator.spec import CACHE_KEY_RE
+from agents_orchestrator.spec import CACHE_KEY_RE, SESSIONS_EXCLUDE
 
 SESSIONS_SAVE = job_name("alpha", "save", "sessions")
 
@@ -70,7 +70,7 @@ def test_sessions_save_job_render():
 
     env = _env(job)
     assert env["CACHE_DIR"] == render.SESSIONS_ROOT == "/sessions"
-    assert env["CACHE_EXCLUDE"] == "[]"
+    assert json.loads(env["CACHE_EXCLUDE"]) == list(SESSIONS_EXCLUDE)
     assert {k: v for k, v in env.items() if k not in ("CACHE_DIR", "CACHE_EXCLUDE")} == {
         k: v for k, v in _env(workdir).items() if k not in ("CACHE_DIR", "CACHE_EXCLUDE")
     }

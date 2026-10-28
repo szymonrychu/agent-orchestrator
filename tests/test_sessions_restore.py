@@ -17,6 +17,7 @@ from agents_orchestrator.k8s import labels, render
 from agents_orchestrator.k8s.labels import object_names, session_labels
 from agents_orchestrator.reconciler import cache as cache_mod
 from agents_orchestrator.reconciler.cache import CACHE_LABEL, job_name, render_cache_job
+from agents_orchestrator.spec import SESSIONS_EXCLUDE
 
 pytestmark = pytest.mark.asyncio
 
@@ -160,7 +161,8 @@ async def test_sessions_restore_job_render(env, monkeypatch):
     assert [v["name"] for v in pod_of(job)["volumes"]] == [render.WORKSPACE_VOLUME, "tmp"]
 
     env_vars = _env(job)
-    assert env_vars["CACHE_DIR"] == "/sessions" and env_vars["CACHE_EXCLUDE"] == "[]"
+    assert env_vars["CACHE_DIR"] == "/sessions"
+    assert json.loads(env_vars["CACHE_EXCLUDE"]) == list(SESSIONS_EXCLUDE)
     # exactly one URL: the presigned GET of <prefix>sessions/<slug>.tar.zst
     urls = [v for v in env_vars.values() if "://" in v]
     assert urls == [env_vars["CACHE_URL"]]
