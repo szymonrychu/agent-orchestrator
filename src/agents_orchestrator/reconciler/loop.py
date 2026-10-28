@@ -60,6 +60,18 @@ WrapperFactory = Callable[[str, str], Any]
 """(base_url, auth_token) -> wrapper client; used by session bootstrap."""
 
 
+def _agent_pods(slug: str, pods: list[Obj]) -> list[str]:
+    """The names of the session's own agent pods (`agent-<slug>-<ordinal>`), never a Job's."""
+    base = prefix(slug) + "-"
+    return [
+        p["metadata"]["name"]
+        for p in pods
+        if is_owned(p, slug)
+        and p["metadata"]["name"].startswith(base)
+        and p["metadata"]["name"][len(base) :].isdigit()
+    ]
+
+
 class Reconciler:
     def __init__(
         self,
@@ -233,7 +245,15 @@ class Reconciler:
             )
             return
 
+        # The Claude transcripts are restored before any agent pod starts: the StatefulSet stays
+        # at zero replicas until that restore has an outcome (D7). It comes first, so a crash
+        # after the StatefulSet apply never reads as a session whose pods already existed.
+        session, sessions_gate = await self.cache.sessions_restore_step(
+            session, lambda: self._agents_exist(slug)
+        )
         for obj in objs:
+            if sessions_gate.hold and obj["kind"] == "StatefulSet":
+                obj = {**obj, "spec": {**obj["spec"], "replicas": 0}}
             await self.kube.apply(obj, field_manager=FIELD_MANAGER, force=True)
         desired = {(o["kind"], o["metadata"]["name"]) for o in objs}
         await self._prune(slug, desired)
@@ -249,11 +269,12 @@ class Reconciler:
             phase = "pending" if ready == 0 else "degraded"
             message = f"{ready} of {replicas} pods ready"
         problems: list[str] = []
-        if gate.hold or cache_gate.hold:  # sessions wait for the restore and the init run
+        gates = (sessions_gate, cache_gate, gate)
+        if any(g.hold for g in gates):  # sessions wait for the restores and the init run
             phase = "pending"
         else:
             problems = await self._bootstrap_wrapper_sessions(session)
-            if gate.degraded or cache_gate.degraded:  # a failed restore or init starts them anyway
+            if any(g.degraded for g in gates):  # a failed restore or init starts them anyway
                 phase = "degraded"
         fields: dict[str, Any] = {"phase": phase, "ready": ready, "replicas": replicas}
         drain = ""
@@ -265,7 +286,7 @@ class Reconciler:
             }
             drain = f"draining {len(draining)} agents"
         fields["message"] = "; ".join(
-            filter(None, [message, drain, cache_gate.message, gate.message, *problems])
+            filter(None, [message, drain, *(g.message for g in gates), *problems])
         )
         log.debug("session %s in %s: %s", slug, ns, phase)
         await self._write_status(
@@ -328,6 +349,13 @@ class Reconciler:
             ]
         token = tokens_for(self.settings, session.id).auth
         return await self.bootstrapper.bootstrap_many(agents, session.spec, token)
+
+    async def _agents_exist(self, slug: str) -> bool:
+        """The session's StatefulSet or one of its agent pods exists."""
+        ns = self.settings.namespace
+        if await self.kube.get_object("StatefulSet", ns, object_names(slug)["statefulset"]):
+            return True
+        return bool(_agent_pods(slug, await self.kube.list_pods(ns, session_labels(slug))))
 
     async def _foreign(self, slug: str, objs: list[Obj]) -> list[str]:
         """`foreign_object <kind>/<name>` for each rendered name held by an unlabelled object."""
@@ -479,12 +507,7 @@ class Reconciler:
                     obj["spec"]["replicas"] = 0
                     await self.kube.apply(obj, field_manager=FIELD_MANAGER, force=True)
 
-        base = prefix(slug) + "-"
-        running = [
-            p["metadata"]["name"]
-            for p in await self.kube.list_pods(ns, session_labels(slug))
-            if is_owned(p, slug) and p["metadata"]["name"][len(base) :].isdigit()
-        ]
+        running = _agent_pods(slug, await self.kube.list_pods(ns, session_labels(slug)))
         timed_out = (now - started).total_seconds() >= self.settings.discard_quiesce_timeout_seconds
         if running and not timed_out:
             fields["message"] = "waiting for agent pods to stop: " + ", ".join(sorted(running))

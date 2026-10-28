@@ -144,7 +144,7 @@ def test_sessions_object_name_distinct_from_cache_keys():
 
 
 class SessionsEnv(SaveEnv):
-    """SaveEnv whose sessions carry no sessions restore record, so the transcripts save runs."""
+    """SaveEnv whose sessions carry a `miss` sessions restore record: the transcripts save runs."""
 
     def __init__(self, pool, dsn, **settings) -> None:
         super().__init__(pool, dsn, **settings)
@@ -162,13 +162,16 @@ class SessionsEnv(SaveEnv):
     async def session(self, slug: str = "alpha", cache: bool = True, **spec):
         return await Env.session(self, slug, cache, **spec)
 
-    async def patch_cache(self, session_id, key: str, value: dict) -> None:
+    async def patch_cache(self, session_id, key: str, value: dict | None) -> None:
         from agents_orchestrator.db import sessions
 
         async with self.pool.connection() as conn:
             c = await sessions.get(conn, session_id)
             status = dict(c.status)
-            status["cache"] = {**status["cache"], key: value}
+            cache = {**status["cache"], key: value}
+            if value is None:  # no record at all: a session older than the transcripts backup
+                del cache[key]
+            status["cache"] = cache
             await sessions.set_status(conn, session_id, status, c.observed_generation)
 
     async def workdir_saved(self, c) -> None:
@@ -341,8 +344,7 @@ async def test_no_sessions_save_without_session_cache(env, pool, dsn):
 )
 async def test_sessions_save_skip_rules(env, restore, skip):
     c = await env.ready()
-    if restore is not None:
-        await env.patch_cache(c.id, "sessions_restore", restore)
+    await env.patch_cache(c.id, "sessions_restore", restore)
     await env.workdir_saved(c)
     if skip is None:
         assert env.creates(SESSIONS_SAVE) == 1

@@ -9,6 +9,11 @@ transcripts: Jobs `agent-<slug>-sessions-restore|save` mount the PVC subPath `se
 `status.cache.sessions_restore|sessions_save`. A target changes only the mount, `CACHE_DIR`,
 `CACHE_EXCLUDE`, the object, the Job name, the cache label and the status key.
 
+The transcripts restore runs once, on a session's first converge with `spec.cache` set, before
+its agent pods start (the StatefulSet is held at `replicas: 0` meanwhile). It never runs once
+the session's StatefulSet or an agent pod exists: that records `skipped`/`pods_exist`, and a
+cache that is not configured records `skipped`/`not_configured`; neither creates a Job.
+
 The S3 credentials stay in the reconciler: the Job gets exactly one presigned, expiring URL in
 `CACHE_URL` and no Secret, `spec.env`, `envFrom` or service account token: it runs as
 `ORCH_AGENT_SERVICE_ACCOUNT` with no token mounted, as every Job does (D4). The pod is
@@ -28,7 +33,8 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, Literal, get_args
 
@@ -219,19 +225,20 @@ class CacheGate:
     message: str = ""
 
     @classmethod
-    def of(cls, cache: dict[str, Any] | None, enabled: bool) -> CacheGate:
+    def of(
+        cls, cache: dict[str, Any] | None, enabled: bool, target: CacheTarget = "workdir"
+    ) -> CacheGate:
         if not enabled:
             return cls()
-        restore = (cache or {}).get("restore")
+        op = CacheOp("restore", target)
+        restore = (cache or {}).get(op.status_key)
         state = (restore or {}).get("state")
         if restore is None or state == "running":
-            return cls(hold=True, message="cache restore running")
+            return cls(hold=True, message=f"{op.title} running")
         if state == "failed":
             reason = restore.get("reason")
-            return cls(
-                degraded=True,
-                message=f"cache restore failed: {reason}" if reason else "cache restore failed",
-            )
+            failed = f"{op.title} failed"
+            return cls(degraded=True, message=f"{failed}: {reason}" if reason else failed)
         return cls()
 
 
@@ -296,6 +303,41 @@ class CacheRunner:
             await self._delete_job(session, op)  # crashed between the outcome and the delete
         return CacheGate.of({"restore": restore}, True)
 
+    async def sessions_restore_step(
+        self, session: Session, agents_exist: Callable[[], Awaitable[bool]]
+    ) -> tuple[Session, CacheGate]:
+        """Advance the one transcripts restore by at most one transition, before the pods start.
+
+        Returns the session carrying the run (so a later step of the tick keeps it) and the gate:
+        `hold` keeps the StatefulSet at zero replicas, `degraded` starts it after a failure. On
+        the first converge with `spec.cache` set, `agents_exist` decides: the session's
+        StatefulSet or an agent pod already exists, so the pods wrote their own transcripts and
+        no restore may replace them (`skipped`/`pods_exist`). An unconfigured cache records
+        `skipped`/`not_configured`. Otherwise the Job restores `<prefix>sessions/<slug>.tar.zst`.
+        """
+        if session.spec.cache is None:
+            return session, CacheGate()
+        op = CacheOp("restore", "sessions")
+        cache = session.status.get("cache") or {}
+        restore = cache.get(op.status_key)
+        if restore is None:
+            skip = PODS_EXIST if await agents_exist() else None
+            if skip is None and not self.settings.cache_available:
+                skip = "not_configured"
+            if skip is None:
+                restore = await self._begin(session, op)
+            else:
+                restore = {"state": "skipped", "reason": skip}
+                await self._write(session, cache, op, restore)
+                log.info("%s of session %s skipped: %s", op.title, session.slug, skip)
+        elif restore.get("state") == "running":
+            restore = await self._observe(session, cache, op, restore)
+        elif restore.get("job"):
+            await self._delete_job(session, op)  # crashed between the outcome and the delete
+        status = {**session.status, "cache": {**cache, op.status_key: restore}}
+        gate = CacheGate.of(status["cache"], True, "sessions")
+        return replace(session, status=status), gate
+
     async def save_step(self, session: Session, target: CacheTarget = "workdir") -> bool:
         """Advance the one save run of `target` by at most one transition; True lets the discard on.
 
@@ -329,11 +371,10 @@ class CacheRunner:
         return session.spec.cache is not None and (save is None or save.get("state") == "running")
 
     def _skip_save(self, cache: dict[str, Any], target: CacheTarget) -> str | None:
-        restore = cache.get(CacheOp("restore", target).status_key)
-        skip = None if _pods_wrote_sessions(restore, target) else _restore_skip(restore)
-        if skip is None and not self.settings.cache_available:
+        if not self.settings.cache_available:
             return "not_configured"
-        return skip
+        restore = cache.get(CacheOp("restore", target).status_key)
+        return None if _pods_wrote_sessions(restore, target) else _restore_skip(restore)
 
     # ------------------------------------------------------------------ transitions
 

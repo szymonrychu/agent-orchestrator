@@ -30,6 +30,14 @@ KEY = "k" * 32
 CACHE_KEY = "preset-0123456789abcdef"
 RESTORE = restore_job_name("alpha")
 INIT = init_job_name("alpha")
+SESSIONS_MISS = {
+    "state": "miss",
+    "started_at": "2026-10-28T00:00:00+00:00",
+    "finished_at": "2026-10-28T00:00:01+00:00",
+    "bytes": None,
+    "reason": None,
+    "job": None,
+}
 
 
 def line(outcome: str, nbytes: int | None = None, reason: str | None = None) -> str:
@@ -59,7 +67,8 @@ class Env:
     def _factory(self, url: str, token: str):
         return WrapperClient(self.fake.base_url, token)
 
-    async def session(self, slug: str = "alpha", cache: bool = True, **spec):
+    async def create(self, slug: str = "alpha", cache: bool = True, **spec):
+        """A new session row, with the workspace cache unless `cache` is False."""
         if cache:
             spec["cache"] = {"key": CACHE_KEY}
         async with self.pool.connection() as conn:
@@ -67,6 +76,19 @@ class Env:
         if self.fake is not None:
             self.fake.token = tokens_for(self.settings, c.id).auth
         return c
+
+    async def session(self, slug: str = "alpha", cache: bool = True, **spec):
+        """A session whose Claude transcripts restore already found no object (`miss`).
+
+        Its pods then wait for the workdir restore alone, which this suite tests; the
+        transcripts restore is pinned by tests/test_sessions_restore.py.
+        """
+        c = await self.create(slug, cache, **spec)
+        if not cache:
+            return c
+        status = {**c.status, "cache": {"sessions_restore": SESSIONS_MISS}}
+        async with self.pool.connection() as conn:
+            return await sessions.set_status(conn, c.id, status, c.observed_generation)
 
     async def tick(self, times: int = 1) -> None:
         for _ in range(times):
