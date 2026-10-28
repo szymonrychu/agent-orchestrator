@@ -41,13 +41,36 @@ def test_chart_job_on_every_push():
     assert any("mise-action" in s.get("uses", "") for s in job["steps"])
 
 
+GATE = {"lint", "test", "e2e"}
+
+
+def test_image_push_needs_lint_test_e2e():
+    job = _ci()["jobs"]["images"]
+    assert set(job["needs"]) >= GATE
+    pushing = [s for s in job["steps"] if "regctl image import" in s.get("run", "")]
+    assert len(pushing) == 1
+    assert pushing[0]["if"] == "github.event_name == 'push' && github.ref == 'refs/heads/main'"
+    for step in job["steps"]:
+        if "registry login" in step.get("run", ""):
+            assert step["if"] == pushing[0]["if"]
+
+
+def test_e2e_does_not_need_pushed_image():
+    jobs = _ci()["jobs"]
+    assert "images" not in jobs["e2e"]["needs"]
+    assert "containers/agents-orchestrator" not in str(jobs["e2e"])
+    script = (ROOT / "scripts/e2e.sh").read_text()
+    assert "ORCH_IMAGE=agents-orchestrator:e2e" in script
+    assert 'docker build -t "$ORCH_IMAGE" .' in script
+
+
 def test_publish_only_main_and_tags_after_images():
     jobs = _ci()["jobs"]
     main = jobs["chart-publish"]
     tag = jobs["chart-publish-tag"]
-    assert set(main["needs"]) == {"chart", "images"}
+    assert set(main["needs"]) == {"chart", "images"} | GATE
     assert main["if"] == "github.event_name == 'push' && github.ref == 'refs/heads/main'"
-    assert tag["needs"] == ["chart"]
+    assert set(tag["needs"]) == {"chart"} | GATE
     assert tag["if"] == "startsWith(github.ref, 'refs/tags/v')"
     for job in (main, tag):
         runs = _runs(job)
@@ -101,3 +124,5 @@ def test_readme_documents_releasing():
     section = text.split("## Releasing")[1]
     assert "-main." in section and "oci://harbor.szymonrichert.pl/charts" in section
     assert "Chart.yaml" in section
+    assert "`lint`, `test` and `e2e`" in section
+    assert "never pushed" in section

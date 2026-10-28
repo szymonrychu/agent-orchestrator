@@ -108,7 +108,7 @@ One image, one `orch` entrypoint. Every command reads `ORCH_*` settings (see Con
 
 ## Images
 
-CI (`.github/workflows/ci.yaml`, job `images`) builds the orchestrator image from the root `Dockerfile` on every push and pull request and smoke-tests it with `docker run --rm <image> --help`. Only a push to `main` logs in to Harbor (secrets `HARBOR_USERNAME`, `HARBOR_PASSWORD`) and pushes it with `regctl`.
+CI (`.github/workflows/ci.yaml`, job `images`) builds the orchestrator image from the root `Dockerfile` and smoke-tests it with `docker run --rm <image> --help`, but only after the `lint`, `test` and `e2e` jobs pass; a red build is never pushed. Only a push to `main` logs in to Harbor (secrets `HARBOR_USERNAME`, `HARBOR_PASSWORD`) and pushes it with `regctl`, in 50MB chunks. The `e2e` job builds and loads its own images and does not use the pushed one, so it does not wait for `images`.
 
 - Orchestrator image: `harbor.szymonrichert.pl/containers/agents-orchestrator:<sha7>`, where `<sha7>` is the first seven characters of the commit sha. Tags are immutable; there is no `latest`.
 - Agent image: no agent image is built here. Agent pods run the claude-code-wrapper image named by `ORCH_AGENT_IMAGE`; the recommended one is `harbor.szymonrichert.pl/containers/claude-code-wrapper:fb005fd`. This is the value for the chart's `agentImage` and agents-helmfile, and the commit the dev dependency `claude-code-wrapper` in `pyproject.toml` is pinned to, so config validation tests the wrapper the agents run.
@@ -279,9 +279,10 @@ Command hooks run `sh -c` in the agent pod with the wrapper's full environment, 
 
 The chart is published to `oci://harbor.szymonrichert.pl/charts/agents-orchestrator` with immutable versions; Harbor rejects a repeated version and CI fails first with a clear message. `scripts/chart-version.sh` picks the version from `version` in `chart/agents-orchestrator/Chart.yaml`:
 
-- Every push to `main` (after the `chart` and `images` jobs pass) publishes `<version>-main.<sha7>`, with `appVersion` set to `<sha7>`. agents-helmfile can pin that exact version.
-- A tag `vX.Y.Z` publishes `X.Y.Z`. The tag must equal Chart.yaml's `version`, otherwise the job fails. The tagged commit must already have been built by main CI: the job checks that `harbor.szymonrichert.pl/containers/agents-orchestrator:<sha7>` exists before packaging.
+- Every push to `main` (after the `chart`, `images`, `lint`, `test` and `e2e` jobs pass) publishes `<version>-main.<sha7>`, with `appVersion` set to `<sha7>`. agents-helmfile can pin that exact version.
+- A tag `vX.Y.Z` (after the `chart`, `lint`, `test` and `e2e` jobs pass on the tag) publishes `X.Y.Z`. The tag must equal Chart.yaml's `version`, otherwise the job fails. The tagged commit must already have been built by main CI: the job checks that `harbor.szymonrichert.pl/containers/agents-orchestrator:<sha7>` exists before packaging.
 - To release: bump `version` in Chart.yaml, merge to `main`, wait for CI, then `git tag vX.Y.Z` on that commit and push the tag.
+- Gate: nothing reaches Harbor, neither the image nor a chart, until `lint`, `test` and `e2e` have passed on that commit, so a red build is never pushed or published; the chart and image publish only from jobs that need all three.
 - Publishing a version that already exists fails with `chart version <v> already published; bump chart/agents-orchestrator/Chart.yaml version`.
 - The Harbor robot (`HARBOR_USERNAME`, `HARBOR_PASSWORD`) needs push on both the `containers` and `charts` projects.
 ## Kubernetes permissions
