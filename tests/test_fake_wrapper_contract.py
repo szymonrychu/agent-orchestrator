@@ -895,7 +895,8 @@ async def test_terminals_http_lifecycle(leg: Leg) -> None:
     sid, made = await _term(leg, rows=30, cols=100)
     assert set(made) == TERM_FIELDS
     assert made["session_id"] == sid and made["terminal_id"].startswith("term_")
-    assert made["alive"] is True and made["exit_code"] is None and made["attached"] is False
+    assert made["alive"] is True and made["exit_code"] is None
+    assert type(made["attached"]) is int and made["attached"] == 0  # a subscriber count
     assert (made["rows"], made["cols"]) == (30, 100)
     base = f"/v1/sessions/{sid}/terminals"
 
@@ -942,7 +943,7 @@ async def test_terminal_attach_echo_and_replay(leg: Leg) -> None:
         seen = await _read_until(ws, MARK)
         assert MARK in seen
         listed = (await leg.http.get(f"/v1/sessions/{sid}/terminals")).json()["terminals"]
-        assert listed[0]["attached"] is True
+        assert type(listed[0]["attached"]) is int and listed[0]["attached"] == 1
     # a second attach replays the scrollback printed meanwhile
     async with websockets.connect(url, additional_headers=_bearer()) as ws:
         assert MARK in await _read_until(ws, MARK)

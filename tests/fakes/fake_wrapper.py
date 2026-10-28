@@ -249,7 +249,7 @@ class _Terminal:
             "created_at": self.created_at,
             "alive": self.alive,
             "exit_code": self.exit_code,
-            "attached": bool(self.clients),
+            "attached": len(self.clients),
             "rows": self.rows,
             "cols": self.cols,
         }

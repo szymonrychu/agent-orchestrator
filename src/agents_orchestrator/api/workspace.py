@@ -507,16 +507,20 @@ async def download_file(
 
 
 def _terminal_view(target: WrapperTarget, body: Any) -> schemas.TerminalView:
-    """The wrapper's terminal record with the agent identity added (its session id dropped)."""
+    """The wrapper's terminal record with the agent identity added (its session id dropped).
+
+    The wrapper reports `attached` as its subscriber count; the view says whether any is attached.
+    """
     try:
-        return schemas.TerminalView.model_validate(
-            {
-                **body,
-                "agent_id": target.agent_id,
-                "session_id": target.session_id,
-                "pod_name": target.pod_name,
-            }
-        )
+        view = {
+            **body,
+            "agent_id": target.agent_id,
+            "session_id": target.session_id,
+            "pod_name": target.pod_name,
+        }
+        if type(view.get("attached")) is int:
+            view["attached"] = view["attached"] > 0
+        return schemas.TerminalView.model_validate(view)
     except (ValidationError, TypeError):
         raise ApiError(
             502, "wrapper_error", f"wrapper of {target.pod_name} answered an unexpected body"

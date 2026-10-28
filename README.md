@@ -858,7 +858,7 @@ Lists the shells of every ready agent of the session. The agents are queried con
 }
 ```
 
-`attached` is true while a client is attached; an exited shell stays listed with `alive` false and its `exit_code` until closed or reaped. Errors: 404 `not_found` (session), 503 `unavailable`.
+`attached` is true while at least one client is attached (the wrapper reports a subscriber count, the orchestrator reports whether it is above zero); an exited shell stays listed with `alive` false and its `exit_code` until closed or reaped. Errors: 404 `not_found` (session), 503 `unavailable`.
 
 ### `DELETE /api/v1/agents/{agent_id}/terminals/{terminal_id}`
 
