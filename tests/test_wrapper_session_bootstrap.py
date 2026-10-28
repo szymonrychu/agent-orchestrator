@@ -359,8 +359,8 @@ async def _db_now(env):
 async def test_successful_resume_records_resume_marker(env, fake):
     """Both resume paths record `wrapper_resumed_at` (database clock); adopt and create clear it.
 
-    The marker is the ingester's re-attach trigger (deploy-safe-agent-sessions D3): it tells a
-    resumed session from one whose stored `session_closed` still holds.
+    The marker is the ingester's re-attach trigger (deploy-safe-agent-sessions D3): a resume
+    changes it, so the ingester restarts the stream of the same wrapper session.
     """
     c = await env.session("alpha")
     await env.rec.reconcile_once()

@@ -10,8 +10,8 @@ can answer 429. The order is therefore adopt first:
 A stored session is kept only while adoptable, resumed when stopped or failed with a transcript,
 and otherwise cleared (also when the wrapper no longer lists it) so the agent bootstraps again.
 Every successful resume, of the stored session or in step 2, records `agents.wrapper_resumed_at`
-(deploy-safe-agent-sessions D3) so the ingester re-attaches to a session whose stored
-`session_closed` the resume lifted; an adopt or create records none.
+(deploy-safe-agent-sessions D3) so the ingester re-attaches to the resumed session, also after
+it stored the session's `session_closed`; an adopt or create records none.
 Errors never raise out of `bootstrap`: they come back as a message for the session status and
 the next tick bootstraps it again.
 """

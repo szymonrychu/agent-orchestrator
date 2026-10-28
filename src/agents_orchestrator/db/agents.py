@@ -118,9 +118,9 @@ async def set_wrapper_session(
 ) -> bool:
     """Record the agent's wrapper session; `created_at` None means the database clock.
 
-    `resumed` marks a successful resume: `wrapper_resumed_at` takes `clock_timestamp()`, the
-    clock `events.created_at` uses, so the ingester orders it against a stored close by the
-    database alone. A created or adopted session clears the marker.
+    `resumed` marks a successful resume: `wrapper_resumed_at` takes `clock_timestamp()`, so every
+    resume writes a new value and the ingester's `AgentRef` changes and re-attaches. A created
+    or adopted session clears the marker.
     """
     async with conn.transaction():
         row = await _one(

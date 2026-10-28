@@ -4,18 +4,25 @@
 refreshing that set every `settings.ingest_refresh_seconds`. Each task attaches (snapshot and
 peers into `agent_status`), then streams events from `Last-Event-ID = last_seq` of the session,
 storing every envelope with `insert_events` and projecting state, context and turns. A dropped
-stream reconnects with backoff (1 s doubling to 30 s, reset by a received event);
-`session_closed` marks the agent dead and ends the task.
+stream reconnects with backoff (1 s doubling to 30 s, reset by a received event).
 
-Re-attach after a resume (deploy-safe-agent-sessions D3): `AgentRef` carries
-`agents.wrapper_resumed_at`, which the reconciler writes on every successful resume, so `refresh`
-restarts the task of a resumed session as it does for a new one. A stored `session_closed` is
-honoured on attach only when no resume was recorded after it, by database order (its
-`events.created_at` against the marker, both the database clock), never by the wrapper's `ts`.
-Otherwise the attach projects the snapshot (a resumed `ready` becomes `idle` and notifies
-`agent_free`, so the dispatcher delivers) and streams from the last stored seq: the wrapper
-continues seq across a resume, and a replay stops at a replayed close, so streaming after it
-reads the resumed events. Replayed events at or below the last stored seq are never re-projected.
+`session_closed` ends the task only when the wrapper's live snapshot maps to `dead`
+(deploy-safe-agent-sessions D3): the wrapper is the authority on whether a session is closed.
+On attach, a last stored (non-gap) event `session_closed` with a dead snapshot marks the agent
+dead and ends the task. A fresh `session_closed` in the stream is stored but not projected; the
+task then reads the snapshot: dead marks the agent dead and ends the task, live returns to
+re-attach from the close seq with the backoff reset. Database order cannot decide this: when
+the ingester is down across a shutdown and a resume, the close the wrapper emitted before the
+resume is stored after it, on the replay.
+
+Re-attach after a resume: `AgentRef` carries `agents.wrapper_resumed_at`, which the reconciler
+writes on every successful resume, so `refresh` restarts the task of a resumed session as it
+does for a new one; the marker is a re-attach trigger only. The attach projects the snapshot (a
+resumed `ready` becomes `idle` and notifies `agent_free`, so the dispatcher delivers) and
+streams from the last stored seq: the wrapper continues seq across a resume, and a replay stops
+at a replayed close, so streaming after it reads the resumed events. Replayed events at or below
+the last stored seq are never re-projected, so a replayed, already stored close reads no
+snapshot.
 """
 
 from __future__ import annotations
@@ -115,7 +122,7 @@ class _AgentStream:
         snap = await client.get_session(ref.wrapper_session_id)
         async with self.ing.pool.connection() as conn:
             self.last_seq = await events.last_seq(conn, ref.agent_id, ref.wrapper_session_id)
-            closed = await self._stored_closed(conn)
+            closed = map_state(snap.state) == "dead" and await self._stored_closed(conn)
             state = "dead" if closed else map_state(snap.state)
             change = await status.upsert_status(
                 conn,
@@ -139,21 +146,30 @@ class _AgentStream:
             if projected.became_idle:
                 await self._refresh_peers(client)
             if projected.closed:
-                return True
+                return await self._closed(client)
         return False
 
+    async def _closed(self, client: WrapperClient) -> bool:
+        """A fresh `session_closed` was stored: the live snapshot decides. True when dead."""
+        ref = self.ref
+        snap = await client.get_session(ref.wrapper_session_id)
+        if map_state(snap.state) != "dead":
+            # resumed since the close: re-attach from the close seq
+            self.delay = self.ing.backoff_initial
+            return False
+        async with self.ing.pool.connection() as conn:
+            change = await status.set_state(conn, ref.agent_id, "dead")
+            if change.changed:
+                await status.notify_status(conn, ref.session_id, ref.agent_id)
+        return True
+
     async def _stored_closed(self, conn: Any) -> bool:
-        """The last stored event is `session_closed` and no resume was recorded after it."""
+        """The last stored event, gaps aside, is `session_closed`."""
         cur = await conn.execute(
-            "SELECT type = 'session_closed' AND (%(resumed)s::timestamptz IS NULL"
-            " OR %(resumed)s::timestamptz <= created_at) FROM events"
-            " WHERE agent_id = %(agent)s AND wrapper_session_id = %(ses)s AND type <> 'gap'"
+            "SELECT type = 'session_closed' FROM events"
+            " WHERE agent_id = %s AND wrapper_session_id = %s AND type <> 'gap'"
             " ORDER BY seq DESC LIMIT 1",
-            {
-                "resumed": self.ref.resumed_at,
-                "agent": self.ref.agent_id,
-                "ses": self.ref.wrapper_session_id,
-            },
+            (self.ref.agent_id, self.ref.wrapper_session_id),
         )
         row = await cur.fetchone()
         return row is not None and bool(row[0])
@@ -208,10 +224,7 @@ class _AgentStream:
                 await status.notify_status(conn, ref.session_id, ref.agent_id)
             return _Projected(became_idle=change.became_idle)
         if env.type == "session_closed":
-            change = await status.set_state(conn, ref.agent_id, "dead")
-            if change.changed:
-                await status.notify_status(conn, ref.session_id, ref.agent_id)
-            return _Projected(closed=True)
+            return _Projected(closed=True)  # not projected: `_closed` reads the snapshot
         if env.type == "context":
             await status.set_context(conn, ref.agent_id, data)
             await status.notify_status(conn, ref.session_id, ref.agent_id)
