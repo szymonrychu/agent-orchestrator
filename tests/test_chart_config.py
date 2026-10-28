@@ -280,12 +280,46 @@ def _env_names(container: dict) -> list[str]:
     return [e["name"] for e in container.get("env", [])]
 
 
-def test_chat_url_in_configmap():
-    cm = by_kind(
-        render(values(postgres={"url": URL}, chat={"url": CHAT_URL, "token": "t"})), "ConfigMap"
-    )[f"{FULL}-settings"]
-    assert cm["data"]["ORCH_CHAT_URL"] == CHAT_URL
+CHAT_VALUES = {
+    "inline": {"url": CHAT_URL, "token": "t"},
+    "existing": {"url": CHAT_URL, "existingSecret": "chat-s", "existingSecretKey": "k"},
+}
+
+
+def _is_api_main(dep: str, container: dict) -> bool:
+    return dep == f"{FULL}-api" and container["name"] == "api"
+
+
+@pytest.mark.parametrize("chat", CHAT_VALUES.values(), ids=CHAT_VALUES.keys())
+def test_configmap_has_no_chat_url(chat):
+    cm = by_kind(render(values(postgres={"url": URL}, chat=chat)), "ConfigMap")[f"{FULL}-settings"]
+    assert "ORCH_CHAT_URL" not in cm["data"]
     assert "ORCH_CHAT_TOKEN" not in cm["data"]
+
+
+@pytest.mark.parametrize("chat", CHAT_VALUES.values(), ids=CHAT_VALUES.keys())
+def test_chat_pair_rendered_together_per_container(chat):
+    """Settings refuses a chat URL without its token, so no container may get one alone."""
+    docs = render(values(postgres={"url": URL}, chat=chat))
+    containers = _containers(docs)
+    assert sorted(containers) == sorted(f"{FULL}-{c}" for c in COMPONENTS)
+    for dep, items in containers.items():
+        for c in items:
+            names = _env_names(c)
+            assert ("ORCH_CHAT_URL" in names) == ("ORCH_CHAT_TOKEN" in names), (dep, c["name"])
+            assert ("ORCH_CHAT_URL" in names) == _is_api_main(dep, c), (dep, c["name"])
+
+
+@pytest.mark.parametrize("chat", CHAT_VALUES.values(), ids=CHAT_VALUES.keys())
+def test_api_container_has_chat_pair(chat):
+    docs = render(values(postgres={"url": URL}, chat=chat))
+    api = next(c for c in _containers(docs)[f"{FULL}-api"] if c["name"] == "api")
+    env = {e["name"]: e for e in api["env"]}
+    assert env["ORCH_CHAT_URL"] == {"name": "ORCH_CHAT_URL", "value": CHAT_URL}
+    assert env["ORCH_CHAT_TOKEN"]["valueFrom"]["secretKeyRef"] == {
+        "name": chat.get("existingSecret", f"{FULL}-chat"),
+        "key": chat.get("existingSecretKey", "chat-token"),
+    }
 
 
 def test_chat_token_secret_on_api_only():
