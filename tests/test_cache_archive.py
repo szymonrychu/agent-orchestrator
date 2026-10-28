@@ -15,7 +15,7 @@ import zstandard
 
 from agents_orchestrator.cache import archive
 from agents_orchestrator.cache.archive import ExtractError, Packed, TooLarge, pack, unpack
-from agents_orchestrator.spec import INIT_DIR
+from agents_orchestrator.spec import INIT_DIR, SESSIONS_EXCLUDE
 
 BIG = 1 << 30
 
@@ -104,6 +104,24 @@ def test_excludes(tmp_path: Path) -> None:
     assert names == {"app", "app/main.py", "keep.txt"}
     assert set(_members(_packed(src))) >= {"node_modules/pkg/lib/index.js", "app/debug.log"}
     assert not any(n == INIT_DIR or n.startswith(INIT_DIR + "/") for n in _members(_packed(src)))
+
+
+def test_sessions_exclude_drops_credentials(tmp_path: Path) -> None:
+    src = tmp_path / "sessions"
+    (src / "ses-1" / "config" / "projects" / "p").mkdir(parents=True)
+    (src / "ses-1" / "config" / ".credentials.json").write_text('{"token": "secret"}')
+    (src / "ses-1" / "config" / "projects" / "p" / "t.jsonl").write_text("{}\n")
+    (src / "ses-1" / "config" / "projects" / "p" / ".credentials.json").write_text("deep")
+    (src / ".credentials.json").write_text("top")
+    (src / "ses-1" / "turns.jsonl").write_text("{}\n")
+
+    names = set(_members(_packed(src, list(SESSIONS_EXCLUDE))))
+
+    assert not any(n.rsplit("/", 1)[-1] == ".credentials.json" for n in names)
+    assert {
+        "ses-1/config/projects/p/t.jsonl",
+        "ses-1/turns.jsonl",
+    } <= names
 
 
 def test_symlinks_not_followed_specials_skipped(

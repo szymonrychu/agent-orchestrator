@@ -5,7 +5,8 @@ A cache-enabled session gets Job `agent-<slug>-cache-restore` before init and Jo
 cache image, never the session's `spec.image`, and mount only the session's workspace PVC (the save
 read-only). The same Jobs, runner and outcome handling serve a second target, the session's Claude
 transcripts: Jobs `agent-<slug>-sessions-restore|save` mount the PVC subPath `sessions` at
-`/sessions` (no excludes) and move object `<cache_s3_prefix>sessions/<slug>.tar.zst`, recorded in
+`/sessions` (the archive leaves out Claude credential files, `SESSIONS_EXCLUDE`) and move object
+`<cache_s3_prefix>sessions/<slug>.tar.zst`, recorded in
 `status.cache.sessions_restore|sessions_save`. A target changes only the mount, `CACHE_DIR`,
 `CACHE_EXCLUDE`, the object, the Job name, the cache label and the status key.
 
@@ -61,6 +62,7 @@ from agents_orchestrator.reconciler.checks import (
 )
 from agents_orchestrator.reconciler.init import REASON_MAX, StatusWriter
 from agents_orchestrator.settings import Settings
+from agents_orchestrator.spec import SESSIONS_EXCLUDE
 
 log = logging.getLogger(__name__)
 
@@ -141,7 +143,7 @@ def render_cache_job(
             "mountPath": SESSIONS_ROOT,
             "subPath": SESSIONS_SUBPATH,
         }
-        cache_dir, exclude = SESSIONS_ROOT, []
+        cache_dir, exclude = SESSIONS_ROOT, list(SESSIONS_EXCLUDE)
     else:
         mount, cache_dir, exclude = workdir_mount(spec), workdir_path(spec), spec.cache.exclude
     mounts: list[dict[str, Any]] = [

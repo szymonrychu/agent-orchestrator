@@ -175,6 +175,10 @@ CACHE_EXCLUDE_MAX = 50
 CACHE_EXCLUDE_ENTRY_MAX = 256
 # Always left out of a cache archive, besides spec.cache.exclude.
 CACHE_ALWAYS_EXCLUDE = (INIT_DIR,)
+# Left out of the /sessions transcript archive (fnmatch on the path relative to /sessions; `*`
+# crosses `/`, so the second entry covers `.credentials.json` at any depth). Claude credential
+# files must never reach the object store.
+SESSIONS_EXCLUDE = (".credentials.json", "*/.credentials.json")
 # S3 and RGW cap one PUT at 5 GiB.
 CACHE_MAX_BYTES_LIMIT = 5368709120
 INIT_SCRIPT_MAX_CHARS = 16384
