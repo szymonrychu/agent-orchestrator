@@ -9,16 +9,15 @@ exercised without kind, so these checks pin the pieces the e2e reads.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import re
-import sys
-from functools import cache
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
+import httpx
+import pytest
 import yaml
+from e2e_kind_loader import e2e_kind as e2e_module
 
 from agents_orchestrator.settings import Settings
 
@@ -27,17 +26,6 @@ SCENARIO = ROOT / "e2e" / "agent-test.scenario.json"
 SCRIPT = ROOT / "scripts" / "e2e.sh"
 VALUES = ROOT / "e2e" / "values-kind.yaml"
 MARATHON_MIN_SECONDS = 300  # the roll (helm upgrade, reconciler restart) plus the checks
-
-
-@cache
-def e2e_module() -> ModuleType:
-    path = ROOT / "tests" / "e2e" / "test_e2e_kind.py"
-    spec = importlib.util.spec_from_file_location("e2e_kind_constants", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module  # dataclasses resolve their string annotations through it
-    spec.loader.exec_module(module)
-    return module
 
 
 def turns() -> list[dict[str, Any]]:
@@ -118,3 +106,72 @@ def test_script_port_forward_reconnects() -> None:
     body = text.split("port_forward() {", 1)[1].split("\n}\n", 1)[0]
     assert "while true" in body and 'port-forward "svc/$RELEASE"' in body, body
     assert "trap" in body, "the loop must take its kubectl child down with it"
+
+
+def test_replacement_order_reads_the_pod_names_from_json_log_lines(monkeypatch) -> None:
+    """The reconciler logs JSON lines: the pod name ends at the message, not at the line end."""
+    module = e2e_module()
+    lines = [
+        {"ts": "2026-10-28T11:20:00.000Z", "level": "INFO", "msg": "migrations applied: none"},
+        {
+            "ts": "2026-10-28T11:21:00.000Z",
+            "level": "INFO",
+            "logger": "agents_orchestrator.reconciler.rollout",
+            "msg": "session e2e-scale-roll: replacing idle outdated pod agent-e2e-scale-roll-1",
+        },
+        {
+            "ts": "2026-10-28T11:22:00.000Z",
+            "level": "INFO",
+            "logger": "agents_orchestrator.reconciler.rollout",
+            "msg": "session e2e-scale-roll: replacing idle outdated pod agent-e2e-scale-roll-0",
+        },
+    ]
+    text = "\n".join([*(json.dumps(line) for line in lines), "not a json line"])
+    monkeypatch.setattr(module, "reconciler_log", lambda: text)
+    assert module.replacement_order() == ["agent-e2e-scale-roll-1", "agent-e2e-scale-roll-0"]
+
+
+class Flaky:
+    """A transport handler that fails the first `failures` requests with `exc`."""
+
+    def __init__(self, exc: type[httpx.TransportError], failures: int = 1) -> None:
+        self.exc, self.failures, self.calls = exc, failures, 0
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise self.exc("the port-forward dropped it", request=request)
+        return httpx.Response(202 if request.method == "POST" else 200, json={})
+
+
+def resilient(handler: Flaky, monkeypatch) -> httpx.Client:
+    module = e2e_module()
+    monkeypatch.setattr(module.time, "sleep", lambda _s: None)
+    return module.ResilientClient(base_url="http://api", transport=httpx.MockTransport(handler))
+
+
+@pytest.mark.parametrize("method", ["GET", "HEAD", "DELETE"])
+@pytest.mark.parametrize("exc", [httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError])
+def test_resilient_client_resends_idempotent_requests(method, exc, monkeypatch) -> None:
+    handler = Flaky(exc)
+    with resilient(handler, monkeypatch) as client:
+        assert client.request(method, "/meta").status_code == 200
+    assert handler.calls == 2
+
+
+def test_resilient_client_resends_a_post_that_never_connected(monkeypatch) -> None:
+    handler = Flaky(httpx.ConnectError)
+    with resilient(handler, monkeypatch) as client:
+        assert client.post("/sessions/x/messages", json={"text": "t"}).status_code == 202
+    assert handler.calls == 2
+
+
+@pytest.mark.parametrize("exc", [httpx.ReadError, httpx.RemoteProtocolError, httpx.WriteError])
+def test_resilient_client_never_resends_a_post_that_may_have_been_accepted(
+    exc, monkeypatch
+) -> None:
+    """A message POST the api may have accepted is not sent again: it would be a duplicate."""
+    handler = Flaky(exc)
+    with resilient(handler, monkeypatch) as client, pytest.raises(exc):
+        client.post("/sessions/x/messages", json={"text": "t"})
+    assert handler.calls == 1

@@ -1986,6 +1986,7 @@ API_OUTAGE_WINDOW = 180  # the api pod is replaced and the port-forward reconnec
 ROLL_SAMPLE_INTERVAL = 2.0
 DEAD_DEADLINE = 600  # no agent may stay dead longer: a pod comes back well within READY_TIMEOUT
 ROLLOUT_STATUS_TIMEOUT = 600
+IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "DELETE"})
 
 
 def marathon_seconds() -> float:
@@ -1999,7 +2000,10 @@ class ResilientClient(httpx.Client):
     """An httpx client that rides out the api pod being replaced by a helm upgrade.
 
     A request that fails at the transport (the port-forward reconnecting, the pod terminating)
-    is sent again for up to API_OUTAGE_WINDOW seconds, then fails with an AssertionError.
+    is sent again for up to API_OUTAGE_WINDOW seconds, then fails with an AssertionError. Only
+    an idempotent request is resent after any transport error; any other (a message POST) only
+    after a ConnectError, which means it was never sent, so an accepted message is never
+    posted twice. Every other transport error of a non-idempotent request is raised as is.
     """
 
     def send(self, request: httpx.Request, **kwargs: Any) -> httpx.Response:
@@ -2008,6 +2012,10 @@ class ResilientClient(httpx.Client):
             try:
                 return super().send(request, **kwargs)
             except httpx.TransportError as exc:
+                if request.method not in IDEMPOTENT_METHODS and not isinstance(
+                    exc, httpx.ConnectError
+                ):
+                    raise
                 if time.monotonic() > deadline:
                     raise AssertionError(
                         f"api unreachable for {API_OUTAGE_WINDOW}s: {request.method} "
@@ -2315,9 +2323,21 @@ def streamed_ids(api: httpx.Client, cid: str, agents: int) -> dict[str, set[str]
 
 
 def replacement_order() -> list[str]:
-    """Pod names in the order the reconciler logged replacing them."""
-    pattern = re.compile(r"replacing idle outdated pod (\S+)")
-    return [m.group(1) for line in reconciler_log().splitlines() if (m := pattern.search(line))]
+    """Pod names in the order the reconciler logged replacing them.
+
+    The reconciler logs one JSON object per line; the pod name ends its `msg`.
+    """
+    pattern = re.compile(r"replacing idle outdated pod (\S+)$")
+    order = []
+    for line in reconciler_log().splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        msg = record.get("msg") if isinstance(record, dict) else None
+        if isinstance(msg, str) and (m := pattern.search(msg)):
+            order.append(m.group(1))
+    return order
 
 
 @pytest.fixture(scope="module")
@@ -2366,6 +2386,10 @@ def image_roll(roll_api: httpx.Client, roll_session: dict[str, Any]) -> dict[str
         wait_for("the follower to run the marathon turn", follower_runs_marathon, TURN_TIMEOUT, 0.5)
 
         upgrade_agent_image(AGENT_IMAGE_NEXT)
+        # a message POST is not resent after it may have reached the api (ResilientClient), so
+        # post once the api pod is replaced; the busy follower still holds the agent roll
+        wait_orchestrator_rolled()
+        api.get("/meta").raise_for_status()
         # sent while the roll starts: one to the leader, one queued for the busy follower
         posted["to_leader"] = post_message(api, cid, SLOW_PROMPT.format(n=1))
         posted["queued_for_follower"] = post_message(
