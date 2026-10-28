@@ -44,7 +44,7 @@
       \  mcp_servers:\n    any-mcp:\n      type: stdio\n      command: /opt/any-mcp/bin/any-mcp\n\
       \      args:\n      - --config\n      - /opt/any-mcp/etc/any-mcp.yaml\nhooks:\n\
       \  onStart:\n  - type: command\n    run: sh /etc/ccw/on-start.sh\n    blocking:\
-      \ true\n    on_error: deny\n    timeout_seconds: 600.0\nsessions:\n  max_sessions:\
+      \ true\n    on_error: allow\n    timeout_seconds: 600.0\nsessions:\n  max_sessions:\
       \ 1\n  resume_on_start: true\n  idle_timeout_seconds: 0\n  ask_user_question:\
       \ deny\nprompts:\n  system_append: 'The AskUserQuestion tool is disabled and\
       \ nobody answers interactive\n    questions. When you need a decision or information\
@@ -53,14 +53,17 @@
       \ so that replying \"yes\" accepts it. Then stop and\n    wait for the reply.\
       \ Never wait on an interactive question tool.'\nlimits:\n  shutdown_timeout_seconds:\
       \ 80\nnotes:\n  enabled: false\n"
-    on-start.sh: "#!/bin/sh\nset -eu\nREF=v0.5.0\nif ! grep -qxF -- \"$REF\" /opt/any-mcp/.ref\
-      \ 2>/dev/null; then\n  rm -rf /opt/any-mcp/* /opt/any-mcp/.ref\n  python3 -m\
-      \ venv /opt/any-mcp\n  /opt/any-mcp/bin/pip install --no-cache-dir 'any-mcp\
-      \ @ git+https://github.com/szymonrychu/any-mcp@v0.5.0'\n  printf '%s\\n' \"\
-      $REF\" > /opt/any-mcp/.ref\nfi\nmkdir -p /opt/any-mcp/etc\ncat > /opt/any-mcp/etc/any-mcp.yaml\
-      \ <<'ANY_MCP_CONFIG_EOF'\n{}\nANY_MCP_CONFIG_EOF\n/opt/any-mcp/bin/any-mcp plugins\
-      \ install --config /opt/any-mcp/etc/any-mcp.yaml\n/opt/any-mcp/bin/any-mcp --help\
-      \ >/dev/null\n"
+    on-start.sh: "#!/bin/sh\nset -eu\nREF=v0.5.0\nok=1\ninstall() {\n  step=$1\n \
+      \ shift\n  [ \"$ok\" = 1 ] || return 0\n  \"$@\" && return 0\n  echo \"on-start:\
+      \ $step failed (exit $?)\" >&2\n  ok=0\n}\nif ! grep -qxF -- \"$REF\" /opt/any-mcp/.ref\
+      \ 2>/dev/null; then\n  rm -rf /opt/any-mcp/* /opt/any-mcp/.ref\n  install 'any-mcp\
+      \ package install' python3 -m venv /opt/any-mcp\n  install 'any-mcp package\
+      \ install' /opt/any-mcp/bin/pip install --no-cache-dir 'any-mcp @ git+https://github.com/szymonrychu/any-mcp@v0.5.0'\n\
+      \  [ \"$ok\" = 0 ] || printf '%s\\n' \"$REF\" > /opt/any-mcp/.ref\nfi\nmkdir\
+      \ -p /opt/any-mcp/etc\ncat > /opt/any-mcp/etc/any-mcp.yaml <<'ANY_MCP_CONFIG_EOF'\n\
+      {}\nANY_MCP_CONFIG_EOF\ninstall 'any-mcp plugins install' /opt/any-mcp/bin/any-mcp\
+      \ plugins install --config /opt/any-mcp/etc/any-mcp.yaml\n[ \"$ok\" = 0 ] ||\
+      \ /opt/any-mcp/bin/any-mcp --help >/dev/null\n"
 - apiVersion: v1
   kind: Service
   metadata:
@@ -101,7 +104,7 @@
           agents.szymonrichert.pl/session: solo
           app.kubernetes.io/managed-by: agents-orchestrator
         annotations:
-          agents.szymonrichert.pl/config-hash: 5fa27ea46dce2feb6fce90d74663de8c10a17a41343128e3741e6859318a6c7c
+          agents.szymonrichert.pl/config-hash: b5d7441f40b045d1f144988c80800f7477ad0233bebc8c4c3b69948161a93cae
       spec:
         imagePullSecrets:
         - name: regcred

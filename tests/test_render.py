@@ -296,7 +296,7 @@ def test_on_start_hook_and_startup_probe():
             "type": "command",
             "run": "sh /etc/ccw/on-start.sh",
             "blocking": True,
-            "on_error": "deny",
+            "on_error": "allow",
             "timeout_seconds": 600,
         }
     ]

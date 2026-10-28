@@ -175,7 +175,7 @@ def _ccw_config(session: Session, settings: Settings) -> dict[str, Any]:
                     "type": "command",
                     "run": "sh /etc/ccw/on-start.sh",
                     "blocking": True,
-                    "on_error": "deny",
+                    "on_error": "allow",
                     "timeout_seconds": settings.on_start_timeout_seconds,
                 }
             ]
