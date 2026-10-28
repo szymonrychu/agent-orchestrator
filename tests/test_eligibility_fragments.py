@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from agents_orchestrator.db import eligibility, leadership, queue
+import inspect
+
+from agents_orchestrator.db import eligibility, leadership, queue, sessions
 
 
 def test_no_limit_is_the_only_spelling_of_the_literal() -> None:
@@ -25,3 +27,14 @@ def test_call_sites_embed_the_shared_fragments() -> None:
     assert eligibility.ELIGIBLE in leadership._FREE_LONGEST
     assert eligibility.HANDOVER_TRIGGER in queue._HANDOVER_PENDING
     assert eligibility.ELIGIBLE in queue._HANDOVER_PENDING
+
+
+def test_eligible_excludes_dead_agents() -> None:
+    # D4: one fragment, embedded by both the pick predicate and the manual make-leader target
+    assert "'dead'" in eligibility.DEAD
+    assert f"NOT {eligibility.DEAD}" in eligibility.READY_STAYS
+    assert eligibility.READY_STAYS in eligibility.ELIGIBLE
+    assert eligibility.DEAD in leadership._CANDIDATES
+    # spelled once: no other module respells the dead-state test
+    for module in (leadership, queue, sessions):
+        assert "'dead'" not in inspect.getsource(module)

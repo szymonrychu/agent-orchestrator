@@ -4,7 +4,8 @@ Besides elections, queued requests and the lost-leader fallback, the pass hands 
 by itself in three cases, always on for hives: its pod is about to be removed by a scale-down
 (`scale_down`, at once), it compacted (`compaction`, at its turn boundary) and its lease ran
 out (`lease_expired`, at its turn boundary). Every pick is restricted to agents that stay
-(`ordinal < spec.replicas`).
+(`ordinal < spec.replicas`). A dead agent (`agent_status.state`) never leads: it is not
+eligible, and a leader whose agent is dead is a lost leader (D4).
 
 The api only inserts `leadership_requests` rows (status `queued`) and reads the leader record.
 `session_leaders` and every request decision belong to the dispatcher, through
@@ -23,6 +24,7 @@ from psycopg.rows import dict_row
 
 from agents_orchestrator.db.eligibility import (
     COMPACTED,
+    DEAD,
     ELIGIBLE,
     HANDOVER_TRIGGER,
     LEAVING,
@@ -91,7 +93,7 @@ class LeaderChange:
 _HIVE = "coalesce(c.spec->>'max_replicas', c.spec->>'replicas')::int > 1"
 
 # Hive sessions whose leadership needs a pass: queued requests, no leader row while an agent
-# could lead, a leader that is gone or not ready, an unready mark to clear, an expired lease,
+# could lead, a leader that is gone, not ready or dead, an unready mark to clear, an expired lease,
 # a leader that compacted in its term, or a leader whose ordinal a scale-down removes.
 _CANDIDATES = f"""
 SELECT c.id FROM sessions c
@@ -102,7 +104,7 @@ WHERE c.desired = 'active' AND {_HIVE} AND (
             WHERE r.session_id = c.id AND r.status = 'queued')
     OR (l.session_id IS NULL AND EXISTS (
         SELECT 1 FROM agents a WHERE a.session_id = c.id AND {ELIGIBLE}))
-    OR a.gone_at IS NOT NULL OR NOT a.ready OR l.unready_since IS NOT NULL
+    OR a.gone_at IS NOT NULL OR NOT a.ready OR {DEAD} OR l.unready_since IS NOT NULL
     OR (c.spec->>'leader_lease_seconds' IS NOT NULL
         AND l.since < now() - make_interval(secs => (c.spec->>'leader_lease_seconds')::int))
     OR {HANDOVER_TRIGGER}
@@ -160,6 +162,7 @@ async def _leader(conn: psycopg.AsyncConnection, session_id: uuid.UUID) -> dict 
         " l.unready_since IS NOT NULL AND l.unready_since"
         "   < now() - make_interval(secs => %s) AS grace_over,"
         " a.ready, a.gone_at IS NOT NULL AS gone,"
+        f" {DEAD} AS dead,"
         f" {LEAVING} AS leaving,"
         f" {COMPACTED} AS compacted"
         " FROM session_leaders l JOIN agents a ON a.id = l.agent_id"
@@ -327,10 +330,10 @@ async def leadership_pass(
                 change = await _set_leader(conn, session_id, picked, "scale_down")
                 leader = await _leader(conn, session_id)
 
-        # 4. Lost leader: gone, or not ready past the grace (unready_since set on first sight
-        # and cleared once ready again, so separate short windows never add up).
+        # 4. Lost leader: gone, or not ready or dead past the grace (unready_since set on first
+        # sight and cleared once live again, so separate short windows never add up).
         if leader is not None:
-            if leader["ready"] and not leader["gone"]:
+            if leader["ready"] and not leader["gone"] and not leader["dead"]:
                 if leader["unready_since"] is not None:
                     await conn.execute(
                         "UPDATE session_leaders SET unready_since = NULL WHERE session_id = %s",
