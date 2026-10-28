@@ -41,6 +41,7 @@ from typing import Any, Literal, get_args
 from psycopg_pool import AsyncConnectionPool
 
 from agents_orchestrator.cache.presign import CacheTarget, object_name, presign
+from agents_orchestrator.cache.save_rule import PODS_EXIST, save_skip
 from agents_orchestrator.db.sessions import Session
 from agents_orchestrator.k8s.kube import KubeApi, KubeError, Obj, is_owned
 from agents_orchestrator.k8s.labels import object_names, prefix, session_labels
@@ -69,13 +70,6 @@ BACKOFF_LIMIT = 2
 TMP_DIR = "/tmp"
 SCRATCH_DIR = "/scratch"
 SESSIONS_SUBPATH = "sessions"  # the PVC subtree holding every agent pod's /sessions
-# A save runs only after a restore that left the workdir trustworthy: it unpacked the archive,
-# found none (first use), or emptied the workdir because the archive was unreadable (`reset`, so
-# the save overwrites the bad object). Every other outcome, present or future, skips the save.
-SAVE_OK_RESTORE_STATES = frozenset({"restored", "miss", "reset"})
-# A sessions restore skipped because the session's pods existed when the feature arrived leaves
-# the transcripts the pods wrote, so they are saved as after a successful restore.
-PODS_EXIST = "pods_exist"
 
 
 @dataclass(frozen=True)
@@ -254,28 +248,6 @@ def parse_outcome(tail: str | None) -> dict[str, Any] | None:
     return value if isinstance(value, dict) and isinstance(value.get("outcome"), str) else None
 
 
-def _pods_wrote_sessions(restore: dict[str, Any] | None, target: CacheTarget) -> bool:
-    """No sessions restore ran: the session predates it, or its pods existed (`pods_exist`)."""
-    if target != "sessions":
-        return False
-    return restore is None or (
-        restore.get("state") == "skipped" and restore.get("reason") == PODS_EXIST
-    )
-
-
-def _restore_skip(restore: dict[str, Any] | None) -> str | None:
-    """Why a save may not follow this restore run, or None when it may."""
-    state = (restore or {}).get("state")
-    if restore is None or state == "running":
-        return "restore_running"
-    if state in SAVE_OK_RESTORE_STATES:
-        return None
-    if state == "failed":
-        head = str(restore.get("reason") or "").split(":")[0].split(" ")[0]
-        return head or "restore_failed"
-    return f"restore_{state}"
-
-
 class CacheRunner:
     def __init__(
         self,
@@ -353,7 +325,7 @@ class CacheRunner:
         cache = session.status.get("cache") or {}
         save = cache.get(op.status_key)
         if save is None:
-            skip = self._skip_save(cache, target)
+            skip = save_skip(self.settings.cache_available, cache, target)
             if skip is not None:
                 await self._write(session, cache, op, {"state": "skipped", "reason": skip})
                 log.info("%s of session %s skipped: %s", op.title, session.slug, skip)
@@ -369,12 +341,6 @@ class CacheRunner:
         """`spec.cache` is set and the save of `target` has no outcome yet."""
         save = (session.status.get("cache") or {}).get(CacheOp("save", target).status_key)
         return session.spec.cache is not None and (save is None or save.get("state") == "running")
-
-    def _skip_save(self, cache: dict[str, Any], target: CacheTarget) -> str | None:
-        if not self.settings.cache_available:
-            return "not_configured"
-        restore = cache.get(CacheOp("restore", target).status_key)
-        return None if _pods_wrote_sessions(restore, target) else _restore_skip(restore)
 
     # ------------------------------------------------------------------ transitions
 
