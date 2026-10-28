@@ -79,6 +79,12 @@ jobs:
               || echo "Harbor login failed; the wrapper base image is built from source"
           fi
       - run: mise run test:e2e
+      # The real-wrapper leg of tests/test_fake_wrapper_contract.py (marker integration) runs
+      # against the test agent image scripts/e2e.sh just built on the pinned wrapper base; the
+      # image stays in the runner's Docker store after the kind cluster is deleted.
+      - run: mise run test:integration
+        env:
+          ORCH_TEST_WRAPPER_IMAGE: agents-orchestrator-agent-test:e2e
 
   chart-publish:
     needs: [chart, images, lint, test, e2e]

@@ -126,3 +126,28 @@ def test_readme_documents_releasing():
     assert "Chart.yaml" in section
     assert "`lint`, `test` and `e2e`" in section
     assert "never pushed" in section
+
+
+def test_e2e_job_runs_wrapper_contract_against_its_agent_image():
+    """AC4 evidence path: the real-wrapper leg runs in CI on the image scripts/e2e.sh builds."""
+    job = _ci()["jobs"]["e2e"]
+    steps = job["steps"]
+    kind = next(i for i, s in enumerate(steps) if s.get("run") == "mise run test:e2e")
+    integ = [i for i, s in enumerate(steps) if s.get("run") == "mise run test:integration"]
+    assert len(integ) == 1 and integ[0] > kind
+    step = steps[integ[0]]
+    assert "if" not in step
+    script = (ROOT / "scripts/e2e.sh").read_text()
+    image = next(
+        line.split("=", 1)[1] for line in script.splitlines() if line.startswith("AGENT_IMAGE=")
+    )
+    assert step["env"]["ORCH_TEST_WRAPPER_IMAGE"] == image
+    assert {"lint", "test", "e2e"} <= set(_ci()["jobs"]["images"]["needs"])
+    for name in ("chart-publish", "chart-publish-tag"):
+        assert "e2e" in _ci()["jobs"][name]["needs"]
+
+
+def test_readme_documents_integration_in_ci():
+    text = (ROOT / "README.md").read_text()
+    dev = text.split("## Development")[1].split("## Configuration")[0]
+    assert "`e2e` job" in dev and "mise run test:integration" in dev
