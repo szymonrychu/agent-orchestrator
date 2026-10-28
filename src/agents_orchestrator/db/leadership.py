@@ -4,9 +4,9 @@ Besides elections, queued requests and the lost-leader fallback, the pass hands 
 by itself in three cases, always on for hives: its pod is about to be removed by a scale-down
 (`scale_down`, at once), it compacted (`compaction`, at its turn boundary) and its lease ran
 out (`lease_expired`, at its turn boundary). A queued `rollout` handover is likewise applied
-only at the leader's turn boundary; mid-turn it stays queued. Every pick is restricted to agents that stay
-(`ordinal < spec.replicas`). A dead agent (`agent_status.state`) never leads: it is not
-eligible, and a leader whose agent is dead is a lost leader (D4).
+only at the leader's turn boundary; mid-turn it stays queued. Every pick is restricted to
+agents that stay (`ordinal < spec.replicas`). A dead agent (`agent_status.state`) never
+leads: it is not eligible, and a leader whose agent is dead is a lost leader (D4).
 
 The api and the reconciler only insert `leadership_requests` rows (status `queued`) and read the
 leader record: the api the agents' handovers and the user overrides, the reconciler one
