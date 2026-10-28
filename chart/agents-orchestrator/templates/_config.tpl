@@ -139,9 +139,15 @@ true
 {{- default (printf "%s-chat" (include "agents-orchestrator.fullname" .)) .Values.chat.existingSecret -}}
 {{- end }}
 
-{{/* ORCH_CHAT_TOKEN env entry (api container only); empty when the chat relay is off. */}}
-{{- define "agents-orchestrator.chatTokenEnv" -}}
+{{/*
+ORCH_CHAT_URL and ORCH_CHAT_TOKEN env entries, always together (Settings refuses one without the
+other). Only the api main container, which serves the chat relay, includes this; never the shared
+ConfigMap, the migrate init containers or the other components. Empty when the chat relay is off.
+*/}}
+{{- define "agents-orchestrator.chatEnv" -}}
 {{- if include "agents-orchestrator.chatEnabled" . -}}
+- name: ORCH_CHAT_URL
+  value: {{ .Values.chat.url | quote }}
 - name: ORCH_CHAT_TOKEN
   valueFrom:
     secretKeyRef:

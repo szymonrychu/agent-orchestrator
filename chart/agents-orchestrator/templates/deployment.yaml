@@ -94,7 +94,7 @@ spec:
           {{- if eq $component "api" }}
             - name: ORCH_HTTP_PORT
               value: "8000"
-            {{- with include "agents-orchestrator.chatTokenEnv" $ }}
+            {{- with include "agents-orchestrator.chatEnv" $ }}
             {{- . | nindent 12 }}
             {{- end }}
           ports:
