@@ -89,6 +89,8 @@ Every process reads `ORCH_*` variables (the contract `agents-orchestrator-settin
 | `ORCH_SESSION_MESSAGE_QUEUED_MAX` | `20` | api | queued cross-session messages one target session may hold (at least 1); above it a send is refused 409 `target_queue_full` |
 | `ORCH_SESSION_MESSAGE_MAX_HOPS` | `8` | api | longest chain of cross-session messages each sent in the turn that delivered the previous one (at least 1); above it a send is refused 409 `hop_limit` |
 | `ORCH_SESSION_MESSAGE_PAIR_MAX_PER_HOUR` | `30` | api | cross-session messages one pair of sessions may exchange, both directions, in the last hour (at least 1); above it a send is refused 429 `pair_budget` |
+| `ORCH_CHAT_URL` | empty | api | http or https base URL of the chat upstream (the matrix connector's agent listener); the chat relay calls `{ORCH_CHAT_URL}/chat/v1/...`. No query or fragment. Set together with `ORCH_CHAT_TOKEN` or neither; empty answers every `/agent/v1/chat/*` call 503 `chat_unconfigured` |
+| `ORCH_CHAT_TOKEN` | empty | api | bearer token the chat relay presents to the chat upstream (`Authorization: Bearer`); secret, never in a repr, a log line or an error body. Set together with `ORCH_CHAT_URL` or neither, else a settings error naming both |
 
 ## Commands
 
@@ -1068,6 +1070,35 @@ Queues a message to the session named `slug`. Body `{"text"}`, 1 to 16000 charac
 - plus the 401 and 403 above.
 
 The limits are advisory: the counts and the insert are not one atomic step, so concurrent sends of one session can overshoot a limit by the number of sends in flight.
+
+### Chat
+
+A session leader reaches the user's chat (the matrix connector's rooms) through four relay routes; the orchestrator proves who is calling and forwards to one generic chat upstream at `ORCH_CHAT_URL`, so it names no Matrix concept and the agent token never leaves it. Nothing is stored. Backs the plugin chat tools. Every route checks, in this order, and a refusal makes no upstream call:
+
+1. the agent identity above: 401 `unauthorized`, 403 `forbidden`;
+2. 403 `not_leader`: the caller is not its session's current leader (the only agent of an alone session counts as leader), exactly as `POST /agent/v1/sessions/{slug}/messages`;
+3. 503 `chat_unconfigured`: `ORCH_CHAT_URL` and `ORCH_CHAT_TOKEN` are empty;
+4. 413 `payload_too_large`: a POST body over 256 KiB (262144 bytes). It covers a maximal message: 16000 characters of 4 bytes each are 64000 bytes as raw UTF-8 JSON and 192000 bytes with every character escaped as a JSON surrogate pair, plus a room id of up to 255 characters, `reply_to` and the keys.
+
+The relay then forwards the method, the path under `{ORCH_CHAT_URL}/chat/v1`, the query string and the POST body byte for byte, with only these headers: `Authorization: Bearer <ORCH_CHAT_TOKEN>`, `X-Orch-Session: <caller session id>`, `X-Orch-Slug: <caller session slug>` (read from the sessions table, never from the request) and, for a POST, `Content-Type: application/json`. No inbound header is forwarded, the agent token included. The upstream call is capped at 10 s.
+
+Pass-through rule: the upstream status and JSON body reach the agent unchanged, refusals included (for example 403 `room_not_allowed`, 409 `room_bound`, 422 `bad_reference`, 429 `rate_limited`). A connection error, a timeout or an answer that is not JSON is 503 `chat_unavailable`, without the upstream text. The orchestrator does not validate the bodies; the upstream does. Log lines carry the method, path and status only, never a token or a body.
+
+#### `GET /agent/v1/chat/rooms`
+
+Forwards to `GET {ORCH_CHAT_URL}/chat/v1/rooms`: the rooms the caller's session may post to, 200 `{"rooms": [{room_id, name, kind, bound, agents_may_initiate}]}`.
+
+#### `POST /agent/v1/chat/messages`
+
+Forwards to `POST {ORCH_CHAT_URL}/chat/v1/messages`. Body `{text, room?, reply_to?}`: `text` 1 to 16000 characters, `room` a room id from the rooms list, `reply_to` a message reference `m<n>` or `s<n>`; with `room` omitted the upstream picks the room of `reply_to`, else the room bound to the session, else answers 422 `room_required`. Response 202 `{id: "s<n>", status: "queued"}`.
+
+#### `POST /agent/v1/chat/reactions`
+
+Forwards to `POST {ORCH_CHAT_URL}/chat/v1/reactions`. Body `{to, key}`: `to` a message reference, `key` the reaction emoji; the room is always the room of `to`. Response 202 `{id: "s<n>", status: "queued"}`.
+
+#### `GET /agent/v1/chat/messages/{send_id}`
+
+Forwards to `GET {ORCH_CHAT_URL}/chat/v1/messages/{send_id}` (the id percent-encoded as one path segment, dots included): the delivery status of a send of the caller's session, 200 `{id, kind, status, reason, room_id, created_at, sent_at}`; the upstream answers 404 `not_found` for an id that is not one of the caller session's sends.
 
 ### File locks
 

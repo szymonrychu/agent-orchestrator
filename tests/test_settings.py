@@ -1,5 +1,6 @@
 import ipaddress
 import re
+import secrets
 from pathlib import Path
 
 import pytest
@@ -318,3 +319,34 @@ def test_default_resources_request_above_limit_rejected(monkeypatch):
     with pytest.raises(SettingsError) as exc:
         Settings()
     assert "ORCH_DEFAULT_CPU_REQUEST" in exc.value.problems
+
+
+def test_chat_settings(monkeypatch):
+    s = Settings()
+    assert (s.chat_url, s.chat_token) == ("", "")
+    token = "chat-" + secrets.token_hex(16)
+    monkeypatch.setenv("ORCH_CHAT_URL", "http://connector-api-agents:8001")
+    monkeypatch.setenv("ORCH_CHAT_TOKEN", token)
+    s = Settings()
+    assert (s.chat_url, s.chat_token) == ("http://connector-api-agents:8001", token)
+    assert token not in repr(s)
+    assert token not in str(s)
+    monkeypatch.setenv("ORCH_CHAT_URL", "https://chat.example/prefix")
+    assert Settings().chat_url == "https://chat.example/prefix"
+    for bad in ("ftp://chat", "chat:8001", "http://", "http://chat/?q=1", "http://chat/#f"):
+        monkeypatch.setenv("ORCH_CHAT_URL", bad)
+        with pytest.raises(SettingsError) as exc:
+            Settings()
+        assert "ORCH_CHAT_URL" in exc.value.problems, bad
+        assert token not in str(exc.value)
+    monkeypatch.delenv("ORCH_CHAT_TOKEN")
+    monkeypatch.setenv("ORCH_CHAT_URL", "http://chat:8001")
+    with pytest.raises(SettingsError) as exc:
+        Settings()
+    assert "ORCH_CHAT_URL" in str(exc.value) and "ORCH_CHAT_TOKEN" in str(exc.value)
+    monkeypatch.delenv("ORCH_CHAT_URL")
+    monkeypatch.setenv("ORCH_CHAT_TOKEN", token)
+    with pytest.raises(SettingsError) as exc:
+        Settings()
+    assert "ORCH_CHAT_URL" in str(exc.value) and "ORCH_CHAT_TOKEN" in str(exc.value)
+    assert token not in str(exc.value)

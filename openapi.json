@@ -3406,6 +3406,380 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/agent/v1/chat/messages": {
+      "post": {
+        "operationId": "send_message_agent_v1_chat_messages_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-orch-session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Orch-Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "description": "A chat message as the upstream reads it (OpenAPI only; the upstream validates it).",
+                "properties": {
+                  "reply_to": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Reply To"
+                  },
+                  "room": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Room"
+                  },
+                  "text": {
+                    "title": "Text",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "text"
+                ],
+                "title": "ChatMessageIn",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "The chat upstream's status and JSON body, unchanged"
+          },
+          "401": {
+            "description": "unauthorized: missing or invalid agent credentials"
+          },
+          "403": {
+            "description": "forbidden (not a live agent pod) or not_leader"
+          },
+          "413": {
+            "description": "payload_too_large: the body exceeds 256 KiB"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "description": "chat_unconfigured or chat_unavailable"
+          }
+        },
+        "summary": "Send a message to the chat (leader only)",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
+    "/agent/v1/chat/messages/{send_id}": {
+      "get": {
+        "operationId": "message_status_agent_v1_chat_messages__send_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "send_id",
+            "required": true,
+            "schema": {
+              "title": "Send Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-orch-session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Orch-Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "The chat upstream's status and JSON body, unchanged"
+          },
+          "401": {
+            "description": "unauthorized: missing or invalid agent credentials"
+          },
+          "403": {
+            "description": "forbidden (not a live agent pod) or not_leader"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "description": "chat_unconfigured or chat_unavailable"
+          }
+        },
+        "summary": "Delivery status of a send of the caller's session (leader only)",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
+    "/agent/v1/chat/reactions": {
+      "post": {
+        "operationId": "send_reaction_agent_v1_chat_reactions_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-orch-session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Orch-Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "description": "A reaction as the upstream reads it (OpenAPI only; the upstream validates it).",
+                "properties": {
+                  "key": {
+                    "title": "Key",
+                    "type": "string"
+                  },
+                  "to": {
+                    "title": "To",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "to",
+                  "key"
+                ],
+                "title": "ChatReactionIn",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "The chat upstream's status and JSON body, unchanged"
+          },
+          "401": {
+            "description": "unauthorized: missing or invalid agent credentials"
+          },
+          "403": {
+            "description": "forbidden (not a live agent pod) or not_leader"
+          },
+          "413": {
+            "description": "payload_too_large: the body exceeds 256 KiB"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "description": "chat_unconfigured or chat_unavailable"
+          }
+        },
+        "summary": "React to a chat message (leader only)",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
+    "/agent/v1/chat/rooms": {
+      "get": {
+        "operationId": "rooms_agent_v1_chat_rooms_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-orch-session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Orch-Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "The chat upstream's status and JSON body, unchanged"
+          },
+          "401": {
+            "description": "unauthorized: missing or invalid agent credentials"
+          },
+          "403": {
+            "description": "forbidden (not a live agent pod) or not_leader"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "description": "chat_unconfigured or chat_unavailable"
+          }
+        },
+        "summary": "Rooms the caller's session may post to (leader only)",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
     "/agent/v1/init-scripts": {
       "get": {
         "operationId": "init_scripts_get_agent_v1_init_scripts_get",
