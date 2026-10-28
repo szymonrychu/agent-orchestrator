@@ -464,6 +464,45 @@ async def test_outdated_pod_with_inflight_message_not_replaced(env):
     assert env.pod_deletes() == ["agent-alpha-0"]
 
 
+async def _dispatched_at(env: Env, agent_id, offset: str) -> None:
+    """Stamp the agent's last dispatch `offset` (an interval) after its free_since."""
+    await env.execute(
+        "UPDATE agents a SET last_dispatched_at = s.free_since + %s::interval"
+        " FROM agent_status s WHERE s.agent_id = a.id AND a.id = %s",
+        (offset, agent_id),
+    )
+
+
+async def test_replacer_skips_agent_with_dispatch_reservation(env):
+    # the dispatcher already handed agent 0 a turn (its last dispatch is newer than free_since)
+    # but the wrapper has not reported busy yet: the pod must not be deleted mid-handoff
+    c, agents, _ = await rolling(env, replicas=2)
+    await _dispatched_at(env, agents[0].id, "1 microsecond")
+    await env.tick()
+    assert env.pod_deletes() == ["agent-alpha-1"]
+    env.ready(1)
+    await env.tick(3)
+    assert env.pod_deletes() == ["agent-alpha-1"]
+    rollout = await env.rollout(c.id)
+    assert rollout is not None and (rollout["pending"], rollout["waiting"]) == ([0], [0])
+
+    # the turn ends: free_since moves past the dispatch and the reservation is gone
+    await set_agent_status(env.pool, agents[0].id, state="idle")
+    await env.tick()
+    assert env.pod_deletes() == ["agent-alpha-1", "agent-alpha-0"]
+
+
+async def test_replacer_replaces_idle_agent_without_reservation(env):
+    # last dispatch older than free_since (and a never dispatched agent, agent 1): both idle
+    c, agents, old = await rolling(env, replicas=2)
+    await _dispatched_at(env, agents[0].id, "-1 second")
+    await env.tick()
+    assert env.pod_deletes() == ["agent-alpha-0"]
+    env.ready(0)
+    await env.tick()
+    assert env.pod_deletes() == ["agent-alpha-0", "agent-alpha-1"]
+
+
 async def test_busy_outdated_pod_kept_across_ticks(pool, dsn):
     # D2: the deployer's pod is busy for the whole apply and smoke turn, so the deploy never
     # rolls it; no deadline forces it, however long the drain deadline is exceeded by

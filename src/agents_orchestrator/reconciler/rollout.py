@@ -9,7 +9,8 @@ session, which the controller recreates on the new template:
   replacement is Ready on the new revision before the next pod goes, and a terminating pod
   (often still Ready, still on its old revision) is never deleted twice
 - never while its agent is busy (`BUSY`, the predicate the scale-down drain shares: state
-  `busy`, or a message dispatched to it is still `dispatching` or `verifying`) or leads
+  `busy`, a dispatch reservation, or a message dispatched to it is still `dispatching` or
+  `verifying`) or leads
   (`LEADS`). There is no deadline: a pod running a deploy is never rolled by that deploy (D2)
 - the leader last: once every other pod is current, the leader is idle (`BUSY`) and an idle
   eligible member exists, a `handover` request with reason `rollout` is queued from the leader,
@@ -53,9 +54,16 @@ REVISION_LABEL = "controller-revision-hash"
 ROLLOUT_REASON = "rollout"
 
 # The busy predicate of an agent, shared by the scale-down drain and the replacer (reuse.md:
-# one busy query). Aliases: `a` the agent, `s` its `agent_status` row (LEFT JOIN).
+# one busy query). Aliases: `a` the agent, `s` its `agent_status` row (LEFT JOIN). It also holds
+# an agent with a dispatch reservation: its last dispatch is not older than its free_since, the
+# exact negation of the dispatcher's idle test (`db/queue.py` `_PICK`: `free_since >
+# last_dispatched_at`), so a pod just handed a turn is never removed before the wrapper reports
+# busy.
 BUSY = (
-    "COALESCE(s.state = 'busy', false) OR EXISTS ("
+    "COALESCE(s.state = 'busy', false)"
+    " OR (a.last_dispatched_at IS NOT NULL"
+    " AND NOT COALESCE(s.free_since > a.last_dispatched_at, false))"
+    " OR EXISTS ("
     "SELECT 1 FROM messages m WHERE m.session_id = a.session_id"
     " AND m.agent_id = a.id AND m.status IN ('dispatching', 'verifying'))"
 )
