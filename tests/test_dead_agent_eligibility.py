@@ -182,7 +182,7 @@ async def test_dead_leader_replaced_after_grace(pool):
     assert (row["agent_id"], row["epoch"], row["unready_since"]) == (a0["id"], 3, None)
 
     # with only dead agents the dead leader stays and the move is retried
-    c, (a0, a1, _a2) = await hive(pool, 2)
+    c, (a0, a1) = await hive(pool, 2)
     await set_leader(pool, c["id"], a0["id"], epoch=3)
     for a in (a0, a1):
         await set_agent_status(pool, a["id"], state="dead")
