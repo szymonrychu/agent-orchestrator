@@ -41,7 +41,7 @@ from typing import Any, Literal, get_args
 from psycopg_pool import AsyncConnectionPool
 
 from agents_orchestrator.cache.presign import CacheTarget, object_name, presign
-from agents_orchestrator.cache.save_rule import PODS_EXIST, restore_key, save_skip
+from agents_orchestrator.cache.save_rule import PODS_EXIST, save_skip
 from agents_orchestrator.db.sessions import Session
 from agents_orchestrator.k8s.kube import KubeApi, KubeError, Obj, is_owned
 from agents_orchestrator.k8s.labels import object_names, prefix, session_labels
@@ -111,11 +111,6 @@ def restore_job_name(slug: str) -> str:
 
 def save_job_name(slug: str) -> str:
     return CacheOp("save").job_name(slug)
-
-
-def _sessions_unrecorded(cache: dict[str, Any], target: CacheTarget) -> bool:
-    """The sessions target has no restore record: the one case that needs the PVC check."""
-    return target == "sessions" and cache.get(restore_key(target)) is None
 
 
 def job_name(slug: str, action: CacheAction, target: CacheTarget = "workdir") -> str:
@@ -321,8 +316,8 @@ class CacheRunner:
         Skipped (no Job) unless the target's restore succeeded (`restored`, `miss` on first use, or
         `reset` after an unreadable archive), so a failed restore never replaces a good archive
         with partial content. The sessions save also runs without a sessions restore record (a
-        session older than the transcript backup, whose PVC exists; with no PVC it never
-        converged and skips as `never_converged`) and after one skipped with `pods_exist`. A
+        session older than the transcript backup that converged; one that never did skips as
+        `never_converged`) and after one skipped with `pods_exist`. A
         failed or timed-out save is logged and recorded, never held.
         """
         if session.spec.cache is None:
@@ -331,10 +326,7 @@ class CacheRunner:
         cache = session.status.get("cache") or {}
         save = cache.get(op.status_key)
         if save is None:
-            converged = (
-                await self._converged(session) if _sessions_unrecorded(cache, target) else True
-            )
-            skip = save_skip(self.settings.cache_available, cache, target, converged=converged)
+            skip = save_skip(self.settings.cache_available, session.status, target)
             if skip is not None:
                 await self._write(session, cache, op, {"state": "skipped", "reason": skip})
                 log.info("%s of session %s skipped: %s", op.title, session.slug, skip)
@@ -345,13 +337,6 @@ class CacheRunner:
         elif save.get("job"):
             await self._delete_job(session, op)  # crashed between the outcome and the delete
         return save.get("state") != "running"
-
-    async def _converged(self, session: Session) -> bool:
-        """The session's own workspace PVC exists: a converge applied it, so pods may have run."""
-        pvc = await self.kube.get_object(
-            "PersistentVolumeClaim", self.settings.namespace, object_names(session.slug)["pvc"]
-        )
-        return pvc is not None and is_owned(pvc, session.slug)
 
     def save_owed(self, session: Session, target: CacheTarget = "workdir") -> bool:
         """`spec.cache` is set and the save of `target` has no outcome yet."""

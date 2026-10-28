@@ -28,12 +28,16 @@ class SaveEnv(Env):
             **{"discard_drain_seconds": 0, "discard_quiesce_timeout_seconds": 60, **settings},
         )
         self.saves: list[dict] = []
+        self.sessions_saves: list[dict] = []
         inner = self.rec.cache.write_status
 
         async def spy(session, fields, generation, **kw):
             save = (fields.get("cache") or {}).get("save")
             if save is not None:
                 self.saves.append(dict(save))
+            sessions_save = (fields.get("cache") or {}).get("sessions_save")
+            if sessions_save is not None:
+                self.sessions_saves.append(dict(sessions_save))
             return await inner(session, fields, generation, **kw)
 
         self.rec.cache.write_status = spy
@@ -239,10 +243,7 @@ async def test_sessions_save_skipped_when_never_converged(env):
     await env.delete(c)
     await env.tick(2)
     assert env.kube.has("PersistentVolumeClaim", object_names("alpha")["pvc"]) is False
-    assert (await env.cache(c.id))["sessions_save"] == {
-        "state": "skipped",
-        "reason": "never_converged",
-    }
+    assert env.sessions_saves == [{"state": "skipped", "reason": "never_converged"}]
     assert env.creates(job_name("alpha", "save", "sessions")) == 0
     assert await env.gone(c)
 
@@ -278,8 +279,10 @@ async def test_sessions_save_runs_for_session_predating_restore(env):
     ],
 )
 async def test_sessions_save_rule_separates_never_converged(restore, converged, skip):
-    cache = {} if restore is None else {"sessions_restore": restore}
-    assert save_skip(True, cache, "sessions", converged=converged) == skip
+    status: dict = {"cache": {} if restore is None else {"sessions_restore": restore}}
+    if converged:
+        status["replicas"] = 1  # the converge's closing status write
+    assert save_skip(True, status, "sessions") == skip
 
 
 async def test_no_cache_session_unchanged(env):

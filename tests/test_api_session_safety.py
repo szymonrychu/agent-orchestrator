@@ -183,13 +183,29 @@ async def test_backup_view_reports_skipped_save(
         for k, v in (("restore", restore), ("sessions_restore", sessions_restore))
         if v is not None
     }
-    backup = await _backup(pool, dsn, CACHED, {"cache": cache})
+    status = {"replicas": 1, "cache": cache}  # converged: its pods ran
+    backup = await _backup(pool, dsn, CACHED, status)
     assert (backup["workdir"], backup["transcripts"]) == (workdir, transcripts)
     assert backup["reason"] == reason
     # the view applies the runner's own save rule; the workdir's skip names the reason first
-    rule = [save_skip(True, cache, "workdir"), save_skip(True, cache, "sessions")]
+    rule = [save_skip(True, status, "workdir"), save_skip(True, status, "sessions")]
     assert (backup["workdir"], backup["transcripts"]) == (rule[0] is None, rule[1] is None)
     assert backup["reason"] == next((r for r in rule if r is not None), None)
+
+
+async def test_backup_view_never_converged_session_has_no_transcripts(pool, dsn):
+    """No sessions restore record and no converge yet: the reconciler skips the transcripts save."""
+    status = {"cache": {"restore": RESTORED}}
+    backup = await _backup(pool, dsn, CACHED, status)
+    assert (backup["workdir"], backup["transcripts"]) == (True, False)
+    assert backup["reason"] == "never_converged"
+    assert save_skip(True, status, "sessions") == "never_converged"
+    converged = await _backup(pool, dsn, CACHED, {**status, "replicas": 1})
+    assert (converged["workdir"], converged["transcripts"], converged["reason"]) == (
+        True,
+        True,
+        None,
+    )
 
 
 async def test_backup_view_last_transcripts_backup(pool, dsn):

@@ -19,8 +19,8 @@ SAVE_OK_RESTORE_STATES = frozenset({"restored", "miss", "reset"})
 # A sessions restore skipped because the session's pods existed when the feature arrived leaves
 # the transcripts the pods wrote, so they are saved as after a successful restore.
 PODS_EXIST = "pods_exist"
-# No sessions restore record and no workspace PVC: the session was discarded before its first
-# converge, so no pod ever wrote /sessions and the save Job would wait on a volume never created.
+# No sessions restore record and no converge ever finished: the session was discarded before its
+# first converge, so no pod ever wrote /sessions and the save Job would wait on a missing PVC.
 NEVER_CONVERGED = "never_converged"
 
 
@@ -51,18 +51,24 @@ def _restore_skip(restore: dict[str, Any] | None) -> str | None:
     return f"restore_{state}"
 
 
-def save_skip(
-    cache_available: bool, cache: dict[str, Any], target: CacheTarget, *, converged: bool = True
-) -> str | None:
-    """Why the discard skips the save of `target` (`status.cache` as `cache`), or None to save.
+def has_converged(status: dict[str, Any]) -> bool:
+    """A converge ran to its closing status write, which records `replicas`.
 
-    `converged` is whether the session's workspace PVC exists. Without a sessions restore record
-    it tells a session that predates the restore (its pods ran, the PVC exists) from one
-    discarded before its first converge (`never_converged`, nothing to save).
+    That write follows the apply of the workspace PVC and the StatefulSet, so a status without it
+    is a session discarded before its first converge (or one a foreign object kept from applying).
+    """
+    return "replicas" in status
+
+
+def save_skip(cache_available: bool, status: dict[str, Any], target: CacheTarget) -> str | None:
+    """Why the discard skips the save of `target` (a session's `status`), or None to save.
+
+    Without a sessions restore record the session either predates the restore (its pods ran) or
+    was discarded before its first converge (`never_converged`: no PVC, nothing to save).
     """
     if not cache_available:
         return "not_configured"
-    restore = cache.get(restore_key(target))
+    restore = (status.get("cache") or {}).get(restore_key(target))
     if _pods_wrote_sessions(restore, target):
-        return None if converged or restore is not None else NEVER_CONVERGED
+        return None if restore is not None or has_converged(status) else NEVER_CONVERGED
     return _restore_skip(restore)
