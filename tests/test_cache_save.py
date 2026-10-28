@@ -9,10 +9,11 @@ import pytest
 import pytest_asyncio
 from test_cache_restore import CACHE_KEY, RESTORE, Env, line
 
+from agents_orchestrator.cache.save_rule import save_skip
 from agents_orchestrator.db import sessions
 from agents_orchestrator.k8s.labels import object_names
 from agents_orchestrator.reconciler import cache as cache_mod
-from agents_orchestrator.reconciler.cache import save_job_name
+from agents_orchestrator.reconciler.cache import job_name, save_job_name
 
 pytestmark = pytest.mark.asyncio
 
@@ -230,6 +231,55 @@ async def test_save_without_restore_record_is_skipped(env):
     await env.tick()
     assert env.saves_created() == 0
     assert await env.gone(c)
+
+
+async def test_sessions_save_skipped_when_never_converged(env):
+    """Discarded before its first converge: no PVC, so no sessions save Job to wait on."""
+    c = await env.create("alpha")
+    await env.delete(c)
+    await env.tick(2)
+    assert env.kube.has("PersistentVolumeClaim", object_names("alpha")["pvc"]) is False
+    assert (await env.cache(c.id))["sessions_save"] == {
+        "state": "skipped",
+        "reason": "never_converged",
+    }
+    assert env.creates(job_name("alpha", "save", "sessions")) == 0
+    assert await env.gone(c)
+
+
+async def test_sessions_save_runs_for_session_predating_restore(env):
+    """No sessions restore record but a converged session (its PVC exists): saved as before."""
+    c = await env.ready()
+    async with env.pool.connection() as conn:
+        current = await sessions.get(conn, c.id)
+        cache = {k: v for k, v in current.status["cache"].items() if k != "sessions_restore"}
+        await sessions.set_status(
+            conn, c.id, {**current.status, "cache": cache}, current.observed_generation
+        )
+    assert env.kube.has("PersistentVolumeClaim", object_names("alpha")["pvc"])
+    await env.delete(c)
+    await env.tick()
+    env.kube.finish_job(SAVE, exit_code=0, log=line("saved", 10))
+    await env.tick()
+    sessions_save = job_name("alpha", "save", "sessions")
+    assert env.creates(sessions_save) == 1
+    assert (await env.cache(c.id))["sessions_save"]["state"] == "running"
+    assert not await env.gone(c)
+
+
+@pytest.mark.parametrize(
+    ("restore", "converged", "skip"),
+    [
+        (None, False, "never_converged"),
+        (None, True, None),
+        ({"state": "skipped", "reason": "pods_exist"}, False, None),
+        ({"state": "running"}, False, "restore_running"),
+        ({"state": "miss"}, False, None),
+    ],
+)
+async def test_sessions_save_rule_separates_never_converged(restore, converged, skip):
+    cache = {} if restore is None else {"sessions_restore": restore}
+    assert save_skip(True, cache, "sessions", converged=converged) == skip
 
 
 async def test_no_cache_session_unchanged(env):
