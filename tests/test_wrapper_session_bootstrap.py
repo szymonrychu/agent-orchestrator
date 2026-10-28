@@ -348,3 +348,67 @@ async def test_stored_stopped_session_resume_5xx_deferred_and_kept(env, fake):
     assert agent.wrapper_session_id == sid
     assert list(fake.sessions) == [sid]
     assert "agent-alpha-0" in (await env.status(c.id))["message"]
+
+
+async def _db_now(env):
+    async with env.pool.connection() as conn:
+        cur = await conn.execute("SELECT clock_timestamp()")
+        return (await cur.fetchone())[0]
+
+
+async def test_successful_resume_records_resume_marker(env, fake):
+    """Both resume paths record `wrapper_resumed_at` (database clock); adopt and create clear it.
+
+    The marker is the ingester's re-attach trigger (deploy-safe-agent-sessions D3): it tells a
+    resumed session from one whose stored `session_closed` still holds.
+    """
+    c = await env.session("alpha")
+    await env.rec.reconcile_once()
+    (agent,) = await env.agents(c.id)
+    created = agent.wrapper_session_id
+    assert agent.wrapper_resumed_at is None  # create
+
+    # 1. the stored session is resumed
+    fake.set_session_state("stopped", has_transcript=True, session_id=created)
+    fake.sessions[created].turns_completed = 1
+    before = await _db_now(env)
+    await env.rec.reconcile_once()
+    after = await _db_now(env)
+    (agent,) = await env.agents(c.id)
+    assert agent.wrapper_session_id == created
+    assert agent.wrapper_resumed_at is not None
+    assert before <= agent.wrapper_resumed_at <= after
+    first = agent.wrapper_resumed_at
+
+    await env.rec.reconcile_once()  # steady state: the adopted stored session keeps its marker
+    (agent,) = await env.agents(c.id)
+    assert agent.wrapper_resumed_at == first
+
+    # 2. `_pick` resumes another listed session once the stored one is gone
+    other = await env.seed_session(c.id, "stopped", transcript=True)
+    del fake.sessions[created]
+    await env.rec.reconcile_once()
+    (agent,) = await env.agents(c.id)
+    assert agent.wrapper_session_id == other
+    assert agent.wrapper_resumed_at is not None and agent.wrapper_resumed_at > first
+
+    # 3. a create after a resume clears the marker
+    del fake.sessions[other]
+    await env.rec.reconcile_once()
+    (agent,) = await env.agents(c.id)
+    fresh = agent.wrapper_session_id
+    assert fresh not in (None, created, other)
+    assert agent.wrapper_resumed_at is None
+
+    # 4. so does an adopt after a resume
+    fake.set_session_state("stopped", has_transcript=True, session_id=fresh)
+    fake.sessions[fresh].turns_completed = 1
+    await env.rec.reconcile_once()
+    (agent,) = await env.agents(c.id)
+    assert agent.wrapper_session_id == fresh and agent.wrapper_resumed_at is not None
+    busy = await env.seed_session(c.id, "busy")
+    del fake.sessions[fresh]
+    await env.rec.reconcile_once()
+    (agent,) = await env.agents(c.id)
+    assert agent.wrapper_session_id == busy
+    assert agent.wrapper_resumed_at is None

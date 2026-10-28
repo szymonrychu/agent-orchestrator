@@ -5,7 +5,17 @@ refreshing that set every `settings.ingest_refresh_seconds`. Each task attaches 
 peers into `agent_status`), then streams events from `Last-Event-ID = last_seq` of the session,
 storing every envelope with `insert_events` and projecting state, context and turns. A dropped
 stream reconnects with backoff (1 s doubling to 30 s, reset by a received event);
-`session_closed` ends the task until the reconciler records a new session.
+`session_closed` marks the agent dead and ends the task.
+
+Re-attach after a resume (deploy-safe-agent-sessions D3): `AgentRef` carries
+`agents.wrapper_resumed_at`, which the reconciler writes on every successful resume, so `refresh`
+restarts the task of a resumed session as it does for a new one. A stored `session_closed` is
+honoured on attach only when no resume was recorded after it, by database order (its
+`events.created_at` against the marker, both the database clock), never by the wrapper's `ts`.
+Otherwise the attach projects the snapshot (a resumed `ready` becomes `idle` and notifies
+`agent_free`, so the dispatcher delivers) and streams from the last stored seq: the wrapper
+continues seq across a resume, and a replay stops at a replayed close, so streaming after it
+reads the resumed events. Replayed events at or below the last stored seq are never re-projected.
 """
 
 from __future__ import annotations
@@ -16,6 +26,7 @@ import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from psycopg_pool import AsyncConnectionPool
@@ -54,6 +65,7 @@ class AgentRef:
     session_id: uuid.UUID
     wrapper_session_id: str
     url: str
+    resumed_at: datetime | None
 
 
 @dataclass(frozen=True)
@@ -131,13 +143,20 @@ class _AgentStream:
         return False
 
     async def _stored_closed(self, conn: Any) -> bool:
+        """The last stored event is `session_closed` and no resume was recorded after it."""
         cur = await conn.execute(
-            "SELECT type FROM events WHERE agent_id=%s AND wrapper_session_id=%s AND type <> 'gap'"
+            "SELECT type = 'session_closed' AND (%(resumed)s::timestamptz IS NULL"
+            " OR %(resumed)s::timestamptz <= created_at) FROM events"
+            " WHERE agent_id = %(agent)s AND wrapper_session_id = %(ses)s AND type <> 'gap'"
             " ORDER BY seq DESC LIMIT 1",
-            (self.ref.agent_id, self.ref.wrapper_session_id),
+            {
+                "resumed": self.ref.resumed_at,
+                "agent": self.ref.agent_id,
+                "ses": self.ref.wrapper_session_id,
+            },
         )
         row = await cur.fetchone()
-        return row is not None and row[0] == "session_closed"
+        return row is not None and bool(row[0])
 
     async def _refresh_peers(self, client: WrapperClient) -> None:
         try:
@@ -283,14 +302,18 @@ class Ingester:
     async def _wanted(self) -> dict[uuid.UUID, AgentRef]:
         async with self.pool.connection() as conn:
             cur = await conn.execute(
-                "SELECT id, session_id, wrapper_session_id, url FROM agents"
+                "SELECT id, session_id, wrapper_session_id, url, wrapper_resumed_at FROM agents"
                 " WHERE wrapper_session_id IS NOT NULL AND url IS NOT NULL AND gone_at IS NULL"
             )
             rows = await cur.fetchall()
-        return {r[0]: AgentRef(r[0], r[1], r[2], r[3]) for r in rows}
+        return {r[0]: AgentRef(*r) for r in rows}
 
     async def refresh(self) -> None:
-        """Start a task for each new agent, cancel removed ones, restart changed sessions."""
+        """Start a task for each new agent, cancel removed ones, restart changed sessions.
+
+        A changed ref is a new session, a moved url or a recorded resume (D3); its task is
+        restarted even when it ended on `session_closed`.
+        """
         wanted = await self._wanted()
         stale = []
         for agent_id, (ref, task) in self._tasks.items():

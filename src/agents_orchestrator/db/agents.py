@@ -1,6 +1,8 @@
 """agents table repository. The reconciler is the writer (D3).
 
-`last_dispatched_at` is written only by the dispatch claim (db/queue.py, D23). Every change
+`last_dispatched_at` is written only by the dispatch claim (db/queue.py, D23).
+`wrapper_resumed_at` is the database clock of the last successful resume of the recorded
+wrapper session, the ingester's re-attach trigger (deploy-safe-agent-sessions D3). Every change
 that the session tabs and agents strip show (pod readiness, gone, wrapper session) NOTIFYs
 `status {session_id}`.
 """
@@ -19,7 +21,7 @@ from agents_orchestrator.db.pool import notify
 
 _COLUMNS = (
     "id, session_id, ordinal, pod_name, url, pod_phase, ready, wrapper_session_id,"
-    " wrapper_session_created_at, gone_at, last_dispatched_at, pod_ip"
+    " wrapper_session_created_at, gone_at, last_dispatched_at, pod_ip, wrapper_resumed_at"
 )
 
 
@@ -37,6 +39,7 @@ class Agent:
     gone_at: datetime | None
     last_dispatched_at: datetime | None
     pod_ip: str | None = None
+    wrapper_resumed_at: datetime | None = None
 
 
 async def _one(conn: psycopg.AsyncConnection, query: str, params: Any) -> dict | None:
@@ -110,15 +113,23 @@ async def set_wrapper_session(
     agent_id: uuid.UUID,
     wrapper_session_id: str,
     created_at: datetime | None,
+    *,
+    resumed: bool = False,
 ) -> bool:
-    """Record the agent's wrapper session; `created_at` None means the database clock."""
+    """Record the agent's wrapper session; `created_at` None means the database clock.
+
+    `resumed` marks a successful resume: `wrapper_resumed_at` takes `clock_timestamp()`, the
+    clock `events.created_at` uses, so the ingester orders it against a stored close by the
+    database alone. A created or adopted session clears the marker.
+    """
     async with conn.transaction():
         row = await _one(
             conn,
             "UPDATE agents SET wrapper_session_id = %s,"
-            " wrapper_session_created_at = coalesce(%s, now())"
+            " wrapper_session_created_at = coalesce(%s, now()),"
+            " wrapper_resumed_at = CASE WHEN %s THEN clock_timestamp() END"
             " WHERE id = %s RETURNING session_id",
-            (wrapper_session_id, created_at, agent_id),
+            (wrapper_session_id, created_at, resumed, agent_id),
         )
         if row is None:
             return False
@@ -130,8 +141,8 @@ async def clear_wrapper_session(conn: psycopg.AsyncConnection, agent_id: uuid.UU
     async with conn.transaction():
         row = await _one(
             conn,
-            "UPDATE agents SET wrapper_session_id = NULL, wrapper_session_created_at = NULL"
-            " WHERE id = %s RETURNING session_id",
+            "UPDATE agents SET wrapper_session_id = NULL, wrapper_session_created_at = NULL,"
+            " wrapper_resumed_at = NULL WHERE id = %s RETURNING session_id",
             (agent_id,),
         )
         if row is None:
