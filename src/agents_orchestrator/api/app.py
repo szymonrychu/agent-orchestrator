@@ -15,6 +15,7 @@ from agents_orchestrator import __version__
 from agents_orchestrator.api import (
     agent,
     autoclose,
+    chat,
     errors,
     messages,
     presets,
@@ -54,6 +55,7 @@ def create_app(
                 await sweeper
             await listener.stop()
             await workspace.close_client(app)
+            await chat.close_client(app)
             if owns_pool:
                 await app.state.pool.close()
 
@@ -69,10 +71,12 @@ def create_app(
     app.state.pool = pool
     app.state.listener = listener
     app.state.wrapper_http = None
+    app.state.chat_http = None
     app.state.stream_poll_seconds = stream_poll_seconds
     errors.install(app)
     app.include_router(sessions.router)
     app.include_router(agent.router)
+    app.include_router(chat.router)
     app.include_router(presets.router)
     app.include_router(messages.router)
     app.include_router(streams.router)

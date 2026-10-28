@@ -233,6 +233,18 @@ claude:
   existingSecretKey: CLAUDE_CODE_OAUTH_TOKEN
   token: ""
 
+# Chat upstream of the agent chat relay (/agent/v1/chat on the agent port). url becomes
+# ORCH_CHAT_URL in the settings ConfigMap; ORCH_CHAT_TOKEN, the bearer the orchestrator sends
+# upstream, comes from existingSecret/existingSecretKey, or from the chart Secret <fullname>-chat
+# built from token (existingSecret wins). It reaches the api container only. Set url and a token
+# source together, or neither (the relay then answers 503 chat_unconfigured); one without the
+# other fails the render.
+chat:
+  url: ""
+  token: ""
+  existingSecret: ""
+  existingSecretKey: chat-token
+
 # Workspace cache: restore and save Jobs that move a capped tar.zst of a session workspace
 # to and from any S3-compatible object store. Empty cache.s3.bucket disables the cache and
 # renders no ORCH_CACHE_* setting. The access keys reach the reconciler container only

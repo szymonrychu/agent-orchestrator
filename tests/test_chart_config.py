@@ -224,17 +224,18 @@ def test_master_key_and_claude_secrets():
 
 def test_no_secret_values_in_configmap():
     # built at run time so no secret-shaped literal sits in the source
-    pw, mk, tok = ("".join(["marker", name, "value"]) for name in ("pw", "mk", "tok"))
+    pw, mk, tok, chat = ("".join(["marker", name, "value"]) for name in ("pw", "mk", "tok", "chat"))
     docs = render(
         values(
             postgres={"host": "h", "user": "u", "password": pw, "database": "d"},
             masterKey={"value": mk},
             claude={"token": tok},
+            chat={"url": CHAT_URL, "token": chat},
         )
     )
     for cm in by_kind(docs, "ConfigMap").values():
         text = yaml.safe_dump(cm)
-        for secret in (pw, mk, tok, "postgresql://"):
+        for secret in (pw, mk, tok, chat, "postgresql://"):
             assert secret not in text
 
 
@@ -248,3 +249,129 @@ def test_secret_names_never_match_agent_pod_secrets():
 
 def test_lint_values_render():
     assert render(yaml.safe_load(LINT_VALUES.read_text()))
+
+
+def test_master_key_chart_secret_key_follows_existing_secret_key(env_chart):
+    docs = render(
+        values(postgres={"url": URL}, masterKey={"value": "mk", "existingSecretKey": "k"}),
+        chart=env_chart,
+    )
+    assert by_kind(docs, "Secret")[f"{FULL}-master-key"]["stringData"] == {"k": "mk"}
+    (probe,) = [d for d in docs if d["metadata"]["name"] == "env-probe"]
+    env = yaml.safe_load(probe["data"]["env"])["env"]
+    mk = next(e for e in env if e["name"] == "ORCH_MASTER_KEY")
+    assert mk["valueFrom"]["secretKeyRef"] == {"name": f"{FULL}-master-key", "key": "k"}
+
+
+CHAT_URL = "http://agents-matrix-connector-api-agents:8001"
+COMPONENTS = ["api", "dispatcher", "ingester", "reconciler"]
+
+
+def _containers(docs: list[dict]) -> dict[str, list[dict]]:
+    """Every container (init containers included) of each Deployment, by Deployment name."""
+    out = {}
+    for name, dep in by_kind(docs, "Deployment").items():
+        spec = dep["spec"]["template"]["spec"]
+        out[name] = spec.get("initContainers", []) + spec["containers"]
+    return out
+
+
+def _env_names(container: dict) -> list[str]:
+    return [e["name"] for e in container.get("env", [])]
+
+
+def test_chat_url_in_configmap():
+    cm = by_kind(
+        render(values(postgres={"url": URL}, chat={"url": CHAT_URL, "token": "t"})), "ConfigMap"
+    )[f"{FULL}-settings"]
+    assert cm["data"]["ORCH_CHAT_URL"] == CHAT_URL
+    assert "ORCH_CHAT_TOKEN" not in cm["data"]
+
+
+def test_chat_token_secret_on_api_only():
+    tok = "".join(["marker", "chat", "value"])
+    docs = render(values(postgres={"url": URL}, chat={"url": CHAT_URL, "token": tok}))
+    assert by_kind(docs, "Secret")[f"{FULL}-chat"]["stringData"] == {"chat-token": tok}
+    containers = _containers(docs)
+    assert sorted(containers) == sorted(f"{FULL}-{c}" for c in COMPONENTS)
+    for name, items in containers.items():
+        for c in items:
+            refs = [e for e in c.get("env", []) if e["name"] == "ORCH_CHAT_TOKEN"]
+            if name == f"{FULL}-api" and c["name"] == "api":
+                assert refs == [
+                    {
+                        "name": "ORCH_CHAT_TOKEN",
+                        "valueFrom": {
+                            "secretKeyRef": {"name": f"{FULL}-chat", "key": "chat-token"}
+                        },
+                    }
+                ]
+            else:
+                assert refs == [], (name, c["name"])
+    for cm in by_kind(docs, "ConfigMap").values():
+        assert tok not in yaml.safe_dump(cm)
+
+    def chat_sums(token: str) -> dict[str, str | None]:
+        deps = by_kind(
+            render(values(postgres={"url": URL}, chat={"url": CHAT_URL, "token": token})),
+            "Deployment",
+        )
+        return {
+            n: d["spec"]["template"]["metadata"]["annotations"].get("checksum/chat-secret")
+            for n, d in deps.items()
+        }
+
+    one, two = chat_sums("t1"), chat_sums("t2")
+    assert one[f"{FULL}-api"] and two[f"{FULL}-api"] and one[f"{FULL}-api"] != two[f"{FULL}-api"]
+    assert {v for n, v in one.items() if n != f"{FULL}-api"} == {None}
+
+    docs = render(
+        values(
+            postgres={"url": URL},
+            chat={
+                "url": CHAT_URL,
+                "token": tok,
+                "existingSecret": "chat-s",
+                "existingSecretKey": "k",
+            },
+        )
+    )
+    assert f"{FULL}-chat" not in by_kind(docs, "Secret")
+    api = next(c for c in _containers(docs)[f"{FULL}-api"] if c["name"] == "api")
+    ref = next(e for e in api["env"] if e["name"] == "ORCH_CHAT_TOKEN")
+    assert ref["valueFrom"]["secretKeyRef"] == {"name": "chat-s", "key": "k"}
+    for name, items in _containers(docs).items():
+        for c in items:
+            if not (name == f"{FULL}-api" and c["name"] == "api"):
+                assert "ORCH_CHAT_TOKEN" not in _env_names(c), (name, c["name"])
+    deps = by_kind(docs, "Deployment")
+    assert all(
+        "checksum/chat-secret" not in d["spec"]["template"]["metadata"]["annotations"]
+        for d in deps.values()
+    )
+    for cm in by_kind(docs, "ConfigMap").values():
+        assert tok not in yaml.safe_dump(cm)
+
+
+@pytest.mark.parametrize(
+    "chat",
+    [
+        {"url": CHAT_URL},
+        {"token": "t"},
+        {"existingSecret": "chat-s"},
+        {"url": CHAT_URL, "existingSecretKey": "k"},
+    ],
+)
+def test_chat_url_and_token_together(chat):
+    err = render_error(values(postgres={"url": URL}, chat=chat))
+    assert "chat.url" in err and "chat.token" in err and "chat.existingSecret" in err
+
+
+def test_chat_absent_by_default():
+    docs = render(values(postgres={"url": URL}))
+    assert "ORCH_CHAT_URL" not in by_kind(docs, "ConfigMap")[f"{FULL}-settings"]["data"]
+    assert f"{FULL}-chat" not in by_kind(docs, "Secret")
+    for items in _containers(docs).values():
+        for c in items:
+            assert "ORCH_CHAT_TOKEN" not in _env_names(c)
+            assert "ORCH_CHAT_URL" not in _env_names(c)

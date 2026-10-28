@@ -81,7 +81,7 @@ Every process reads `ORCH_*` variables (the contract `agents-orchestrator-settin
 | `ORCH_ANY_MCP_REPO` | `https://github.com/szymonrychu/any-mcp` | api, reconciler | any-mcp git repository |
 | `ORCH_ANY_MCP_REF` | `v0.5.0` | api, reconciler | any-mcp pinned release tag vX.Y.Z (never a branch) |
 | `ORCH_ANY_MCP_PLUGINS_REPO` | `https://github.com/szymonrychu/any-mcp-tatara-plugins` | api, reconciler | any-mcp plugins git repository (holds the orchestrator plugin) |
-| `ORCH_ANY_MCP_PLUGINS_REF` | `v0.1.0` | api, reconciler | any-mcp plugins pinned release tag vX.Y.Z (never a branch) |
+| `ORCH_ANY_MCP_PLUGINS_REF` | `v0.2.0` | api, reconciler | any-mcp plugins pinned release tag vX.Y.Z (never a branch) |
 | `ORCH_ON_START_TIMEOUT_SECONDS` | `600` | api, reconciler | onStart hook timeout |
 | `ORCH_KUBE_ACCESS_SERVICE_ACCOUNT` | empty | api, reconciler | ServiceAccount (bound to the `cluster-admin` ClusterRole by the chart) that pods of a `kube_access` session run as; empty refuses `spec.kube_access: true` with 422 and `GET /api/v1/meta` reports `kube_access.available` false |
 | `ORCH_AGENT_SERVICE_ACCOUNT` | `default` | reconciler | unprivileged ServiceAccount of every other agent pod and of every init, check and cache Job, with no token mounted |
@@ -89,6 +89,8 @@ Every process reads `ORCH_*` variables (the contract `agents-orchestrator-settin
 | `ORCH_SESSION_MESSAGE_QUEUED_MAX` | `20` | api | queued cross-session messages one target session may hold (at least 1); above it a send is refused 409 `target_queue_full` |
 | `ORCH_SESSION_MESSAGE_MAX_HOPS` | `8` | api | longest chain of cross-session messages each sent in the turn that delivered the previous one (at least 1); above it a send is refused 409 `hop_limit` |
 | `ORCH_SESSION_MESSAGE_PAIR_MAX_PER_HOUR` | `30` | api | cross-session messages one pair of sessions may exchange, both directions, in the last hour (at least 1); above it a send is refused 429 `pair_budget` |
+| `ORCH_CHAT_URL` | empty | api | http or https base URL of the chat upstream (the matrix connector's agent listener); the chat relay calls `{ORCH_CHAT_URL}/chat/v1/...`. No query or fragment. Set together with `ORCH_CHAT_TOKEN` or neither; empty answers every `/agent/v1/chat/*` call 503 `chat_unconfigured` |
+| `ORCH_CHAT_TOKEN` | empty | api | bearer token the chat relay presents to the chat upstream (`Authorization: Bearer`); secret, never in a repr, a log line or an error body. Set together with `ORCH_CHAT_URL` or neither, else a settings error naming both |
 
 ## Commands
 
@@ -115,7 +117,7 @@ CI (`.github/workflows/ci.yaml`, job `images`) builds the orchestrator image fro
 
 - Orchestrator image: `harbor.szymonrichert.pl/containers/agents-orchestrator:<sha7>`, where `<sha7>` is the first seven characters of the commit sha. Tags are immutable; there is no `latest`.
 - Agent image: no agent image is built here. Agent pods run the claude-code-wrapper image named by `ORCH_AGENT_IMAGE`; the recommended one is `harbor.szymonrichert.pl/containers/claude-code-wrapper:5fd93ff`. This is the value for the chart's `agentImage` and agents-helmfile, and the commit the dev dependency `claude-code-wrapper` in `pyproject.toml` is pinned to, so config validation tests the wrapper the agents run.
-- any-mcp: it reaches agent pods through the rendered onStart hook, not through an image. The `any-mcp` dependency in `pyproject.toml` and `ORCH_ANY_MCP_REF` pin the same release tag (`v0.5.0`). The dev dependency `any-mcp-tatara-orchestrator` in `pyproject.toml` (the orchestrator plugin from the plugins repo) and `ORCH_ANY_MCP_PLUGINS_REF` pin the same plugins release tag (`v0.1.0`).
+- any-mcp: it reaches agent pods through the rendered onStart hook, not through an image. The `any-mcp` dependency in `pyproject.toml` and `ORCH_ANY_MCP_REF` pin the same release tag (`v0.5.0`). The dev dependency `any-mcp-tatara-orchestrator` in `pyproject.toml` (the orchestrator plugin from the plugins repo) and `ORCH_ANY_MCP_PLUGINS_REF` pin the same plugins release tag (`v0.2.0`).
 - The onStart script (`k8s/on_start.py`, ConfigMap key `on-start.sh`) runs before claude starts, on every pod start: it installs any-mcp into `/opt/any-mcp` when `/opt/any-mcp/.ref` differs from `ORCH_ANY_MCP_REF`, writes the session's any-mcp config to `/opt/any-mcp/etc/any-mcp.yaml`, runs `/opt/any-mcp/bin/any-mcp plugins install --config /opt/any-mcp/etc/any-mcp.yaml` (every run, so every `plugins[].source` of the config is installed into the any-mcp venv, branch and tag refs refreshed), then `/opt/any-mcp/bin/any-mcp --help`. The orchestrator plugin is one of those sources: the reserved entry is `source: git::<ORCH_ANY_MCP_PLUGINS_REPO>//orchestration/orchestrator?ref=<ORCH_ANY_MCP_PLUGINS_REF>` (no `plugin` key), installed as the package `any-mcp-tatara-orchestrator`. The rendered `plugins` list is the base config's entries (the spec's `any_mcp_config`, else the `ORCH_ANY_MCP_CONFIG_FILE` default), then one `{name, source}` per `spec.any_mcp_sources` entry in order, then the reserved entry (omitted without `ORCH_AGENT_API_URL`; the sources are rendered either way). A failed install does not block the session: the script logs `on-start: <step> failed (exit N)` to stderr, exits 0 and the hook is `on_error: allow`, so the pod stays Ready without the failed piece. Changing `ORCH_ANY_MCP_PLUGINS_REPO`, `ORCH_ANY_MCP_PLUGINS_REF` or a session's sources changes the config hash and rolls its pods.
 
 ## Helm chart
@@ -145,14 +147,17 @@ A Postgres connection is required. Set exactly one of these; none, or more than 
 | Secret | Key | Created when | Override |
 |---|---|---|---|
 | `<fullname>-database` | `uri` | `postgres.url` or the host parts are set | `postgres.existingSecret` |
-| `<fullname>-master-key` | `master-key` | `masterKey.value` is set | `masterKey.existingSecret` + `existingSecretKey` |
+| `<fullname>-master-key` | `masterKey.existingSecretKey` (default `master-key`) | `masterKey.value` is set | `masterKey.existingSecret` + `existingSecretKey` |
 | `<fullname>-claude` | `CLAUDE_CODE_OAUTH_TOKEN` | `claude.token` is set | `claude.existingSecret` + `existingSecretKey` |
+| `<fullname>-chat` | `chat.existingSecretKey` (default `chat-token`) | `chat.token` is set and `chat.existingSecret` is not | `chat.existingSecret` + `existingSecretKey` |
 
 The master key and the Claude token each need a value or an `existingSecret`; with neither the render fails. The agent pods in the release namespace read the Claude Secret, so `existingSecret` must live there.
 
+The chat relay is optional. `chat.url` becomes `ORCH_CHAT_URL` in the settings ConfigMap and `ORCH_CHAT_TOKEN` comes from `chat.existingSecret` (key `chat.existingSecretKey`, default `chat-token`) or else from the chart Secret `<fullname>-chat` built from `chat.token`; `existingSecret` wins. `ORCH_CHAT_TOKEN` is a `secretKeyRef` on the api container only (not its migrate init container, not the dispatcher, ingester or reconciler), and the api pod rolls when the chart-made token changes (`checksum/chat-secret`). Set `chat.url` together with `chat.token` or `chat.existingSecret`, or none of them: one without the other fails the render naming all three. With none, neither variable renders and every `/agent/v1/chat/*` call answers 503 `chat_unconfigured`.
+
 ### Settings ConfigMap
 
-`<fullname>-settings` carries `ORCH_NAMESPACE` (the release namespace), `ORCH_AGENT_IMAGE` (`agentImage`, required), `ORCH_CLAUDE_SECRET_NAME` (`claude.existingSecret` or `<fullname>-claude`), `ORCH_AGENT_SERVICE_ACCOUNT` (`<fullname>-agent` with `serviceAccount.create`, else `default`) and, only with `kubeAccess.enabled`, `ORCH_KUBE_ACCESS_SERVICE_ACCOUNT` (`<fullname>-kube-access`; without it `kube_access` sessions are refused). Every entry of `env` is added verbatim; each key must start with `ORCH_` or the render fails naming it. No secret value is ever written to the ConfigMap; the database URL and master key reach the containers through `secretKeyRef`.
+`<fullname>-settings` carries `ORCH_NAMESPACE` (the release namespace), `ORCH_AGENT_IMAGE` (`agentImage`, required), `ORCH_CLAUDE_SECRET_NAME` (`claude.existingSecret` or `<fullname>-claude`), `ORCH_AGENT_SERVICE_ACCOUNT` (`<fullname>-agent` with `serviceAccount.create`, else `default`) and, only with `kubeAccess.enabled`, `ORCH_KUBE_ACCESS_SERVICE_ACCOUNT` (`<fullname>-kube-access`; without it `kube_access` sessions are refused) and, only with the chat relay configured, `ORCH_CHAT_URL` (`chat.url`; see Secrets). Every entry of `env` is added verbatim; each key must start with `ORCH_` or the render fails naming it. No secret value is ever written to the ConfigMap; the database URL and master key reach the containers through `secretKeyRef`.
 
 ### Service API
 
@@ -527,7 +532,7 @@ A hive is a session that may run several agents. It is derived, not switched: `c
 - Handover only. The leader hands leadership away with `POST /agent/v1/leadership/handover` (or the `leadership_handover` tool), carrying the epoch it read; there is no takeover route. The one other way to change the leader is the user override `POST /api/v1/sessions/{session_id}/leader`. A lost leader (gone, or unready longer than `LEADER_GRACE_SECONDS`) is replaced automatically. Details are under Leadership.
 - `hive_state` and the feed. The dispatcher pushes each agent a keyed `hive_state` note (leader, epoch, members, handover hint) when it changes, and an appended feed note with the peers' activity, at most every `PUSH_INTERVAL_SECONDS` (10 s) per session. Both are wrapper notes, so they are peer data and not user instructions. The push runs in the dispatcher, never the ingester.
 - Advisory locks. Agents claim files through the lock tools; the `onAgentToolCall` check hook warns about a file another live agent holds and never denies a write. See File locks.
-- Tool gating is fixed at render time. The orchestrator any-mcp plugin is rendered into every session's pods. Its tool allowlist is, for a hive, `me`, `leadership_handover`, `lock_claim`, `lock_release`, `lock_list`, `lock_reassign`, then `scale` when the session is scalable, then the session tools `sessions_list` and `session_send` and the init-scripts tools `init_scripts_get` and `init_scripts_edit`; for an alone session, exactly those four in that order (the agent API's `/init-scripts` routes decide who may call the last two). The list is derived from `max_replicas` and `static`, never from `session_messaging`: every session gets the session and init-scripts tools and the agent API applies the superleader rule to what each caller may list and send (see Cross-session messaging under Agent API). A later scale never changes what the agents see. Without `ORCH_AGENT_API_URL` no entry is rendered. The wrapper peer seeds are also rendered from the cap (`max_replicas`, else `replicas`), so agents added by scaling are already known peers.
+- Tool gating is fixed at render time. The orchestrator any-mcp plugin is rendered into every session's pods. Its tool allowlist is, for a hive, `me`, `leadership_handover`, `lock_claim`, `lock_release`, `lock_list`, `lock_reassign`, then `scale` when the session is scalable, then the session tools `sessions_list` and `session_send`, the init-scripts tools `init_scripts_get` and `init_scripts_edit` and the chat tools `chat_rooms`, `chat_send`, `chat_react` and `chat_status`; for an alone session, exactly those eight in that order (the agent API's `/init-scripts` routes decide who may call the init-scripts tools and its `/chat` routes admit only the session leader). The list is derived from `max_replicas` and `static`, never from `session_messaging`: every session gets the session, init-scripts and chat tools and the agent API applies the superleader rule to what each caller may list and send (see Cross-session messaging under Agent API). A later scale never changes what the agents see. Without `ORCH_AGENT_API_URL` no entry is rendered. The wrapper peer seeds are also rendered from the cap (`max_replicas`, else `replicas`), so agents added by scaling are already known peers.
 - The plugin name `orchestrator` is reserved in a session's any-mcp `plugins`. The entry rendered by `k8s/on_start.py` (a source in the plugins repo at `ORCH_ANY_MCP_PLUGINS_REF`, see Images) replaces any user entry of that name (and a spec that sets it is rejected 422 `invalid_request`).
 - Agents reach the orchestrator on the separate agent port (see Agent API), with a per-session token and the pod IP as identity.
 
@@ -1068,6 +1073,35 @@ Queues a message to the session named `slug`. Body `{"text"}`, 1 to 16000 charac
 - plus the 401 and 403 above.
 
 The limits are advisory: the counts and the insert are not one atomic step, so concurrent sends of one session can overshoot a limit by the number of sends in flight.
+
+### Chat
+
+A session leader reaches the user's chat (the matrix connector's rooms) through four relay routes; the orchestrator proves who is calling and forwards to one generic chat upstream at `ORCH_CHAT_URL`, so it names no Matrix concept and the agent token never leaves it. Nothing is stored. Backs the plugin chat tools `orchestrator_chat_rooms`, `orchestrator_chat_send`, `orchestrator_chat_react` and `orchestrator_chat_status`, which are in every session's any-mcp allow list (see Tool gating): the tools are visible to every agent of every session, and only the leader's calls succeed (a member gets 403 `not_leader`). Every route checks, in this order, and a refusal makes no upstream call:
+
+1. the agent identity above: 401 `unauthorized`, 403 `forbidden`;
+2. 403 `not_leader`: the caller is not its session's current leader (the only agent of an alone session counts as leader), exactly as `POST /agent/v1/sessions/{slug}/messages`;
+3. 503 `chat_unconfigured`: `ORCH_CHAT_URL` and `ORCH_CHAT_TOKEN` are empty;
+4. 413 `payload_too_large`: a POST body over 256 KiB (262144 bytes). It covers a maximal message: 16000 characters of 4 bytes each are 64000 bytes as raw UTF-8 JSON and 192000 bytes with every character escaped as a JSON surrogate pair, plus a room id of up to 255 characters, `reply_to` and the keys.
+
+The relay then forwards the method, the path under `{ORCH_CHAT_URL}/chat/v1`, the query string and the POST body byte for byte, with only these headers: `Authorization: Bearer <ORCH_CHAT_TOKEN>`, `X-Orch-Session: <caller session id>`, `X-Orch-Slug: <caller session slug>` (read from the sessions table, never from the request) and, for a POST, `Content-Type: application/json`. No inbound header is forwarded, the agent token included. The upstream call is capped at 10 s.
+
+Pass-through rule: the upstream status and JSON body reach the agent unchanged, refusals included (for example 403 `room_not_allowed`, 409 `room_bound`, 422 `bad_reference`, 429 `rate_limited`). A connection error, a timeout or an answer that is not JSON is 503 `chat_unavailable`, without the upstream text. The orchestrator does not validate the bodies; the upstream does. Log lines carry the method, path and status only, never a token or a body.
+
+#### `GET /agent/v1/chat/rooms`
+
+Forwards to `GET {ORCH_CHAT_URL}/chat/v1/rooms`: the rooms the caller's session may post to, 200 `{"rooms": [{room_id, name, kind, bound, agents_may_initiate}]}`.
+
+#### `POST /agent/v1/chat/messages`
+
+Forwards to `POST {ORCH_CHAT_URL}/chat/v1/messages`. Body `{text, room?, reply_to?}`: `text` 1 to 16000 characters, `room` a room id from the rooms list, `reply_to` a message reference `m<n>` or `s<n>`; with `room` omitted the upstream picks the room of `reply_to`, else the room bound to the session, else answers 422 `room_required`. Response 202 `{id: "s<n>", status: "queued"}`.
+
+#### `POST /agent/v1/chat/reactions`
+
+Forwards to `POST {ORCH_CHAT_URL}/chat/v1/reactions`. Body `{to, key}`: `to` a message reference, `key` the reaction emoji; the room is always the room of `to`. Response 202 `{id: "s<n>", status: "queued"}`.
+
+#### `GET /agent/v1/chat/messages/{send_id}`
+
+Forwards to `GET {ORCH_CHAT_URL}/chat/v1/messages/{send_id}` (the id percent-encoded as one path segment, dots included): the delivery status of a send of the caller's session, 200 `{id, kind, status, reason, room_id, created_at, sent_at}`; the upstream answers 404 `not_found` for an id that is not one of the caller session's sends.
 
 ### File locks
 

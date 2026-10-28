@@ -159,7 +159,7 @@ class Settings(BaseSettings):
     any_mcp_repo: str = "https://github.com/szymonrychu/any-mcp"
     any_mcp_ref: str = "v0.5.0"
     any_mcp_plugins_repo: str = "https://github.com/szymonrychu/any-mcp-tatara-plugins"
-    any_mcp_plugins_ref: str = "v0.1.0"
+    any_mcp_plugins_ref: str = "v0.2.0"
     on_start_timeout_seconds: float = 600
 
     cache_s3_endpoint: str = ""
@@ -181,6 +181,9 @@ class Settings(BaseSettings):
     session_message_queued_max: int = Field(default=20, ge=1)
     session_message_max_hops: int = Field(default=8, ge=1)
     session_message_pair_max_per_hour: int = Field(default=30, ge=1)
+
+    chat_url: str = ""
+    chat_token: str = Field(default="", repr=False)
 
     def __init__(self, **values: object) -> None:
         try:
@@ -417,6 +420,25 @@ class Settings(BaseSettings):
                 raise _Bad("must be an http or https URL")
         return v
 
+    @field_validator("chat_url")
+    @classmethod
+    def _check_chat_url(cls, v: str) -> str:
+        if v:
+            parsed = urlparse(v)
+            if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                raise _Bad("must be an http or https URL")
+            if parsed.query or parsed.fragment:
+                raise _Bad("must not carry a query or fragment (the relay appends /chat/v1/...)")
+        return v
+
+    @field_validator("chat_token")
+    @classmethod
+    def _check_chat_pair(cls, v: str, info: ValidationInfo) -> str:
+        url = info.data.get("chat_url")
+        if url is not None and bool(url) != bool(v):
+            raise _Bad("set ORCH_CHAT_URL and ORCH_CHAT_TOKEN together, or neither")
+        return v
+
     @model_validator(mode="after")
     def _resolve(self) -> Settings:
         if self.master_key_file:
@@ -440,6 +462,10 @@ class Settings(BaseSettings):
     @property
     def cache_available(self) -> bool:
         return bool(self.cache_s3_bucket)
+
+    @property
+    def chat_available(self) -> bool:
+        return bool(self.chat_url)
 
     @property
     def kube_access_available(self) -> bool:
