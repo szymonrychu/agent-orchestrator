@@ -13,17 +13,24 @@ from typing import Any
 import psycopg
 import pytest
 import pytest_asyncio
-from factories import insert_agent, insert_event, insert_session, set_agent_status
+from factories import (
+    insert_agent,
+    insert_event,
+    insert_message,
+    insert_session,
+    set_agent_status,
+)
 from fakes.fake_wrapper import FakeWrapper
 from psycopg import sql
 
-from agents_orchestrator.db import status
+from agents_orchestrator.db import agents as agents_repo
+from agents_orchestrator.db import queue, status
 from agents_orchestrator.db.leadership import CHANNEL as LEADERSHIP_CHANNEL
 from agents_orchestrator.ingester import Ingester
 from agents_orchestrator.ingester.loop import map_state
 from agents_orchestrator.settings import Settings
 from agents_orchestrator.tokens import derive_tokens
-from agents_orchestrator.wrapper import WrapperClient
+from agents_orchestrator.wrapper import Snapshot, WrapperClient
 
 MASTER_KEY = "k" * 40
 OLD_SINCE = "2001-02-03T04:05:06+00:00"
@@ -97,16 +104,38 @@ async def listener(dsn: str) -> AsyncIterator[Listener]:
 
 
 class RecordingClient(WrapperClient):
-    """A real client that records the Last-Event-ID of every stream it opens."""
+    """A real client that records the Last-Event-ID of every stream it opens and the state of
+    every session snapshot it reads.
 
-    def __init__(self, *a: Any, opened: list[Any], replay_all: bool = False, **kw: Any) -> None:
+    `replay_from` holds Last-Event-IDs that the next streams use instead of the ingester's own,
+    one per stream, as a wrapper replaying older events would.
+    """
+
+    def __init__(
+        self,
+        *a: Any,
+        opened: list[Any],
+        gets: list[str | None] | None = None,
+        replay_all: bool = False,
+        replay_from: list[int] | None = None,
+        **kw: Any,
+    ) -> None:
         super().__init__(*a, **kw)
         self._opened = opened
+        self._gets = gets if gets is not None else []
         self._replay_all = replay_all
+        self._replay_from = replay_from if replay_from is not None else []
+
+    async def get_session(self, session_id: str) -> Snapshot:
+        snap = await super().get_session(session_id)
+        self._gets.append(snap.state)
+        return snap
 
     async def events(self, wrapper_session_id: str, last_event_id: int | str | None = None):
         if self._replay_all:
             last_event_id = 0
+        elif self._replay_from:
+            last_event_id = self._replay_from.pop(0)
         self._opened.append(last_event_id)
         async for env in super().events(wrapper_session_id, last_event_id):
             yield env
@@ -118,8 +147,10 @@ class Harness:
     def __init__(self, pool, dsn: str) -> None:
         self.pool, self.dsn = pool, dsn
         self.opened: list[Any] = []
+        self.gets: list[str | None] = []
         self.sleeps: list[float] = []
         self.replay_all = False
+        self.replay_from: list[int] = []
         self.client_cls: type[RecordingClient] = RecordingClient
         self.ingester: Ingester | None = None
         self._task: asyncio.Task[None] | None = None
@@ -151,7 +182,14 @@ class Harness:
 
     def factory(self, url: str, session_id: uuid.UUID) -> WrapperClient:
         token = derive_tokens(MASTER_KEY.encode(), session_id).auth
-        return self.client_cls(url, token, opened=self.opened, replay_all=self.replay_all)
+        return self.client_cls(
+            url,
+            token,
+            opened=self.opened,
+            gets=self.gets,
+            replay_all=self.replay_all,
+            replay_from=self.replay_from,
+        )
 
     async def fast_sleep(self, delay: float) -> None:
         self.sleeps.append(delay)
@@ -188,6 +226,27 @@ class Harness:
 
     def last_fake_seq(self) -> int:
         return self.fake.sessions[self.wrapper_session_id].events[-1]["seq"]
+
+    async def state(self) -> str | None:
+        row = await status_row(self.pool, self.agent_id)
+        return row["state"] if row is not None else None
+
+    def shut_down(self) -> int:
+        """The wrapper's SIGTERM path: the session stops and `session_closed` ends its streams.
+
+        Returns the seq of the `session_closed` event.
+        """
+        self.fake.set_session_state("stopped", has_transcript=True)
+        self.fake.emit("session_closed", {})
+        return self.last_fake_seq()
+
+    async def resume(self) -> None:
+        """The reconciler's successful resume: the wrapper continues seq, the row records it."""
+        snap = await self.client.resume_session(self.wrapper_session_id)
+        async with self.pool.connection() as conn:
+            await agents_repo.set_wrapper_session(
+                conn, self.agent_id, snap.wrapper_session_id, snap.created_at, resumed=True
+            )
 
     def emit_at(self, type: str, ts: str, data: dict[str, Any] | None = None) -> None:
         """Emit an event stamped with the wrapper time `ts` instead of now.
@@ -721,17 +780,217 @@ async def test_new_session_restarts_stream(harness, pool) -> None:
 
 
 async def test_session_closed_marks_dead_and_stops(harness, pool, listener) -> None:
+    """A session_closed whose wrapper snapshot is dead ends the stream and leaves the agent dead.
+
+    Amended for deploy-safe-agent-sessions D3: the old rule was "no reconnect until the
+    reconciler records a new session". A resume of the same wrapper session now re-attaches, so a
+    close is honoured only when the wrapper's live snapshot maps to dead. The first D3 rule,
+    "no resume recorded after the stored close, by database order", was wrong: a close the
+    wrapper emitted before a resume is stored after it when the ingester was down across the
+    resume, so database order honoured it for every later attach. `agents.wrapper_resumed_at`
+    is a re-attach trigger only; a recorded resume with a stopped snapshot still ends the task.
+    """
     h = await harness()
     ingester = await h.start()
     await h.stored_through(h.last_fake_seq())
     opened = len(h.opened)
+    listener.got.clear()
 
+    # the session stops without a session_state event: the close and its snapshot mark it dead
+    h.fake.sessions[h.wrapper_session_id].state = "stopped"
     h.fake.emit("session_closed", {})
     await h.stored_through(h.last_fake_seq())
-    assert (await status_row(pool, h.agent_id))["state"] == "dead"
+
+    async def dead() -> bool:
+        return await h.state() == "dead"
+
+    await wait_until(dead)
+    assert h.gets[-1] == "stopped"
+    want = {"session_id": str(h.session_id), "agent_id": str(h.agent_id)}
+    await wait_until(lambda: want in listener.on("status"))
     await asyncio.sleep(0.3)
-    assert len(h.opened) == opened  # no reconnect until a new session is recorded
+    assert len(h.opened) == opened  # no reconnect: the wrapper says the session is dead
     assert h.agent_id in ingester.agent_ids()
+
+    # a recorded resume does not lift it while the snapshot is stopped, also for a fresh
+    # ingester process
+    await h.stop()
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE agents SET wrapper_resumed_at = clock_timestamp() WHERE id = %s",
+            (h.agent_id,),
+        )
+    gets = len(h.gets)
+    ingester = await h.start()
+    await wait_until(lambda: len(h.gets) > gets)
+    await asyncio.sleep(0.3)
+    assert h.gets[gets:] == ["stopped"]
+    assert await h.state() == "dead"
+    assert len(h.opened) == opened  # honoured on attach: no stream opened
+
+
+async def test_close_replayed_after_resume_not_honoured(harness, pool, listener) -> None:
+    """The incident path: the ingester was down across the shutdown and the resume.
+
+    The close the wrapper emitted before the resume reaches the ingester only on the replay
+    after it, so it is stored after `wrapper_resumed_at`. The live snapshot decides: the
+    resumed session is live, so the stream re-attaches from the close seq with the backoff
+    reset, and the resumed `session_state ready` frees the agent.
+    """
+    h = await harness()
+    await h.start()
+    stored = h.last_fake_seq()  # M: the stored log ends before the shutdown
+    await h.stored_through(stored)
+    await h.stop()
+    closed_seq = h.shut_down()  # N, never streamed: the ingester is down
+    await h.resume()  # N + 1, session_state ready
+    opened, sleeps = len(h.opened), len(h.sleeps)
+    listener.got.clear()
+
+    ingester = await h.start()
+    await h.stored_through(closed_seq + 1)
+
+    async def idle() -> bool:
+        return await h.state() == "idle"
+
+    await wait_until(idle)
+    assert h.opened[opened:] == [stored, closed_seq]
+    assert h.sleeps[sleeps:] == [1.0]  # the received events reset the backoff
+    seqs = [r["seq"] for r in await events_rows(pool, h.agent_id)]
+    assert closed_seq in seqs and closed_seq + 1 in seqs
+    want = {"session_id": str(h.session_id), "agent_id": str(h.agent_id)}
+    await wait_until(lambda: listener.on("agent_free"))
+    await asyncio.sleep(0.3)
+    assert listener.on("agent_free") == [want]
+
+    # the stream runs: a live event is stored
+    h.fake.emit("assistant_text", {"text": "live"})
+    await h.stored_through(h.last_fake_seq())
+    assert (await events_rows(pool, h.agent_id))[-1]["data"] == {"text": "live"}
+    assert h.agent_id in ingester.agent_ids()
+
+
+async def test_resume_reattaches_from_last_stored_seq(harness, pool) -> None:
+    h = await harness()
+    await h.start()
+    await h.stored_through(h.last_fake_seq())
+    closed_seq = h.shut_down()
+    await h.stored_through(closed_seq)
+    assert await h.state() == "dead"
+    opened = len(h.opened)
+
+    await h.resume()
+    await wait_until(lambda: len(h.opened) > opened)
+    assert h.opened[opened] == closed_seq  # from the last stored seq, the close itself
+    h.fake.emit("assistant_text", {"text": "after the resume"})
+    await h.stored_through(h.last_fake_seq())
+
+    rows = await events_rows(pool, h.agent_id)
+    seqs = [r["seq"] for r in rows]
+    assert seqs == [e["seq"] for e in h.fake.sessions[h.wrapper_session_id].events]
+    assert seqs[-1] > closed_seq + 1  # the resume's session_state and the later event
+    assert rows[-1]["data"] == {"text": "after the resume"}
+
+
+async def test_closed_before_resume_not_honoured(harness, pool) -> None:
+    h = await harness()
+    closed_seq = h.shut_down()
+    # a stored log that ends with the close, as the ingester left it before the pod roll
+    for env in h.fake.sessions[h.wrapper_session_id].events:
+        await insert_event(
+            pool,
+            h.session_id,
+            h.agent_id,
+            wrapper_session_id=h.wrapper_session_id,
+            seq=env["seq"],
+            type=env["type"],
+            data=env["data"],
+        )
+    await set_agent_status(pool, h.agent_id, state="dead", free_since=None, last_seq=closed_seq)
+    await h.resume()  # recorded after the close was stored
+
+    ingester = await h.start()
+    await h.stored_through(h.last_fake_seq())
+    assert await h.state() == "idle"
+    assert h.opened == [closed_seq]
+
+    # the stream runs: a live event is stored
+    h.fake.emit("assistant_text", {"text": "live"})
+    await h.stored_through(h.last_fake_seq())
+    assert (await events_rows(pool, h.agent_id))[-1]["data"] == {"text": "live"}
+    assert h.agent_id in ingester.agent_ids()
+
+
+async def test_reattach_marks_idle_and_notifies(harness, pool, listener) -> None:
+    h = await harness()
+    await h.start()
+    await h.stored_through(h.last_fake_seq())
+    await h.stored_through(h.shut_down())
+    assert await h.state() == "dead"
+    message = await insert_message(pool, h.session_id, text="queued while dead")
+    async with pool.connection() as conn:
+        assert await queue.claim_and_pick(conn) is None  # a dead agent takes nothing
+    listener.got.clear()
+
+    before = await db_now(pool)
+    await h.resume()
+
+    async def idle() -> bool:
+        return await h.state() == "idle"
+
+    await wait_until(idle)
+    row = await status_row(pool, h.agent_id)
+    assert row["free_since"] >= before  # the database clock, at the re-attach
+    want = {"session_id": str(h.session_id), "agent_id": str(h.agent_id)}
+    await wait_until(lambda: listener.on("agent_free"))
+    assert listener.on("agent_free") == [want]
+
+    # the dispatcher's claim now delivers the queued message to the agent
+    async with pool.connection() as conn:
+        claim = await queue.claim_and_pick(conn)
+    assert claim is not None
+    assert (claim.message_id, claim.agent_id) == (message["id"], h.agent_id)
+
+
+async def test_reattach_does_not_reproject_replayed_events(harness, pool, listener) -> None:
+    h = await harness()
+    await h.start()
+    await h.stored_through(h.last_fake_seq())
+    h.emit_at("compacting", T1, {"trigger": "auto"})
+    compacting_seq = h.last_fake_seq()
+    await h.stored_through(compacting_seq)
+    assert await compaction_at(pool, h.agent_id) == datetime.fromisoformat(T1)
+    closed_seq = h.shut_down()
+    await h.stored_through(closed_seq)
+    await wait_until(lambda: h.gets[-1:] == ["stopped"])  # the fresh close read the snapshot
+    # cleared, so a re-projected compacting event would show here again
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE agent_status SET compaction_at = NULL WHERE agent_id = %s", (h.agent_id,)
+        )
+    opened, gets = len(h.opened), len(h.gets)
+    listener.got.clear()
+
+    # the first re-attach stream replays from before the compaction through the stored close
+    h.replay_from.append(compacting_seq - 1)
+    await h.resume()
+    await wait_until(lambda: len(h.opened) >= opened + 2)
+    await h.stored_through(h.last_fake_seq())
+    assert h.opened[opened : opened + 2] == [compacting_seq - 1, closed_seq]
+
+    assert await compaction_at(pool, h.agent_id) is None
+    assert listener.on(LEADERSHIP_CHANNEL) == []
+    assert await h.state() == "idle"
+    # the replayed close was not projected: the agent became free once, at the first attach
+    await asyncio.sleep(0.3)
+    want = {"session_id": str(h.session_id), "agent_id": str(h.agent_id)}
+    assert listener.on("agent_free") == [want]
+    seqs = [r["seq"] for r in await events_rows(pool, h.agent_id)]
+    assert seqs == sorted(set(seqs))
+    # one snapshot per attach and no further stream: the replayed, already stored close reads
+    # no snapshot
+    assert h.opened[opened:] == [compacting_seq - 1, closed_seq]
+    assert h.gets[gets:] == ["ready", "ready"]
 
 
 async def test_peers_view_recorded(harness, pool) -> None:

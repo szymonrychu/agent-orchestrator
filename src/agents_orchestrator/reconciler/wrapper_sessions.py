@@ -9,6 +9,9 @@ can answer 429. The order is therefore adopt first:
 
 A stored session is kept only while adoptable, resumed when stopped or failed with a transcript,
 and otherwise cleared (also when the wrapper no longer lists it) so the agent bootstraps again.
+Every successful resume, of the stored session or in step 2, records `agents.wrapper_resumed_at`
+(deploy-safe-agent-sessions D3) so the ingester re-attaches to the resumed session, also after
+it stored the session's `session_closed`; an adopt or create records none.
 Errors never raise out of `bootstrap`: they come back as a message for the session status and
 the next tick bootstraps it again.
 """
@@ -105,10 +108,7 @@ class WrapperSessionBootstrapper:
                         raise
                     log.info("resume of stored %s refused: %s", stored.wrapper_session_id, exc)
                 else:
-                    async with self.pool.connection() as conn:
-                        await agents_repo.set_wrapper_session(
-                            conn, agent.id, resumed.wrapper_session_id, resumed.created_at
-                        )
+                    await self._record(agent, resumed, resumed=True)
                     return None
             async with self.pool.connection() as conn:
                 await agents_repo.clear_wrapper_session(conn, agent.id)
@@ -118,26 +118,33 @@ class WrapperSessionBootstrapper:
                 agent.pod_name,
                 stored.state if stored else "gone",
             )
-        snap = await self._pick(client, listed, spec)
-        async with self.pool.connection() as conn:
-            await agents_repo.set_wrapper_session(
-                conn, agent.id, snap.wrapper_session_id, snap.created_at
-            )
+        snap, resumed = await self._pick(client, listed, spec)
+        await self._record(agent, snap, resumed=resumed)
         return None
 
-    async def _pick(self, client: Any, listed: list[Snapshot], spec: SessionSpec) -> Snapshot:
+    async def _record(self, agent: Agent, snap: Snapshot, *, resumed: bool) -> None:
+        async with self.pool.connection() as conn:
+            await agents_repo.set_wrapper_session(
+                conn, agent.id, snap.wrapper_session_id, snap.created_at, resumed=resumed
+            )
+
+    async def _pick(
+        self, client: Any, listed: list[Snapshot], spec: SessionSpec
+    ) -> tuple[Snapshot, bool]:
+        """The session to record and whether it was resumed."""
         ordered = _newest_first(listed)
         for snap in ordered:
             if snap.state in ADOPTABLE:
-                return snap
+                return snap, False
         for snap in ordered:
             if snap.state in RESUMABLE and snap.has_transcript is not False:
                 try:
-                    return await client.resume_session(snap.wrapper_session_id)
+                    return await client.resume_session(snap.wrapper_session_id), True
                 except WrapperError as exc:
                     if exc.status >= 500 or exc.status == 429:
                         raise
                     log.info("resume of %s refused: %s", snap.wrapper_session_id, exc)
-        return await client.create_session(
+        created = await client.create_session(
             spec.workdir, spec.workdir, model=spec.model, effort=spec.effort
         )
+        return created, False

@@ -365,11 +365,27 @@ def kind_context() -> None:
         )
 
 
+# uvicorn closes an idle keep-alive connection after 5 s (timeout_keep_alive, not set by
+# cli.build_uvicorn_config) and httpx keeps one for 5 s by default. Through kubectl
+# port-forward a test idle for about that long sent its next request on a connection the
+# server was closing and got "Server disconnected without sending a response" (CI run
+# 40565058706). A 1 s window leaves the server's close well out of reach.
+API_KEEPALIVE_EXPIRY = 1.0
+
+
+def api_client(base: str) -> httpx.Client:
+    return httpx.Client(
+        base_url=f"{base}/api/v1",
+        timeout=30,
+        limits=httpx.Limits(keepalive_expiry=API_KEEPALIVE_EXPIRY),
+    )
+
+
 @pytest.fixture(scope="module")
 def api() -> Iterator[httpx.Client]:
     # read at fixture time: tests/e2e/conftest.py may have brought the environment up
     base = os.environ.get("ORCH_E2E_API_URL", API_URL)
-    with httpx.Client(base_url=f"{base}/api/v1", timeout=30) as client:
+    with api_client(base) as client:
         yield client
 
 
