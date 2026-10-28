@@ -90,6 +90,12 @@ def any_mcp_config(
 
 
 def render_on_start(spec: SessionSpec, settings: Settings, slug: str | None = None) -> str:
+    """The onStart script; an install failure is one stderr line naming the step, never an exit.
+
+    D6: the venv plus pip install and `any-mcp plugins install` are swallowed (the wrapper denies
+    on exit 2 whatever on_error says); a failed package install writes no `.ref`, so the next
+    start retries, and every later install step and the `--help` check are skipped.
+    """
     body = json.dumps(any_mcp_config(spec, settings, slug), indent=2, sort_keys=True)
     if DELIMITER in body.splitlines():
         raise ValueError(f"any-mcp config contains the heredoc delimiter line {DELIMITER}")
@@ -98,16 +104,25 @@ def render_on_start(spec: SessionSpec, settings: Settings, slug: str | None = No
     return f"""#!/bin/sh
 set -eu
 REF={ref}
+ok=1
+install() {{
+  step=$1
+  shift
+  [ "$ok" = 1 ] || return 0
+  "$@" && return 0
+  echo "on-start: $step failed (exit $?)" >&2
+  ok=0
+}}
 if ! grep -qxF -- "$REF" {ROOT}/.ref 2>/dev/null; then
   rm -rf {ROOT}/* {ROOT}/.ref
-  python3 -m venv {ROOT}
-  {ROOT}/bin/pip install --no-cache-dir {requirement}
-  printf '%s\\n' "$REF" > {ROOT}/.ref
+  install 'any-mcp package install' python3 -m venv {ROOT}
+  install 'any-mcp package install' {ROOT}/bin/pip install --no-cache-dir {requirement}
+  [ "$ok" = 0 ] || printf '%s\\n' "$REF" > {ROOT}/.ref
 fi
 mkdir -p {ROOT}/etc
 cat > {CONFIG_PATH} <<'{DELIMITER}'
 {body}
 {DELIMITER}
-{ROOT}/bin/any-mcp plugins install --config {CONFIG_PATH}
-{ROOT}/bin/any-mcp --help >/dev/null
+install 'any-mcp plugins install' {ROOT}/bin/any-mcp plugins install --config {CONFIG_PATH}
+[ "$ok" = 0 ] || {ROOT}/bin/any-mcp --help >/dev/null
 """

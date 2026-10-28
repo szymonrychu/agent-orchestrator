@@ -3,11 +3,15 @@
 Besides elections, queued requests and the lost-leader fallback, the pass hands a leader over
 by itself in three cases, always on for hives: its pod is about to be removed by a scale-down
 (`scale_down`, at once), it compacted (`compaction`, at its turn boundary) and its lease ran
-out (`lease_expired`, at its turn boundary). Every pick is restricted to agents that stay
-(`ordinal < spec.replicas`). A dead agent (`agent_status.state`) never leads: it is not
-eligible, and a leader whose agent is dead is a lost leader (D4).
+out (`lease_expired`, at its turn boundary). A queued `rollout` handover is likewise applied
+only at the leader's turn boundary; mid-turn it stays queued. Every pick is restricted to
+agents that stay (`ordinal < spec.replicas`). A dead agent (`agent_status.state`) never
+leads: it is not eligible, and a leader whose agent is dead is a lost leader (D4).
 
-The api only inserts `leadership_requests` rows (status `queued`) and reads the leader record.
+The api and the reconciler only insert `leadership_requests` rows (status `queued`) and read the
+leader record: the api the agents' handovers and the user overrides, the reconciler one
+`handover` with reason `rollout` from an idle leader whose pod a rollout replaces next
+(`reconciler/rollout.py`).
 `session_leaders` and every request decision belong to the dispatcher, through
 `leadership_pass`, which runs under the per-session claim lock of `db/queue.py` so a leader
 change and a message claim never interleave.
@@ -268,6 +272,18 @@ async def _judge(
     return None, picked, reason
 
 
+def _mid_turn_rollout(req: dict, leader: dict | None) -> bool:
+    """A `rollout` handover from the current leader while that leader is not at a boundary."""
+    return (
+        req["kind"] == "handover"
+        and req["reason"] == "rollout"
+        and leader is not None
+        and req["from_agent_id"] == leader["agent_id"]
+        and req["epoch"] == leader["epoch"]
+        and not leader["at_boundary"]
+    )
+
+
 async def leadership_pass(
     conn: psycopg.AsyncConnection, session_id: uuid.UUID
 ) -> LeaderChange | None:
@@ -304,7 +320,9 @@ async def leadership_pass(
                 change = await _set_leader(conn, session_id, first["id"], "initial")
                 leader = await _leader(conn, session_id)
 
-        # 2. Queued requests in id order, each re-checked against the leader as it is now.
+        # 2. Queued requests in id order, each re-checked against the leader as it is now. A
+        # `rollout` handover from the current leader waits for its turn boundary, like the lease
+        # and compaction handovers: while the leader is mid-turn it stays queued for a later pass.
         for req in await _all(
             conn,
             "SELECT id, kind, from_agent_id, to_agent_id, reason, epoch"
@@ -312,6 +330,8 @@ async def leadership_pass(
             " ORDER BY id FOR UPDATE",
             (session_id,),
         ):
+            if _mid_turn_rollout(req, leader):
+                continue
             reject, target, reason = await _judge(conn, session_id, req, leader)
             if not await _decide(conn, req["id"], reject):
                 continue

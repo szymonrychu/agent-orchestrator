@@ -41,13 +41,36 @@ def test_chart_job_on_every_push():
     assert any("mise-action" in s.get("uses", "") for s in job["steps"])
 
 
+GATE = {"lint", "test", "e2e"}
+
+
+def test_image_push_needs_lint_test_e2e():
+    job = _ci()["jobs"]["images"]
+    assert set(job["needs"]) >= GATE
+    pushing = [s for s in job["steps"] if "regctl image import" in s.get("run", "")]
+    assert len(pushing) == 1
+    assert pushing[0]["if"] == "github.event_name == 'push' && github.ref == 'refs/heads/main'"
+    for step in job["steps"]:
+        if "registry login" in step.get("run", ""):
+            assert step["if"] == pushing[0]["if"]
+
+
+def test_e2e_does_not_need_pushed_image():
+    jobs = _ci()["jobs"]
+    assert "images" not in jobs["e2e"]["needs"]
+    assert "containers/agents-orchestrator" not in str(jobs["e2e"])
+    script = (ROOT / "scripts/e2e.sh").read_text()
+    assert "ORCH_IMAGE=agents-orchestrator:e2e" in script
+    assert 'docker build -t "$ORCH_IMAGE" .' in script
+
+
 def test_publish_only_main_and_tags_after_images():
     jobs = _ci()["jobs"]
     main = jobs["chart-publish"]
     tag = jobs["chart-publish-tag"]
-    assert set(main["needs"]) == {"chart", "images"}
+    assert set(main["needs"]) == {"chart", "images"} | GATE
     assert main["if"] == "github.event_name == 'push' && github.ref == 'refs/heads/main'"
-    assert tag["needs"] == ["chart"]
+    assert set(tag["needs"]) == {"chart"} | GATE
     assert tag["if"] == "startsWith(github.ref, 'refs/tags/v')"
     for job in (main, tag):
         runs = _runs(job)
@@ -101,3 +124,30 @@ def test_readme_documents_releasing():
     section = text.split("## Releasing")[1]
     assert "-main." in section and "oci://harbor.szymonrichert.pl/charts" in section
     assert "Chart.yaml" in section
+    assert "`lint`, `test` and `e2e`" in section
+    assert "never pushed" in section
+
+
+def test_e2e_job_runs_wrapper_contract_against_its_agent_image():
+    """AC4 evidence path: the real-wrapper leg runs in CI on the image scripts/e2e.sh builds."""
+    job = _ci()["jobs"]["e2e"]
+    steps = job["steps"]
+    kind = next(i for i, s in enumerate(steps) if s.get("run") == "mise run test:e2e")
+    integ = [i for i, s in enumerate(steps) if s.get("run") == "mise run test:integration"]
+    assert len(integ) == 1 and integ[0] > kind
+    step = steps[integ[0]]
+    assert "if" not in step
+    script = (ROOT / "scripts/e2e.sh").read_text()
+    image = next(
+        line.split("=", 1)[1] for line in script.splitlines() if line.startswith("AGENT_IMAGE=")
+    )
+    assert step["env"]["ORCH_TEST_WRAPPER_IMAGE"] == image
+    assert {"lint", "test", "e2e"} <= set(_ci()["jobs"]["images"]["needs"])
+    for name in ("chart-publish", "chart-publish-tag"):
+        assert "e2e" in _ci()["jobs"][name]["needs"]
+
+
+def test_readme_documents_integration_in_ci():
+    text = (ROOT / "README.md").read_text()
+    dev = text.split("## Development")[1].split("## Configuration")[0]
+    assert "`e2e` job" in dev and "mise run test:integration" in dev

@@ -16,7 +16,8 @@ the ingester is down across a shutdown and a resume, the close the wrapper emitt
 resume is stored after it, on the replay.
 
 Re-attach after a resume: `AgentRef` carries `agents.wrapper_resumed_at`, which the reconciler
-writes on every successful resume, so `refresh` restarts the task of a resumed session as it
+writes on every successful resume and when it finds the stored session of a dead agent live (the
+wrapper resumed it itself on start), so `refresh` restarts the task of a resumed session as it
 does for a new one; the marker is a re-attach trigger only. The attach projects the snapshot (a
 resumed `ready` becomes `idle` and notifies `agent_free`, so the dispatcher delivers) and
 streams from the last stored seq: the wrapper continues seq across a resume, and a replay stops

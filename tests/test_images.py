@@ -46,6 +46,10 @@ def test_ci_pushes_orchestrator_image_on_main_only():
         "harbor.szymonrichert.pl/charts",
     }
     assert "pull_request" in _ci()[True]
+    # layers go up in 50MB chunks (Cloudflare answers 413 above 100MB)
+    assert "--blob-chunk 52428800 --blob-max 52428800" in push["run"]
+    # nothing reaches Harbor before lint, test and e2e pass
+    assert {"lint", "test", "e2e"} <= set(job["needs"])
 
 
 def test_no_derived_agent_image():

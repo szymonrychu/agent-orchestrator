@@ -993,6 +993,40 @@ async def test_lightkube_apply_is_server_side_with_field_manager_and_force():
     await kube.aclose()
 
 
+async def test_lightkube_merge_patch_is_a_json_merge_patch():
+    seen: list[httpx2.Request] = []
+    sts = {
+        "apiVersion": "apps/v1",
+        "kind": "StatefulSet",
+        "metadata": {"name": "agent-alpha", "namespace": "agents"},
+        "spec": {
+            "selector": {"matchLabels": {"a": "b"}},
+            "serviceName": "agent-alpha",
+            "updateStrategy": {"type": "OnDelete"},
+            "template": {
+                "metadata": {"labels": {"a": "b"}},
+                "spec": {"containers": [{"name": "c", "image": "i"}]},
+            },
+        },
+    }
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        return httpx2.Response(200, json=sts)
+
+    kube = _lightkube(handler)
+    patch = {"spec": {"updateStrategy": {"type": "OnDelete", "rollingUpdate": None}}}
+    out = await kube.merge_patch("StatefulSet", "agents", "agent-alpha", patch)
+    (req,) = seen
+    assert req.method == "PATCH"
+    assert req.url.path == "/apis/apps/v1/namespaces/agents/statefulsets/agent-alpha"
+    assert req.headers["content-type"] == "application/merge-patch+json"
+    assert req.url.params["fieldManager"] == "agents-orchestrator"
+    assert json.loads(req.content) == patch  # `rollingUpdate: null` removes the field
+    assert out["spec"]["updateStrategy"] == {"type": "OnDelete"}
+    await kube.aclose()
+
+
 async def test_lightkube_get_list_delete_and_errors():
     seen: list[httpx2.Request] = []
 

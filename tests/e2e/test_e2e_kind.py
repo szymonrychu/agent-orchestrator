@@ -24,6 +24,8 @@ import subprocess
 import time
 import uuid
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -373,8 +375,8 @@ def kind_context() -> None:
 API_KEEPALIVE_EXPIRY = 1.0
 
 
-def api_client(base: str) -> httpx.Client:
-    return httpx.Client(
+def api_client(base: str, client_class: type[httpx.Client] = httpx.Client) -> httpx.Client:
+    return client_class(
         base_url=f"{base}/api/v1",
         timeout=30,
         limits=httpx.Limits(keepalive_expiry=API_KEEPALIVE_EXPIRY),
@@ -1960,3 +1962,719 @@ def test_autoclose_discards_session(api: httpx.Client) -> None:
             return api.get(f"/sessions/{cid}").status_code == 404
 
         wait_for("the closed session to answer 404", gone, DISCARD_TIMEOUT)
+
+
+# ------------------------------------------------------------------ rollout mid-turn (D1, D11)
+#
+# A helm upgrade to a second tag of the same agent image rolls every session's StatefulSet while
+# a long ("marathon") turn runs. The pods roll by OnDelete and the reconciler's idle-only
+# replacer (reconciler/rollout.py): the busy pod waits for its turn, the leader goes last and
+# only after leadership moved, and no wrapper session is replaced. The upgrade also replaces the
+# api pod, so these tests use ResilientClient, and scripts/e2e.sh keeps the api port-forward
+# alive across it.
+
+ROOT = Path(__file__).resolve().parents[2]
+CHART_DIR = ROOT / "chart" / "agents-orchestrator"
+SCENARIO = ROOT / "e2e" / "agent-test.scenario.json"
+AGENT_IMAGE_NEXT = os.environ.get(
+    "ORCH_E2E_AGENT_IMAGE_NEXT", "agents-orchestrator-agent-test:e2e-next"
+)
+MARATHON_PROMPT = "marathon task {n}: report when done"
+REVISION_LABEL = "controller-revision-hash"
+HELM_TIMEOUT = 660  # helm upgrade --timeout 10m plus the call itself
+API_OUTAGE_WINDOW = 180  # the api pod is replaced and the port-forward reconnects within this
+ROLL_SAMPLE_INTERVAL = 2.0
+DEAD_DEADLINE = 600  # no agent may stay dead longer: a pod comes back well within READY_TIMEOUT
+ROLLOUT_STATUS_TIMEOUT = 600
+IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "DELETE"})
+
+
+def marathon_seconds() -> float:
+    """How long the scenario's marathon turn sleeps (e2e/agent-test.scenario.json)."""
+    turns = json.loads(SCENARIO.read_text())["turns"]
+    turn = next(t for t in turns if t["match"] == "marathon")
+    return float(sum(step["sleep"] for step in turn["steps"] if "sleep" in step))
+
+
+class ResilientClient(httpx.Client):
+    """An httpx client that rides out the api pod being replaced by a helm upgrade.
+
+    A request that fails at the transport (the port-forward reconnecting, the pod terminating)
+    is sent again for up to API_OUTAGE_WINDOW seconds, then fails with an AssertionError. Only
+    an idempotent request is resent after any transport error; any other (a message POST) only
+    after a ConnectError, which means it was never sent, so an accepted message is never
+    posted twice. Every other transport error of a non-idempotent request is raised as is.
+    """
+
+    def send(self, request: httpx.Request, **kwargs: Any) -> httpx.Response:
+        deadline = time.monotonic() + API_OUTAGE_WINDOW
+        while True:
+            try:
+                return super().send(request, **kwargs)
+            except httpx.TransportError as exc:
+                if request.method not in IDEMPOTENT_METHODS and not isinstance(
+                    exc, httpx.ConnectError
+                ):
+                    raise
+                if time.monotonic() > deadline:
+                    raise AssertionError(
+                        f"api unreachable for {API_OUTAGE_WINDOW}s: {request.method} "
+                        f"{request.url}: {exc!r}"
+                    ) from exc
+                time.sleep(1)
+
+
+@pytest.fixture(scope="module")
+def roll_api() -> Iterator[httpx.Client]:
+    base = os.environ.get("ORCH_E2E_API_URL", API_URL)
+    with api_client(base, ResilientClient) as client:
+        yield client
+
+
+def upgrade_agent_image(image: str, wait: bool = False) -> None:
+    """`helm upgrade --reuse-values --set agentImage=<image>`; the sessions' template follows."""
+    argv = [
+        "helm",
+        "upgrade",
+        RELEASE,
+        str(CHART_DIR),
+        "-n",
+        NAMESPACE,
+        "--reuse-values",
+        "--set",
+        f"agentImage={image}",
+        "--timeout",
+        "10m",
+    ]
+    if wait:
+        argv.append("--wait")
+    run(*argv, timeout=HELM_TIMEOUT)
+
+
+def wait_orchestrator_rolled() -> None:
+    """Every orchestrator Deployment finished rolling (`kubectl rollout status`)."""
+    for component in COMPONENTS:
+        kubectl(
+            "rollout",
+            "status",
+            f"deployment/{RELEASE}-{component}",
+            f"--timeout={ROLLOUT_STATUS_TIMEOUT}s",
+            timeout=ROLLOUT_STATUS_TIMEOUT + 30,
+        )
+
+
+@contextlib.contextmanager
+def restoring_agent_image(api: httpx.Client) -> Iterator[str]:
+    """Yield the release's agent image; upgrade the release back to it on exit (and wait)."""
+    first = api.get("/meta").json()["agent_image"]
+    assert first != AGENT_IMAGE_NEXT, (first, AGENT_IMAGE_NEXT)
+    try:
+        yield first
+    finally:
+        upgrade_agent_image(first, wait=True)
+        wait_orchestrator_rolled()
+        api.get("/meta").raise_for_status()
+
+
+RECONCILER_SELECTOR = f"app.kubernetes.io/instance={RELEASE},app.kubernetes.io/component=reconciler"
+
+
+def reconciler_log() -> str:
+    return kubectl("logs", "-l", RECONCILER_SELECTOR, "--tail=-1", check=False).stdout
+
+
+def reconciler_pods() -> list[dict[str, Any]]:
+    return kube_json("get", "pods", "-l", RECONCILER_SELECTOR)["items"]
+
+
+def scale_reconciler(replicas: int) -> None:
+    kubectl("scale", f"deployment/{RELEASE}-reconciler", f"--replicas={replicas}")
+
+
+@dataclass(frozen=True)
+class PodInfo:
+    uid: str
+    revision: str | None
+    image: str | None
+    terminating: bool
+    ready: bool
+
+
+def pod_infos(slug: str) -> dict[str, PodInfo]:
+    """The session's agent pods by name: uid, controller revision, image, terminating, Ready."""
+    out: dict[str, PodInfo] = {}
+    for pod in kube_json("get", "pods", "-l", f"{SESSION_LABEL}={slug}")["items"]:
+        meta, name = pod["metadata"], pod["metadata"]["name"]
+        if not re.fullmatch(rf"agent-{re.escape(slug)}-\d+", name):
+            continue
+        container = next((c for c in pod["spec"]["containers"] if c["name"] == "ccw"), {})
+        conditions = (pod.get("status") or {}).get("conditions") or []
+        out[name] = PodInfo(
+            uid=meta["uid"],
+            revision=(meta.get("labels") or {}).get(REVISION_LABEL),
+            image=container.get("image"),
+            terminating=bool(meta.get("deletionTimestamp")),
+            ready=any(c["type"] == "Ready" and c["status"] == "True" for c in conditions),
+        )
+    return out
+
+
+def sts_info(slug: str) -> dict[str, Any]:
+    """The session's StatefulSet: update revision, strategy, template image, generation."""
+    sts = kube_json("get", "statefulset", f"agent-{slug}")
+    containers = sts["spec"]["template"]["spec"]["containers"]
+    return {
+        "update_revision": (sts.get("status") or {}).get("updateRevision"),
+        "strategy": sts["spec"].get("updateStrategy"),
+        "image": next((c["image"] for c in containers if c["name"] == "ccw"), None),
+        "generation": sts["metadata"].get("generation"),
+        "observed_generation": (sts.get("status") or {}).get("observedGeneration"),
+    }
+
+
+def post_message(api: httpx.Client, cid: str, text: str, target: str | None = None) -> int:
+    body: dict[str, Any] = {"text": text}
+    if target:
+        body["target_agent_id"] = target
+    resp = api.post(f"/sessions/{cid}/messages", json=body)
+    assert resp.status_code == 202, resp.text
+    return resp.json()["message_id"]
+
+
+def turn_completed(view: dict[str, Any]) -> bool:
+    return bool(view["status"] == "sent" and view["turn"] and view["turn"]["completed_at"])
+
+
+def wrapper_ids(api: httpx.Client, cid: str) -> dict[str, set[str]]:
+    """Agent id -> every wrapper session id its events carry (the events API)."""
+    out: dict[str, set[str]] = {}
+    for page in all_events(api, cid):
+        for event in page:
+            out.setdefault(event["agent_id"], set()).add(event["wrapper_session_id"])
+    return out
+
+
+@dataclass
+class Snap:
+    """One look at a rolling session. Pods are read first and the message last, so a pod seen
+    replaced while `turn_done` is False really was replaced before its turn completed."""
+
+    t: float
+    pods: dict[str, PodInfo]
+    update_revision: str | None
+    strategy: dict[str, Any] | None
+    template_image: str | None
+    leader_id: str | None
+    epoch: int | None
+    leader_reason: str | None
+    phase: str | None
+    rollout: dict[str, Any] | None
+    agents: dict[str, dict[str, Any]]
+    turn_done: bool
+
+
+class RollWatch:
+    """Samples a session during a roll; `turn_mid` is the long turn's message id."""
+
+    def __init__(self, api: httpx.Client, cid: str, slug: str) -> None:
+        self.api, self.cid, self.slug = api, cid, slug
+        self.turn_mid: int | None = None
+        self.snaps: list[Snap] = []
+        self.started = time.monotonic()
+
+    def sample(self) -> Snap:
+        pods = pod_infos(self.slug)
+        sts = sts_info(self.slug)
+        view = self.api.get(f"/sessions/{self.cid}").json()
+        agents = {
+            a["id"]: {k: a[k] for k in ("ordinal", "pod_name", "state", "ready", "gone")}
+            for a in agents_of(self.api, self.cid)
+        }
+        assert self.turn_mid is not None
+        snap = Snap(
+            t=time.monotonic() - self.started,
+            pods=pods,
+            update_revision=sts["update_revision"],
+            strategy=sts["strategy"],
+            template_image=sts["image"],
+            leader_id=view.get("leader_agent_id"),
+            epoch=view.get("leader_epoch"),
+            leader_reason=view.get("leader_reason"),
+            phase=view["status"].get("phase"),
+            rollout=view["status"].get("rollout"),
+            agents=agents,
+            turn_done=turn_completed(message(self.api, self.turn_mid)),
+        )
+        self.snaps.append(snap)
+        return snap
+
+    def timeline(self, last: int = 60) -> str:
+        lines = []
+        for s in self.snaps[-last:]:
+            pods = " ".join(
+                f"{name.rsplit('-', 1)[1]}:{p.uid[:6]}@{(p.revision or '-')[-5:]}"
+                f"{'+T' if p.terminating else ''}{'+R' if p.ready else ''}"
+                for name, p in sorted(s.pods.items())
+            )
+            agents = ",".join(
+                f"{a['ordinal']}={a['state']}{'' if a['ready'] else '!'}"
+                for a in sorted(s.agents.values(), key=lambda a: a["ordinal"])
+            )
+            leader = (s.agents.get(s.leader_id or "") or {}).get("ordinal")
+            lines.append(
+                f"t={s.t:6.1f}s update={(s.update_revision or '-')[-5:]} "
+                f"leader={leader}/{s.epoch} ({s.leader_reason}) phase={s.phase} "
+                f"agents[{agents}] pods[{pods}] rollout={s.rollout} turn_done={s.turn_done}"
+            )
+        return "\n".join(lines)
+
+
+def roll_diagnostics(api: httpx.Client, cid: str, slug: str, watch: RollWatch) -> str:
+    """Everything a failed roll needs to be read from the CI log alone."""
+
+    def section(title: str, read: Callable[[], str]) -> str:
+        try:
+            return f"--- {title}\n{read()}"
+        except Exception as exc:  # a diagnostic never hides the failure it explains
+            return f"--- {title}\n(unavailable: {exc!r})"
+
+    return "\n".join(
+        [
+            section(
+                "pods (uid, controller-revision-hash)",
+                lambda: (
+                    kubectl(
+                        "get",
+                        "pods",
+                        "-l",
+                        f"{SESSION_LABEL}={slug}",
+                        "-L",
+                        REVISION_LABEL,
+                        "-o",
+                        "wide",
+                    ).stdout
+                ),
+            ),
+            section("statefulset", lambda: json.dumps(sts_info(slug))),
+            section(
+                "session status (status.rollout)",
+                lambda: json.dumps(api.get(f"/sessions/{cid}").json()["status"]),
+            ),
+            section("agents", lambda: json.dumps(agents_of(api, cid))),
+            section("reconciler log tail", lambda: "\n".join(reconciler_log().splitlines()[-100:])),
+            section("timeline", watch.timeline),
+        ]
+    )
+
+
+@contextlib.contextmanager
+def diagnosed(api: httpx.Client, cid: str, slug: str, watch: RollWatch) -> Iterator[None]:
+    try:
+        yield
+    except BaseException:
+        print(roll_diagnostics(api, cid, slug, watch))
+        raise
+
+
+def touched(snap: Snap, pod: str, original: PodInfo) -> bool:
+    """The pod was deleted: gone, terminating or already a new pod (another uid)."""
+    current = snap.pods.get(pod)
+    return current is None or current.uid != original.uid or current.terminating
+
+
+def first_touch(snaps: list[Snap], pod: str, original: PodInfo) -> int | None:
+    return next((i for i, s in enumerate(snaps) if touched(s, pod, original)), None)
+
+
+def rolled_to(snap: Snap, image: str, replicas: int) -> bool:
+    """Every agent pod is Ready on the update revision and the image; nothing is pending."""
+    return (
+        len(snap.pods) == replicas
+        and snap.rollout is None
+        and snap.template_image == image
+        and all(
+            p.revision == snap.update_revision
+            and p.image == image
+            and p.ready
+            and not p.terminating
+            for p in snap.pods.values()
+        )
+        and all(a["ready"] and a["state"] != "dead" for a in snap.agents.values() if not a["gone"])
+    )
+
+
+def longest_dead(snaps: list[Snap]) -> dict[str, float]:
+    """Agent id -> the longest stretch (seconds between samples) it was seen `dead`."""
+    longest: dict[str, float] = {}
+    since: dict[str, float] = {}
+    for s in snaps:
+        for aid, agent in s.agents.items():
+            if agent["state"] == "dead":
+                since.setdefault(aid, s.t)
+                longest[aid] = max(longest.get(aid, 0.0), s.t - since[aid])
+            else:
+                since.pop(aid, None)
+    return longest
+
+
+def streamed_ids(api: httpx.Client, cid: str, agents: int) -> dict[str, set[str]] | None:
+    ids = wrapper_ids(api, cid)
+    return ids if len(ids) == agents and all(len(v) == 1 for v in ids.values()) else None
+
+
+def replacement_order() -> list[str]:
+    """Pod names in the order the reconciler logged replacing them.
+
+    The reconciler logs one JSON object per line; the pod name ends its `msg`.
+    """
+    pattern = re.compile(r"replacing idle outdated pod (\S+)$")
+    order = []
+    for line in reconciler_log().splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        msg = record.get("msg") if isinstance(record, dict) else None
+        if isinstance(msg, str) and (m := pattern.search(msg)):
+            order.append(m.group(1))
+    return order
+
+
+@pytest.fixture(scope="module")
+def roll_session(roll_api: httpx.Client) -> Iterator[dict[str, Any]]:
+    """A 2-replica hive session of its own; the release is back on its first image afterwards."""
+    spec = {"replicas": 2, "max_replicas": 2}
+    with restoring_agent_image(roll_api) as first, scale_session(roll_api, "roll", spec) as made:
+        wait_sessions(roll_api, made["id"], 2)
+        wait_leader(roll_api, made["id"], 1)
+        yield {**made, "first_image": first}
+
+
+@pytest.fixture(scope="module")
+def image_roll(roll_api: httpx.Client, roll_session: dict[str, Any]) -> dict[str, Any]:
+    """Run the roll once: a marathon turn on the non-leader, then the helm upgrade.
+
+    Samples until every pod is on the new image and the posted messages are delivered.
+    """
+    api, cid, slug = roll_api, roll_session["id"], roll_session["slug"]
+    first_image = roll_session["first_image"]
+    watch = RollWatch(api, cid, slug)
+    with diagnosed(api, cid, slug, watch):
+        leader, epoch0 = leader_view(api, cid)
+        assert leader is not None and epoch0 is not None
+        follower = next(a for a in live_agents(api, cid) if a["id"] != leader["id"])
+        leader_pod, follower_pod = leader["pod_name"], follower["pod_name"]
+        original = pod_infos(slug)
+        before = sts_info(slug)
+        assert set(original) == {leader_pod, follower_pod}, original
+        assert all(p.revision == before["update_revision"] for p in original.values()), (
+            original,
+            before,
+        )
+        assert all(p.image == first_image for p in original.values()), (original, first_image)
+        ids_before = wait_for(
+            "one wrapper session id per agent in the events", lambda: streamed_ids(api, cid, 2), 120
+        )
+
+        posted = {"marathon": post_message(api, cid, MARATHON_PROMPT.format(n=1), follower["id"])}
+        watch.turn_mid = posted["marathon"]
+
+        def follower_runs_marathon() -> bool:
+            sent = message(api, posted["marathon"])["status"] == "sent"
+            return sent and agent_by_pod(api, cid, follower_pod)["state"] == "busy"
+
+        wait_for("the follower to run the marathon turn", follower_runs_marathon, TURN_TIMEOUT, 0.5)
+
+        upgrade_agent_image(AGENT_IMAGE_NEXT)
+        # a message POST is not resent after it may have reached the api (ResilientClient), so
+        # post once the api pod is replaced; the busy follower still holds the agent roll
+        wait_orchestrator_rolled()
+        api.get("/meta").raise_for_status()
+        # sent while the roll starts: one to the leader, one queued for the busy follower
+        posted["to_leader"] = post_message(api, cid, SLOW_PROMPT.format(n=1))
+        posted["queued_for_follower"] = post_message(
+            api, cid, SLOW_PROMPT.format(n=2), follower["id"]
+        )
+
+        budget = marathon_seconds() + 2 * READY_TIMEOUT + 300
+        deadline = time.monotonic() + budget
+        stable = 0
+        while True:
+            snap = watch.sample()
+            if "to_replaced_follower" not in posted and touched(
+                snap, follower_pod, original[follower_pod]
+            ):  # the busy pod's turn is over and its pod is rolling: queue one for the new pod
+                posted["to_replaced_follower"] = post_message(
+                    api, cid, SLOW_PROMPT.format(n=3), follower["id"]
+                )
+            delivered = all(turn_completed(message(api, mid)) for mid in posted.values())
+            rolled = rolled_to(snap, AGENT_IMAGE_NEXT, 2) and delivered
+            stable = stable + 1 if rolled and "to_replaced_follower" in posted else 0
+            if stable >= 2:
+                break
+            if time.monotonic() > deadline:
+                raise AssertionError(
+                    f"the roll did not settle within {budget:.0f}s\n{watch.timeline()}"
+                )
+            time.sleep(ROLL_SAMPLE_INTERVAL)
+
+        return {
+            "cid": cid,
+            "slug": slug,
+            "first_image": first_image,
+            "leader": leader,
+            "follower": follower,
+            "epoch0": epoch0,
+            "original": original,
+            "snaps": watch.snaps,
+            "timeline": watch.timeline(len(watch.snaps)),
+            "ids_before": ids_before,
+            "ids_after": wrapper_ids(api, cid),
+            "messages": {label: message(api, mid) for label, mid in posted.items()},
+            "replacement_order": replacement_order(),
+        }
+
+
+def test_rolling_update_statefulset_moves_to_on_delete_without_a_roll(
+    roll_api: httpx.Client,
+) -> None:
+    """The StatefulSet of a session created by the previous release carries RollingUpdate with a
+    defaulted partition. With the reconciler stopped, patch the strategy back to RollingUpdate
+    (as a kubectl patch does), then change the template (helm upgrade to the second image) and
+    start the new reconciler: its apply must succeed, leave OnDelete without `rollingUpdate`,
+    and the controller must roll nothing, so the busy pod keeps its uid until its turn is done.
+    """
+    api = roll_api
+    with restoring_agent_image(api), scale_session(api, "ondelete", {"replicas": 1}) as made:
+        cid, slug = made["id"], made["slug"]
+        pod = f"agent-{slug}-0"
+        wait_sessions(api, cid, 1)
+        watch = RollWatch(api, cid, slug)
+        with diagnosed(api, cid, slug, watch):
+            original = pod_infos(slug)[pod]
+            before = sts_info(slug)
+            assert before["strategy"]["type"] == "OnDelete", before
+            scale_reconciler(0)
+            try:
+                wait_for("the reconciler pods to be gone", lambda: not reconciler_pods(), 180)
+                kubectl(
+                    "patch",
+                    "statefulset",
+                    f"agent-{slug}",
+                    "--type",
+                    "merge",
+                    "-p",
+                    json.dumps({"spec": {"updateStrategy": {"type": "RollingUpdate"}}}),
+                )
+                patched = sts_info(slug)
+                assert patched["strategy"]["type"] == "RollingUpdate", patched
+                print(f"statefulset agent-{slug} strategy after the patch: {patched['strategy']}")
+                mid = post_message(api, cid, MARATHON_PROMPT.format(n=3))
+                watch.turn_mid = mid
+
+                def busy() -> bool:
+                    sent = message(api, mid)["status"] == "sent"
+                    return sent and agent_by_pod(api, cid, pod)["state"] == "busy"
+
+                wait_for("the agent to run the marathon turn", busy, TURN_TIMEOUT, 0.5)
+                upgrade_agent_image(AGENT_IMAGE_NEXT)
+            finally:
+                scale_reconciler(1)
+            wait_orchestrator_rolled()
+
+            deadline = time.monotonic() + marathon_seconds() + READY_TIMEOUT
+            while not watch.sample().turn_done:
+                if time.monotonic() > deadline:
+                    raise AssertionError(f"the marathon turn did not end\n{watch.timeline()}")
+                time.sleep(ROLL_SAMPLE_INTERVAL)
+
+            snaps = watch.snaps
+            early = [s for s in snaps if touched(s, pod, original) and not s.turn_done]
+            assert not early, f"the busy pod {pod} was replaced mid-turn\n{watch.timeline()}"
+            switched = [
+                s
+                for s in snaps
+                if not s.turn_done
+                and s.strategy == {"type": "OnDelete"}
+                and s.template_image == AGENT_IMAGE_NEXT
+            ]
+            assert switched, (
+                "the StatefulSet never reached OnDelete (no rollingUpdate) on the new image "
+                f"while the turn ran\n{watch.timeline()}"
+            )
+            waiting = [
+                s for s in snaps if not s.turn_done and 0 in (s.rollout or {}).get("waiting", [])
+            ]
+            assert waiting, f"status.rollout never showed the busy pod waiting\n{watch.timeline()}"
+            assert not [s for s in snaps if s.phase == "error"], watch.timeline()
+            log = reconciler_log()
+            assert f"statefulset agent-{slug}: moving to updateStrategy OnDelete" in log, log[
+                -3000:
+            ]
+            assert f"reconcile of session {slug} failed" not in log, log[-3000:]
+            assert sts_info(slug)["strategy"] == {"type": "OnDelete"}, sts_info(slug)
+
+            def rolled_when_idle() -> bool:
+                info = pod_infos(slug).get(pod)
+                sts = sts_info(slug)
+                return bool(
+                    info
+                    and info.uid != original.uid
+                    and info.ready
+                    and not info.terminating
+                    and info.revision == sts["update_revision"]
+                    and info.image == AGENT_IMAGE_NEXT
+                )
+
+            wait_for(f"pod {pod} to roll once its turn is done", rolled_when_idle, READY_TIMEOUT, 3)
+
+
+def test_image_roll_keeps_the_busy_pod_until_its_turn_completed(
+    image_roll: dict[str, Any],
+) -> None:
+    r = image_roll
+    follower, pod = r["follower"], r["follower"]["pod_name"]
+    original, snaps = r["original"][pod], r["snaps"]
+    early = [s for s in snaps if touched(s, pod, original) and not s.turn_done]
+    assert not early, f"the busy pod {pod} was replaced mid-turn\n{r['timeline']}"
+    waiting = [
+        s
+        for s in snaps
+        if not s.turn_done and follower["ordinal"] in (s.rollout or {}).get("waiting", [])
+    ]
+    assert waiting, (
+        "status.rollout never showed the busy pod waiting while its marathon turn ran "
+        f"(is the marathon turn too short for the roll?)\n{r['timeline']}"
+    )
+    marathon = r["messages"]["marathon"]
+    assert turn_completed(marathon) and marathon["turn"]["status"] == "completed", marathon
+    assert first_touch(snaps, pod, original) is not None, r["timeline"]
+    final = snaps[-1].pods[pod]
+    assert final.uid != original.uid, (final, original)
+    assert final.revision == snaps[-1].update_revision and final.image == AGENT_IMAGE_NEXT, final
+
+
+def test_image_roll_replaces_the_leader_last_after_leadership_moved(
+    image_roll: dict[str, Any],
+) -> None:
+    r = image_roll
+    leader, follower, snaps = r["leader"], r["follower"], r["snaps"]
+    f_pod, l_pod = follower["pod_name"], leader["pod_name"]
+    f_at = first_touch(snaps, f_pod, r["original"][f_pod])
+    l_at = first_touch(snaps, l_pod, r["original"][l_pod])
+    assert f_at is not None and l_at is not None, r["timeline"]
+    assert f_at < l_at, f"the leader pod went before the follower pod\n{r['timeline']}"
+    assert snaps[l_at].leader_id not in (None, leader["id"]), (
+        f"the leader pod {l_pod} was deleted before leadership moved\n{r['timeline']}"
+    )
+    assert "handover: rollout" in {s.leader_reason for s in snaps}, r["timeline"]
+    assert snaps[-1].leader_id == follower["id"], r["timeline"]
+    assert snaps[-1].epoch is not None and snaps[-1].epoch > r["epoch0"], r["timeline"]
+    order = r["replacement_order"]
+    assert f_pod in order and l_pod in order, order
+    assert order.index(f_pod) < order.index(l_pod), order
+
+
+def test_image_roll_keeps_wrapper_session_ids_and_no_agent_stays_dead(
+    image_roll: dict[str, Any],
+) -> None:
+    r = image_roll
+    assert r["ids_after"] == r["ids_before"], (r["ids_before"], r["ids_after"])
+    assert all(len(v) == 1 for v in r["ids_after"].values()), r["ids_after"]
+    dead = longest_dead(r["snaps"])
+    too_long = {aid: secs for aid, secs in dead.items() if secs > DEAD_DEADLINE}
+    assert not too_long, f"agents stayed dead past {DEAD_DEADLINE}s: {too_long}\n{r['timeline']}"
+    last = r["snaps"][-1]
+    assert all(a["state"] != "dead" and a["ready"] for a in last.agents.values()), r["timeline"]
+
+
+def test_messages_posted_during_the_roll_are_delivered(image_roll: dict[str, Any]) -> None:
+    messages = image_roll["messages"]
+    assert set(messages) == {"marathon", "to_leader", "queued_for_follower", "to_replaced_follower"}
+    for label, view in messages.items():
+        assert view["status"] == "sent", (label, view)
+        assert turn_completed(view), (label, view)
+        assert view["turn"]["status"] == "completed", (label, view)
+        assert view["error"] is None, (label, view)
+
+
+def test_busy_pod_deleted_by_hand_returns_on_the_new_revision(
+    roll_api: httpx.Client, image_roll: dict[str, Any]
+) -> None:
+    """A second roll (back to the first image) with a marathon turn on the non-leader; the
+    outdated busy pod is deleted by hand (a crash, accepted under D1)."""
+    api, cid, slug = roll_api, image_roll["cid"], image_roll["slug"]
+    first_image = image_roll["first_image"]
+    watch = RollWatch(api, cid, slug)
+    with diagnosed(api, cid, slug, watch):
+        leader, _ = leader_view(api, cid)
+        assert leader is not None
+        target = next(a for a in live_agents(api, cid) if a["id"] != leader["id"])
+        pod = target["pod_name"]
+        ids_before = wait_for(
+            "one wrapper session id per agent", lambda: streamed_ids(api, cid, 2), 120
+        )
+        assert ids_before == image_roll["ids_after"], (ids_before, image_roll["ids_after"])
+
+        mid = post_message(api, cid, MARATHON_PROMPT.format(n=2), target["id"])
+        watch.turn_mid = mid
+
+        def running() -> bool:
+            sent = message(api, mid)["status"] == "sent"
+            return sent and agent_by_pod(api, cid, pod)["state"] == "busy"
+
+        wait_for("the target to run the marathon turn", running, TURN_TIMEOUT, 0.5)
+        turn_id = message(api, mid)["turn_id"]
+        assert turn_id, message(api, mid)
+        upgrade_agent_image(first_image)
+        # the old reconciler (still applying the previous image) is gone before the pod is read
+        wait_orchestrator_rolled()
+
+        def outdated_and_held() -> PodInfo | None:
+            live = [p for p in reconciler_pods() if not p["metadata"].get("deletionTimestamp")]
+            info = pod_infos(slug).get(pod)
+            sts = sts_info(slug)
+            rollout = api.get(f"/sessions/{cid}").json()["status"].get("rollout") or {}
+            held = target["ordinal"] in rollout.get("waiting", [])
+            outdated = info is not None and info.revision != sts["update_revision"]
+            ok = len(live) == 1 and sts["image"] == first_image and outdated and held
+            return info if ok else None
+
+        old = wait_for(
+            "the busy target to be an outdated pod the roll holds", outdated_and_held, 600, 5
+        )
+        assert old.image == AGENT_IMAGE_NEXT, old
+        kubectl("delete", "pod", pod, "--wait=false")
+
+        def returned() -> PodInfo | None:
+            info = pod_infos(slug).get(pod)
+            ok = info is not None and info.uid != old.uid and info.ready and not info.terminating
+            return info if ok else None
+
+        new = wait_for(f"pod {pod} to return Ready", returned, READY_TIMEOUT, 3)
+        sts = sts_info(slug)
+        assert new.revision == sts["update_revision"] and new.image == first_image, (new, sts)
+        assert new.revision != old.revision, (new, old)
+
+        def turn_done() -> dict[str, Any] | None:
+            view = message(api, mid)
+            return view if turn_completed(view) else None
+
+        done = wait_for("the interrupted turn to complete", turn_done, TURN_TIMEOUT, 2)
+        assert done["turn_id"] == turn_id and done["turn"]["status"] == "completed", done
+
+        def resumed() -> bool:
+            page = api.get(f"/sessions/{cid}/events", params={"types": "turn_resumed"}).json()
+            return any(
+                turn_id in (e["turn_id"], (e["data"] or {}).get("turn_id")) for e in page["events"]
+            )
+
+        wait_for(f"a turn_resumed event for turn {turn_id}", resumed, 60)
+        ids_after = wrapper_ids(api, cid)
+        assert ids_after == ids_before, (ids_before, ids_after)
+
+        def alive() -> bool:
+            agent = agent_by_pod(api, cid, pod)
+            return agent["state"] != "dead" and agent["ready"]
+
+        wait_for(f"agent {pod} to be alive again", alive, DEAD_DEADLINE, 3)

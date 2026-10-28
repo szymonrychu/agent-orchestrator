@@ -3,11 +3,27 @@
 - Every call outside `namespace` raises Forbidden, and so do get and list on Secrets (the Role
   grants secrets only create, patch and delete). Forbidden attempts are also recorded in
   `forbidden`, so a test can assert none were made even when the caller swallowed the error.
-- Applies, deletes and every call are recorded (`applies`, `deletes`, `calls`).
+- Applies, merge patches, deletes and every call are recorded (`applies`, `patches`, `deletes`,
+  `calls`).
 - Applying a StatefulSet simulates its controller: pods `<sts>-<i>` for i < replicas carrying the
   pod template labels; scaling down removes the higher ordinals, deleting the StatefulSet
   removes its pods, and deleting a pod of a live StatefulSet recreates it with a new uid.
-  Readiness and phase are controlled with `set_pod`; `controller_paused` freezes the pods.
+  Readiness and phase are controlled with `set_pod`; `controller_paused` freezes the pods and
+  the StatefulSet status.
+- Revisions: `metadata.generation` counts spec changes; the controller sets
+  `status.observedGeneration` and `status.updateRevision` (`<sts>-<hash of the template>`), and
+  labels every pod it creates `controller-revision-hash: <updateRevision>`. Under
+  `updateStrategy: OnDelete` a template change leaves existing pods on their old revision until
+  they are deleted, and a deleted pod returns at the update revision. Under RollingUpdate a
+  template change makes the controller replace every pod at the update revision (recorded in
+  `rolled`); a change outside the template, such as a strategy-only merge patch, rolls nothing.
+- The API server's StatefulSet defaulting and validation: a missing strategy becomes
+  `{type: RollingUpdate, rollingUpdate: {partition: 0}}`; a server-side apply keeps that
+  defaulted, unowned `rollingUpdate` when the applied object does not name it, and a
+  `rollingUpdate` next to any other type is rejected, so an apply cannot move a defaulted
+  RollingUpdate StatefulSet to OnDelete. `merge_patch` (RFC 7386, null removes) can.
+- `graceful_pod_deletes` keeps a deleted pod terminating (`metadata.deletionTimestamp` set, its
+  labels and readiness unchanged) until `finish_termination`, like a real grace period.
 - `seed` places objects (the orchestrator's own, unlabelled ones, or foreign ones) without
   recording them; `seed_orchestrator_objects` seeds what the chart puts in the same namespace.
 - `fail(kind, name)` injects an error for one object.
@@ -19,13 +35,16 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import itertools
+import json
 import uuid
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from agents_orchestrator.k8s.kube import FIELD_MANAGER, Forbidden, KubeError
+from agents_orchestrator.k8s.kube import FIELD_MANAGER, Forbidden, KubeError, NotFound
+from agents_orchestrator.reconciler.rollout import REVISION_LABEL
 
 READ_VERBS = frozenset({"get", "list", "watch"})
 ORCHESTRATOR_LABELS = {
@@ -72,9 +91,12 @@ class _Failure:
 class FakeKube:
     namespace: str = "agents"
     pods_ready: bool = False
-    controller_paused: bool = False  # the StatefulSet controller lags: no pod changes
+    controller_paused: bool = False  # the StatefulSet controller lags: no pod or status changes
+    graceful_pod_deletes: bool = False  # a deleted pod stays terminating until finish_termination
     objects: dict[tuple[str, str, str], dict[str, Any]] = field(default_factory=dict)
     applies: list[Apply] = field(default_factory=list)
+    patches: list[tuple[str, str, dict[str, Any]]] = field(default_factory=list)
+    rolled: list[str] = field(default_factory=list)  # pods the controller replaced (RollingUpdate)
     deletes: list[tuple[str, str, str]] = field(default_factory=list)
     calls: list[Call] = field(default_factory=list)
     forbidden: list[Call] = field(default_factory=list)
@@ -183,6 +205,12 @@ class FakeKube:
                 ],
             }
 
+    def finish_termination(self, name: str) -> None:
+        """A terminating pod is gone; its StatefulSet controller recreates it."""
+        pod = self.objects.pop(("Pod", self.namespace, name))
+        assert pod["metadata"].get("deletionTimestamp"), f"pod {name} is not terminating"
+        self._recreate(pod)
+
     def has(self, kind: str, name: str, namespace: str | None = None) -> bool:
         return (kind, namespace or self.namespace, name) in self.objects
 
@@ -200,6 +228,8 @@ class FakeKube:
 
     def reset_records(self) -> None:
         self.applies.clear()
+        self.patches.clear()
+        self.rolled.clear()
         self.deletes.clear()
         self.calls.clear()
         self.forbidden.clear()
@@ -233,7 +263,6 @@ class FakeKube:
     ) -> dict[str, Any]:
         meta = obj["metadata"]
         self._check("patch", obj["kind"], meta.get("namespace", ""), meta["name"])
-        self.applies.append(Apply(copy.deepcopy(obj), field_manager, force))
         key = (obj["kind"], meta["namespace"], meta["name"])
         stored = copy.deepcopy(obj)
         previous = self.objects.get(key)
@@ -241,10 +270,25 @@ class FakeKube:
             previous["metadata"]["uid"] if previous is not None else str(uuid.uuid4())
         )
         stored.pop("stringData", None)  # a Secret's data is write-only for this fake
-        self.objects[key] = stored
         if obj["kind"] == "StatefulSet":
-            self._sync_pods(stored)
-        return copy.deepcopy(stored)
+            _keep_defaulted_rolling_update(stored, previous)
+            _admit_statefulset(stored)
+        self.applies.append(Apply(copy.deepcopy(obj), field_manager, force))
+        return self._store(key, stored, previous)
+
+    async def merge_patch(
+        self, kind: str, namespace: str, name: str, patch: dict[str, Any]
+    ) -> dict[str, Any]:
+        self._check("patch", kind, namespace, name)
+        key = (kind, namespace, name)
+        previous = self.objects.get(key)
+        if previous is None:
+            raise NotFound(f"{kind} {name!r} not found")
+        stored = _merge(previous, patch)
+        if kind == "StatefulSet":
+            _admit_statefulset(stored)
+        self.patches.append((kind, name, copy.deepcopy(patch)))
+        return self._store(key, stored, previous)
 
     async def get_object(self, kind: str, namespace: str, name: str) -> dict[str, Any] | None:
         self._check("get", kind, namespace, name)
@@ -277,14 +321,16 @@ class FakeKube:
 
     async def delete_pod(self, namespace: str, name: str) -> bool:
         self._check("delete", "Pod", namespace, name)
-        pod = self.objects.pop(("Pod", namespace, name), None)
+        key = ("Pod", namespace, name)
+        pod = self.objects.get(key)
         if pod is None:
             return False
-        self.deletes.append(("Pod", namespace, name))
-        owner = pod["metadata"].get("annotations", {}).get("fake/statefulset")
-        sts = self.objects.get(("StatefulSet", namespace, owner)) if owner else None
-        if sts is not None:
-            self._sync_pods(sts)  # the controller recreates the pod, unready, with a new uid
+        self.deletes.append(key)
+        if self.graceful_pod_deletes:
+            pod["metadata"].setdefault("deletionTimestamp", "2026-10-28T00:00:00Z")
+            return True
+        del self.objects[key]
+        self._recreate(pod)
         return True
 
     async def create_job(self, obj: dict[str, Any]) -> dict[str, Any]:
@@ -323,6 +369,15 @@ class FakeKube:
 
     # ------------------------------------------------------------------ internals
 
+    def _store(
+        self, key: tuple[str, str, str], stored: dict[str, Any], previous: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        self.objects[key] = stored
+        if key[0] == "StatefulSet":
+            self._sts_applied(stored, previous)
+            self._sync_pods(stored)
+        return copy.deepcopy(stored)
+
     def _select(
         self, kind: str, namespace: str, selector: Mapping[str, str]
     ) -> list[dict[str, Any]]:
@@ -355,12 +410,46 @@ class FakeKube:
             and o["metadata"].get("annotations", {}).get("fake/job") == job_name
         ]
 
+    def _recreate(self, pod: dict[str, Any]) -> None:
+        owner = pod["metadata"].get("annotations", {}).get("fake/statefulset")
+        sts = self.objects.get(("StatefulSet", self.namespace, owner)) if owner else None
+        if sts is not None:
+            self._sync_pods(sts)  # the controller recreates the pod, unready, with a new uid
+
+    def _sts_applied(self, sts: dict[str, Any], previous: dict[str, Any] | None) -> None:
+        """Generation, status and, under RollingUpdate, the controller's replacement of pods."""
+        meta = sts["metadata"]
+        if previous is None:
+            meta["generation"], status = 1, {}
+        else:
+            changed = previous.get("spec") != sts.get("spec")
+            meta["generation"] = previous["metadata"].get("generation", 1) + changed
+            status = copy.deepcopy(previous.get("status") or {})
+        sts["status"] = status
+        if self.controller_paused:
+            return
+        template = json.dumps(sts["spec"].get("template"), sort_keys=True).encode()
+        revision = f"{meta['name']}-{hashlib.sha256(template).hexdigest()[:10]}"
+        status["observedGeneration"] = meta["generation"]
+        status["updateRevision"] = revision
+        template_changed = previous is not None and (previous.get("spec") or {}).get(
+            "template"
+        ) != sts["spec"].get("template")
+        if template_changed and sts["spec"]["updateStrategy"]["type"] != "OnDelete":
+            for pod in sorted(self._pods_of(meta["name"]), key=lambda p: p["metadata"]["name"]):
+                del self.objects[("Pod", self.namespace, pod["metadata"]["name"])]
+                self.rolled.append(pod["metadata"]["name"])  # _sync_pods brings it back
+
     def _sync_pods(self, sts: dict[str, Any]) -> None:
         if self.controller_paused:
             return
         name = sts["metadata"]["name"]
         replicas = sts["spec"].get("replicas", 1)
-        labels = sts["spec"]["template"]["metadata"].get("labels", {})
+        template = sts["spec"].get("template") or {}  # a seeded StatefulSet may be sparse
+        labels = dict((template.get("metadata") or {}).get("labels", {}))
+        revision = (sts.get("status") or {}).get("updateRevision")
+        if revision is not None:
+            labels[REVISION_LABEL] = revision
         wanted = {f"{name}-{i}" for i in range(replicas)}
         for pod in self._pods_of(name):
             if pod["metadata"]["name"] not in wanted:
@@ -380,6 +469,40 @@ def _obj(api_version: str, kind: str, name: str, labels: dict[str, str]) -> dict
         "kind": kind,
         "metadata": {"name": name, "labels": labels},
     }
+
+
+def _merge(target: Any, patch: Any) -> Any:
+    """RFC 7386 JSON merge patch: objects merge, null removes, anything else replaces."""
+    if not isinstance(patch, dict):
+        return copy.deepcopy(patch)
+    out = copy.deepcopy(target) if isinstance(target, dict) else {}
+    for key, value in patch.items():
+        if value is None:
+            out.pop(key, None)
+        else:
+            out[key] = _merge(out.get(key), value)
+    return out
+
+
+def _keep_defaulted_rolling_update(sts: dict[str, Any], previous: dict[str, Any] | None) -> None:
+    """Server-side apply leaves the defaulted, unowned `rollingUpdate` the object does not name."""
+    kept = ((previous or {}).get("spec", {}).get("updateStrategy") or {}).get("rollingUpdate")
+    strategy = sts["spec"].setdefault("updateStrategy", {})
+    if kept is not None and "rollingUpdate" not in strategy:
+        strategy["rollingUpdate"] = copy.deepcopy(kept)
+
+
+def _admit_statefulset(sts: dict[str, Any]) -> None:
+    """The API server's StatefulSet strategy defaulting, then its validation."""
+    strategy = sts["spec"].setdefault("updateStrategy", {})
+    strategy.setdefault("type", "RollingUpdate")
+    if strategy["type"] == "RollingUpdate":
+        strategy.setdefault("rollingUpdate", {"partition": 0})
+    elif "rollingUpdate" in strategy:
+        raise KubeError(
+            f"422: StatefulSet.apps {sts['metadata']['name']!r} is invalid:"
+            " spec.updateStrategy.rollingUpdate: only allowed for updateStrategy 'RollingUpdate'"
+        )
 
 
 def _set_ready(pod: dict[str, Any], ready: bool) -> None:

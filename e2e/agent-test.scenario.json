@@ -10,6 +10,8 @@
     {"match": "write note file", "steps": [
       {"tool": "Write", "input": {"file_path": "/workdir/workdir/e2e-note.txt", "content": "hello"}, "result": "File created successfully"},
       {"text": "Note file written."}
-    ]}
+    ]},
+    {"match": "marathon", "steps": [{"text": "Working through the marathon."}, {"sleep": 300}, {"text": "Marathon work done."}]},
+    {"match": "Continue the task where you left off", "steps": [{"text": "Resumed after the restart and finished."}]}
   ]
 }

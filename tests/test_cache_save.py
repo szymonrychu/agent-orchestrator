@@ -9,10 +9,11 @@ import pytest
 import pytest_asyncio
 from test_cache_restore import CACHE_KEY, RESTORE, Env, line
 
+from agents_orchestrator.cache.save_rule import save_skip
 from agents_orchestrator.db import sessions
 from agents_orchestrator.k8s.labels import object_names
 from agents_orchestrator.reconciler import cache as cache_mod
-from agents_orchestrator.reconciler.cache import save_job_name
+from agents_orchestrator.reconciler.cache import job_name, save_job_name
 
 pytestmark = pytest.mark.asyncio
 
@@ -27,15 +28,33 @@ class SaveEnv(Env):
             **{"discard_drain_seconds": 0, "discard_quiesce_timeout_seconds": 60, **settings},
         )
         self.saves: list[dict] = []
+        self.sessions_saves: list[dict] = []
         inner = self.rec.cache.write_status
 
         async def spy(session, fields, generation, **kw):
             save = (fields.get("cache") or {}).get("save")
             if save is not None:
                 self.saves.append(dict(save))
+            sessions_save = (fields.get("cache") or {}).get("sessions_save")
+            if sessions_save is not None:
+                self.sessions_saves.append(dict(sessions_save))
             return await inner(session, fields, generation, **kw)
 
         self.rec.cache.write_status = spy
+
+    async def session(self, slug: str = "alpha", cache: bool = True, **spec):
+        """A session whose sessions restore record skips the transcripts save.
+
+        The discard then follows the workdir save alone; the transcripts save is pinned by
+        tests/test_sessions_backup.py.
+        """
+        c = await super().session(slug, cache, **spec)
+        if not cache:
+            return c
+        skip = {"state": "skipped", "reason": "not_configured"}
+        status = {**c.status, "cache": {"sessions_restore": skip}}
+        async with self.pool.connection() as conn:
+            return await sessions.set_status(conn, c.id, status, c.observed_generation)
 
     async def ready(self, slug: str = "alpha", restore: str = "miss"):
         """A cached session whose restore finished with `restore`."""
@@ -216,6 +235,54 @@ async def test_save_without_restore_record_is_skipped(env):
     await env.tick()
     assert env.saves_created() == 0
     assert await env.gone(c)
+
+
+async def test_sessions_save_skipped_when_never_converged(env):
+    """Discarded before its first converge: no PVC, so no sessions save Job to wait on."""
+    c = await env.create("alpha")
+    await env.delete(c)
+    await env.tick(2)
+    assert env.kube.has("PersistentVolumeClaim", object_names("alpha")["pvc"]) is False
+    assert env.sessions_saves == [{"state": "skipped", "reason": "never_converged"}]
+    assert env.creates(job_name("alpha", "save", "sessions")) == 0
+    assert await env.gone(c)
+
+
+async def test_sessions_save_runs_for_session_predating_restore(env):
+    """No sessions restore record but a converged session (its PVC exists): saved as before."""
+    c = await env.ready()
+    async with env.pool.connection() as conn:
+        current = await sessions.get(conn, c.id)
+        cache = {k: v for k, v in current.status["cache"].items() if k != "sessions_restore"}
+        await sessions.set_status(
+            conn, c.id, {**current.status, "cache": cache}, current.observed_generation
+        )
+    assert env.kube.has("PersistentVolumeClaim", object_names("alpha")["pvc"])
+    await env.delete(c)
+    await env.tick()
+    env.kube.finish_job(SAVE, exit_code=0, log=line("saved", 10))
+    await env.tick()
+    sessions_save = job_name("alpha", "save", "sessions")
+    assert env.creates(sessions_save) == 1
+    assert (await env.cache(c.id))["sessions_save"]["state"] == "running"
+    assert not await env.gone(c)
+
+
+@pytest.mark.parametrize(
+    ("restore", "converged", "skip"),
+    [
+        (None, False, "never_converged"),
+        (None, True, None),
+        ({"state": "skipped", "reason": "pods_exist"}, False, None),
+        ({"state": "running"}, False, "restore_running"),
+        ({"state": "miss"}, False, None),
+    ],
+)
+async def test_sessions_save_rule_separates_never_converged(restore, converged, skip):
+    status: dict = {"cache": {} if restore is None else {"sessions_restore": restore}}
+    if converged:
+        status["replicas"] = 1  # the converge's closing status write
+    assert save_skip(True, status, "sessions") == skip
 
 
 async def test_no_cache_session_unchanged(env):

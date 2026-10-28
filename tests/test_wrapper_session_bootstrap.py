@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest_asyncio
-from factories import insert_command
+from factories import insert_command, set_agent_status
 from fakes.fake_kube import FakeKube
 from fakes.fake_wrapper import FakeWrapper
 from psycopg.rows import dict_row
@@ -412,3 +412,84 @@ async def test_successful_resume_records_resume_marker(env, fake):
     (agent,) = await env.agents(c.id)
     assert agent.wrapper_session_id == busy
     assert agent.wrapper_resumed_at is None
+
+
+async def test_live_stored_session_of_a_dead_agent_records_resume_marker(env, fake):
+    """The wrapper resumed the stored session itself after the ingester honoured its close.
+
+    A pod deleted mid-turn: its wrapper's graceful shutdown stops the session and emits
+    `session_closed`, the snapshot is stopped, so the ingester marks the agent dead and ends its
+    stream (D3). The new pod's wrapper resumes the session on start (`resume_on_start`, D5), so
+    the reconciler lists the stored session live. Adopting it as is left the agent dead for good
+    (kind e2e AC6, CI run 40676464845); the adopt of a dead agent records the resume marker, so
+    the ingester re-attaches. A live agent's adopt keeps the marker as it is.
+    """
+    c = await env.session("alpha")
+    await env.rec.reconcile_once()
+    (agent,) = await env.agents(c.id)
+    sid = agent.wrapper_session_id
+    await env.rec.reconcile_once()  # no status row yet: nothing to lift
+    assert (await env.agents(c.id))[0].wrapper_resumed_at is None
+
+    await set_agent_status(env.pool, agent.id, state="busy")
+    await env.rec.reconcile_once()
+    assert (await env.agents(c.id))[0].wrapper_resumed_at is None  # live: no re-attach
+
+    await set_agent_status(env.pool, agent.id, state="dead")
+    fake.set_session_state("busy", session_id=sid)  # the wrapper's own resume continues the turn
+    before = await _db_now(env)
+    await env.rec.reconcile_once()
+    (agent,) = await env.agents(c.id)
+    assert agent.wrapper_session_id == sid
+    assert agent.wrapper_resumed_at is not None and agent.wrapper_resumed_at >= before
+    assert ("POST", f"/v1/sessions/{sid}/resume") not in fake.requests  # adopted, not resumed
+    assert list(fake.sessions) == [sid]
+    first = agent.wrapper_resumed_at
+
+    await set_agent_status(env.pool, agent.id, state="busy")  # the ingester re-attached
+    await env.rec.reconcile_once()
+    (agent,) = await env.agents(c.id)
+    assert (agent.wrapper_session_id, agent.wrapper_resumed_at) == (sid, first)
+
+
+async def test_restored_stopped_session_resumed_not_created(env, fake):
+    """A recreated session's new agents resume the transcripts restored onto their pods (D7).
+
+    Each pod's wrapper lists the session restored into its own `/sessions/<pod>/` as stopped
+    with a transcript; the new agent row adopts and resumes it, and no session is created.
+    """
+    async with FakeWrapper() as other:
+        c = await env.session("alpha", replicas=2, workdir="repo")
+        other.token = fake.token
+        wrappers = {"agent-alpha-0": fake, "agent-alpha-1": other}
+        restored = {
+            pod: w.add_persisted_session(
+                workdir_path(c.spec), name="repo", created_at="2026-10-27T10:00:00.000Z"
+            )
+            for pod, w in wrappers.items()
+        }
+
+        def route(url: str, token: str) -> WrapperClient:
+            env.factory_calls.append((url, token))
+            pod = url.split("//", 1)[1].split(".", 1)[0]
+            return WrapperClient(wrappers[pod].base_url, token)
+
+        assert env.rec.bootstrapper is not None
+        env.rec.bootstrapper.wrapper_factory = route
+        await env.rec.reconcile_once()
+
+        agents = await env.agents(c.id)
+        assert sorted(a.pod_name for a in agents) == sorted(wrappers)
+        for agent in agents:
+            wrapper, sid = wrappers[agent.pod_name], restored[agent.pod_name]
+            assert agent.wrapper_session_id == sid
+            assert agent.wrapper_resumed_at is not None  # resumed, so the ingester re-attaches
+            assert list(wrapper.sessions) == [sid]
+            assert wrapper.sessions[sid].state == "ready"
+            assert ("POST", f"/v1/sessions/{sid}/resume") in wrapper.requests
+
+        await env.rec.reconcile_once()  # steady state: the resumed sessions are kept
+        assert {a.pod_name: a.wrapper_session_id for a in await env.agents(c.id)} == restored
+        for wrapper in wrappers.values():
+            assert ("POST", "/v1/sessions") not in wrapper.requests
+            assert len(wrapper.sessions) == 1

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import uuid
 from datetime import UTC, datetime
@@ -18,7 +19,7 @@ from agents_orchestrator.reconciler.cache import (
     save_job_name,
 )
 from agents_orchestrator.settings import Settings
-from agents_orchestrator.spec import SessionSpec
+from agents_orchestrator.spec import SESSIONS_EXCLUDE, SessionSpec
 from agents_orchestrator.tokens import SessionTokens
 
 AGENT_IMAGE = "harbor.example/containers/claude-code-wrapper:ca2ddf3"
@@ -118,6 +119,22 @@ def test_restore_job_image_and_command():
         render_cache_job(s, settings, unknown, URL)
     with pytest.raises(ValueError):
         render_cache_job(make_session(cache=None), settings, "restore", URL)
+
+
+@pytest.mark.parametrize("action", ["restore", "save"])
+def test_sessions_save_excludes_credentials(action):
+    job = render_cache_job(make_session(), make_settings(), action, URL, "sessions")
+    env = {e["name"]: e["value"] for e in container_of(job)["env"]}
+    exclude = json.loads(env["CACHE_EXCLUDE"])
+    assert exclude == list(SESSIONS_EXCLUDE)
+    # a top-level file and a nested one both match a pattern
+    assert any(fnmatch.fnmatchcase(".credentials.json", p) for p in exclude)
+    assert any(fnmatch.fnmatchcase("ses/config/.credentials.json", p) for p in exclude)
+    assert not any(fnmatch.fnmatchcase("ses/config/projects/p/t.jsonl", p) for p in exclude)
+    # the workdir target keeps the spec's own list
+    workdir = render_cache_job(make_session(), make_settings(), action, URL)
+    wenv = {e["name"]: e["value"] for e in container_of(workdir)["env"]}
+    assert json.loads(wenv["CACHE_EXCLUDE"]) == ["node_modules", "*.log"]
 
 
 @pytest.mark.parametrize("action", ["restore", "save"])

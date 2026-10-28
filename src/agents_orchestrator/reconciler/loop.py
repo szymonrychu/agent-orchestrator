@@ -7,6 +7,8 @@ shared with the orchestrator's own objects (D26). The guards that keep the recon
   the session label are ever deleted
 - before applying a StatefulSet, Service, ConfigMap or PVC it reads the object; one that exists
   without both labels is foreign, and then nothing of that session is applied
+- a live StatefulSet whose updateStrategy is not OnDelete is moved there by a strategy-only
+  merge patch before it is applied (`_apply`, D1)
 - Secrets are never read or listed: the session Secret is applied with the rest and deleted by
   its deterministic name
 
@@ -34,12 +36,13 @@ from agents_orchestrator.db.export import export_session_history
 from agents_orchestrator.db.pool import listen, notify
 from agents_orchestrator.db.sessions import Session, SessionNotFound
 from agents_orchestrator.k8s.kube import FIELD_MANAGER, KubeApi, Obj, is_owned, pod_ready
-from agents_orchestrator.k8s.labels import object_names, prefix, session_labels
+from agents_orchestrator.k8s.labels import object_names, session_labels
 from agents_orchestrator.k8s.render import pod_url, render_session
 from agents_orchestrator.reconciler.cache import CacheGate, CacheRunner
 from agents_orchestrator.reconciler.checks import CheckRunner
 from agents_orchestrator.reconciler.discard_hook import HookResult, resolve_hook, run_discard_hook
 from agents_orchestrator.reconciler.init import InitGate, InitRunner
+from agents_orchestrator.reconciler.rollout import BUSY, LEADS, Replacer, agent_pods, terminating
 from agents_orchestrator.reconciler.wrapper_sessions import WrapperSessionBootstrapper
 from agents_orchestrator.settings import Settings
 from agents_orchestrator.tokens import tokens_for
@@ -54,10 +57,24 @@ PRUNE_ORDER = ("StatefulSet", "Service", "ConfigMap", "PersistentVolumeClaim")
 # never prunes them: they are created per check and once per session, not rendered.
 DISCARD_ORDER = ("Job", *PRUNE_ORDER)
 
+# Moves a live StatefulSet to OnDelete. A RollingUpdate one carries a defaulted, unowned
+# `rollingUpdate.partition` that a server-side apply would keep next to `type: OnDelete`, which
+# the API server rejects; the patch changes no template, so the controller rolls no pod (D1).
+TO_ON_DELETE: Obj = {"spec": {"updateStrategy": {"type": "OnDelete", "rollingUpdate": None}}}
+
 _HOOK_FAILURE_KEYS = ("discard_hook_failed", "discard_hook_failures", "discard_hook_next_at")
 
 WrapperFactory = Callable[[str, str], Any]
 """(base_url, auth_token) -> wrapper client; used by session bootstrap."""
+
+
+# (ordinal, busy) of each draining agent; a leader counts as busy (D8), see `_draining`.
+_DRAINING = (
+    f"SELECT a.ordinal, {BUSY} OR {LEADS}"
+    " FROM agents a LEFT JOIN agent_status s ON s.agent_id = a.id"
+    " WHERE a.session_id = %s AND a.ordinal >= %s AND a.gone_at IS NULL"
+    " ORDER BY a.ordinal"
+)
 
 
 class Reconciler:
@@ -79,6 +96,7 @@ class Reconciler:
         self.checks = CheckRunner(pool, kube, settings)
         self.init = InitRunner(pool, kube, settings, write_status=self._write_status)
         self.cache = CacheRunner(pool, kube, settings, write_status=self._write_status)
+        self.replacer = Replacer(pool, kube, settings)
         self.bootstrapper = (
             WrapperSessionBootstrapper(pool, wrapper_factory)
             if wrapper_factory is not None
@@ -233,8 +251,16 @@ class Reconciler:
             )
             return
 
+        # The Claude transcripts are restored before any agent pod starts: the StatefulSet stays
+        # at zero replicas until that restore has an outcome (D7). It comes first, so a crash
+        # after the StatefulSet apply never reads as a session whose pods already existed.
+        session, sessions_gate = await self.cache.sessions_restore_step(
+            session, lambda: self._agents_exist(slug)
+        )
         for obj in objs:
-            await self.kube.apply(obj, field_manager=FIELD_MANAGER, force=True)
+            if sessions_gate.hold and obj["kind"] == "StatefulSet":
+                obj = {**obj, "spec": {**obj["spec"], "replicas": 0}}
+            await self._apply(obj)
         desired = {(o["kind"], o["metadata"]["name"]) for o in objs}
         await self._prune(slug, desired)
         cache_gate = await self.cache.restore_step(session)
@@ -249,13 +275,17 @@ class Reconciler:
             phase = "pending" if ready == 0 else "degraded"
             message = f"{ready} of {replicas} pods ready"
         problems: list[str] = []
-        if gate.hold or cache_gate.hold:  # sessions wait for the restore and the init run
+        gates = (sessions_gate, cache_gate, gate)
+        if any(g.hold for g in gates):  # sessions wait for the restores and the init run
             phase = "pending"
         else:
             problems = await self._bootstrap_wrapper_sessions(session)
-            if gate.degraded or cache_gate.degraded:  # a failed restore or init starts them anyway
+            if any(g.degraded for g in gates):  # a failed restore or init starts them anyway
                 phase = "degraded"
+        rollout = await self.replacer.step(session)  # outdated pods roll one idle pod a tick
         fields: dict[str, Any] = {"phase": phase, "ready": ready, "replicas": replicas}
+        if rollout is not None:
+            fields["rollout"] = rollout
         drain = ""
         if draining:
             fields["drain"] = {
@@ -265,12 +295,22 @@ class Reconciler:
             }
             drain = f"draining {len(draining)} agents"
         fields["message"] = "; ".join(
-            filter(None, [message, drain, cache_gate.message, gate.message, *problems])
+            filter(None, [message, drain, *(g.message for g in gates), *problems])
         )
         log.debug("session %s in %s: %s", slug, ns, phase)
-        await self._write_status(
-            session, fields, session.generation, drop=() if draining else ("drain",)
-        )
+        drop = (*(() if draining else ("drain",)), *(() if rollout else ("rollout",)))
+        await self._write_status(session, fields, session.generation, drop=drop)
+
+    async def _apply(self, obj: Obj) -> None:
+        """Server-side apply; a live StatefulSet not on OnDelete is first moved there."""
+        if obj["kind"] == "StatefulSet":
+            ns, name = self.settings.namespace, obj["metadata"]["name"]
+            live = await self.kube.get_object("StatefulSet", ns, name)
+            strategy = ((live or {}).get("spec") or {}).get("updateStrategy") or {}
+            if live is not None and strategy.get("type") != "OnDelete":
+                log.info("statefulset %s: moving to updateStrategy OnDelete", name)
+                await self.kube.merge_patch("StatefulSet", ns, name, TO_ON_DELETE)
+        await self.kube.apply(obj, field_manager=FIELD_MANAGER, force=True)
 
     async def _draining(self, session_id: UUID, replicas: int) -> list[tuple[int, bool]]:
         """(ordinal, busy) of each agent at or above `replicas` that is not gone (D3).
@@ -280,16 +320,7 @@ class Reconciler:
         held until the leader row names a staying agent; the drain deadline bounds the hold).
         """
         async with self.pool.connection() as conn:
-            cur = await conn.execute(
-                "SELECT a.ordinal, COALESCE(s.state = 'busy', false) OR EXISTS ("
-                "  SELECT 1 FROM messages m WHERE m.session_id = a.session_id"
-                "  AND m.agent_id = a.id AND m.status IN ('dispatching', 'verifying'))"
-                "  OR EXISTS (SELECT 1 FROM session_leaders l WHERE l.agent_id = a.id)"
-                " FROM agents a LEFT JOIN agent_status s ON s.agent_id = a.id"
-                " WHERE a.session_id = %s AND a.ordinal >= %s AND a.gone_at IS NULL"
-                " ORDER BY a.ordinal",
-                (session_id, replicas),
-            )
+            cur = await conn.execute(_DRAINING, (session_id, replicas))
             return [(ordinal, busy) for ordinal, busy in await cur.fetchall()]
 
     async def _drain_replicas(self, session: Session) -> tuple[int, str | None]:
@@ -329,6 +360,13 @@ class Reconciler:
         token = tokens_for(self.settings, session.id).auth
         return await self.bootstrapper.bootstrap_many(agents, session.spec, token)
 
+    async def _agents_exist(self, slug: str) -> bool:
+        """The session's StatefulSet or one of its agent pods exists."""
+        ns = self.settings.namespace
+        if await self.kube.get_object("StatefulSet", ns, object_names(slug)["statefulset"]):
+            return True
+        return bool(agent_pods(slug, await self.kube.list_pods(ns, session_labels(slug))))
+
     async def _foreign(self, slug: str, objs: list[Obj]) -> list[str]:
         """`foreign_object <kind>/<name>` for each rendered name held by an unlabelled object."""
         found = []
@@ -352,21 +390,18 @@ class Reconciler:
                     await self.kube.delete(kind, ns, name)
 
     async def _observe(self, session: Session) -> int:
-        """Pods into agents rows; returns the number of ready pods within replicas."""
+        """Pods into agents rows; returns the number of ready pods within replicas.
+
+        A terminating pod is never ready: its agent is not picked while its grace period runs.
+        """
         slug, replicas = session.slug, session.spec.replicas
         pods = await self.kube.list_pods(self.settings.namespace, session_labels(slug))
-        base = prefix(slug) + "-"
-        seen: dict[int, Obj] = {}
-        for pod in pods:
-            name = pod["metadata"]["name"]
-            suffix = name[len(base) :] if name.startswith(base) else ""
-            if is_owned(pod, slug) and suffix.isdigit():  # check Job pods are not agents
-                seen[int(suffix)] = pod
+        seen = agent_pods(slug, pods)  # check Job pods are not agents
         ready = 0
         async with self.pool.connection() as conn:
             for ordinal, pod in sorted(seen.items()):
                 name = pod["metadata"]["name"]
-                is_ready = pod_ready(pod) and ordinal < replicas
+                is_ready = pod_ready(pod) and not terminating(pod) and ordinal < replicas
                 ready += is_ready
                 await agents_repo.upsert_agent(
                     conn,
@@ -404,6 +439,14 @@ class Reconciler:
                 session.observed_generation,
             )
             return
+        session = await self._reload(session)  # the workdir save may have just written its run
+        if not await self.cache.save_step(session, "sessions"):
+            await self._write_status(
+                session,
+                {"phase": "deleting", "message": "saving the Claude transcripts"},
+                session.observed_generation,
+            )
+            return
         if not await self.pre_discard(session):
             await self._write_status(
                 session,
@@ -428,6 +471,13 @@ class Reconciler:
             await notify(conn, "status", {"session_id": str(session.id)})
         log.info("session %s discarded", slug)
 
+    async def _reload(self, session: Session) -> Session:
+        async with self.pool.connection() as conn:
+            current = await sessions.get(conn, session.id)
+        if current is None:
+            raise SessionNotFound(str(session.id))
+        return current
+
     async def _db_now(self) -> datetime:
         async with self.pool.connection() as conn:
             return (await (await conn.execute("SELECT now()")).fetchone())[0]
@@ -436,20 +486,17 @@ class Reconciler:
         """Stop the agents and let the ingester drain before the history is exported or saved.
 
         Only when an export is still owed (a hook that has not delivered) or a workspace cache
-        save is (`spec.cache` set, no save outcome yet). The StatefulSet is scaled to zero; once
-        no agent pod is left, the ingester gets `discard_drain_seconds` to store the last events
-        of their streams. The wait is bounded by `discard_quiesce_timeout_seconds` from the first
-        pass, after which the discard goes on and logs what it could not confirm. True means the
-        export and the save may run.
+        or transcripts save is (`spec.cache` set, no save outcome yet). The StatefulSet is scaled
+        to zero; once no agent pod is left, the ingester gets `discard_drain_seconds` to store
+        the last events of their streams. The wait is bounded by
+        `discard_quiesce_timeout_seconds` from the first pass, after which the discard goes on
+        and logs what it could not confirm. True means the export and the saves may run.
         """
         status = session.status
         hook_owed = resolve_hook(session, self.settings) is not None and not status.get(
             "discard_hook_delivered"
         )
-        save = (status.get("cache") or {}).get("save")
-        save_owed = session.spec.cache is not None and (
-            save is None or save.get("state") == "running"
-        )
+        save_owed = self.cache.save_owed(session) or self.cache.save_owed(session, "sessions")
         if not hook_owed and not save_owed:
             return True
         ns, slug = self.settings.namespace, session.slug
@@ -465,17 +512,15 @@ class Reconciler:
             ):
                 if obj["kind"] == "StatefulSet":
                     obj["spec"]["replicas"] = 0
-                    await self.kube.apply(obj, field_manager=FIELD_MANAGER, force=True)
+                    await self._apply(obj)
 
-        base = prefix(slug) + "-"
-        running = [
+        running = sorted(
             p["metadata"]["name"]
-            for p in await self.kube.list_pods(ns, session_labels(slug))
-            if is_owned(p, slug) and p["metadata"]["name"][len(base) :].isdigit()
-        ]
+            for p in agent_pods(slug, await self.kube.list_pods(ns, session_labels(slug))).values()
+        )
         timed_out = (now - started).total_seconds() >= self.settings.discard_quiesce_timeout_seconds
         if running and not timed_out:
-            fields["message"] = "waiting for agent pods to stop: " + ", ".join(sorted(running))
+            fields["message"] = "waiting for agent pods to stop: " + ", ".join(running)
             await self._write_status(
                 session,
                 {"phase": "deleting", **fields},

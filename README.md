@@ -13,6 +13,8 @@ Tasks run through mise:
 - `mise run test:integration` - tests that need a real wrapper image. When `ORCH_TEST_WRAPPER_IMAGE` is unset the task builds `e2e/agent-test.Dockerfile` as `agents-orchestrator-agent-test:e2e` (the tag `scripts/e2e.sh` uses), exports it, and runs the suite; set the variable to use another image
 - `mise run test:e2e` - kind end-to-end tests
 
+CI runs both on every pull request and push: the `e2e` job runs `mise run test:e2e`, then `mise run test:integration` with `ORCH_TEST_WRAPPER_IMAGE=agents-orchestrator-agent-test:e2e`, the test agent image `scripts/e2e.sh` built on the pinned claude-code-wrapper base. The real-wrapper leg of `tests/test_fake_wrapper_contract.py` therefore runs against that wrapper on every change, and the publish gate (`images`, `chart-publish`, `chart-publish-tag` need `e2e`) covers it.
+
 ## Configuration
 
 Every process reads `ORCH_*` variables (the contract `agents-orchestrator-settings-env`, set by the Helm chart). Invalid or missing values raise one error naming every bad variable.
@@ -40,6 +42,7 @@ Every process reads `ORCH_*` variables (the contract `agents-orchestrator-settin
 | `ORCH_DEFAULT_MEMORY_LIMIT` | `8Gi` | api, reconciler | agent container memory limit filled in when a session is created and the key is empty |
 | `ORCH_DEFAULT_REPLICAS` | `1` | api | default agents per session |
 | `ORCH_DEFAULT_AUTO_COMPACT_PCT` | `95` | api | auto-compact threshold percent (gauge tick and CLAUDE_AUTOCOMPACT_PCT_OVERRIDE) |
+| `ORCH_DEFAULT_RESTART_CONTINUE_PROMPT` | `Claude was restarted. Continue the task where you left off.` | reconciler | `sessions.restart_continue_prompt` rendered into every agent wrapper config unless `spec.wrapper.restart_continue_prompt` is set: the prompt that continues a turn cut off by a claude crash or a wrapper shutdown (pod restart) instead of failing it; `$` is escaped like a `spec.wrapper` string; empty disables the continuation |
 | `ORCH_PVC_STORAGE_CLASS` | `rook-ceph-rwx` | api, reconciler | RWX storage class |
 | `ORCH_PVC_SIZE` | `20Gi` | api, reconciler | workspace PVC size |
 | `ORCH_CLAUDE_SECRET_NAME` | `agents-orchestrator-claude` | api, reconciler | Secret holding Claude credentials |
@@ -108,12 +111,12 @@ One image, one `orch` entrypoint. Every command reads `ORCH_*` settings (see Con
 
 ## Images
 
-CI (`.github/workflows/ci.yaml`, job `images`) builds the orchestrator image from the root `Dockerfile` on every push and pull request and smoke-tests it with `docker run --rm <image> --help`. Only a push to `main` logs in to Harbor (secrets `HARBOR_USERNAME`, `HARBOR_PASSWORD`) and pushes it with `regctl`.
+CI (`.github/workflows/ci.yaml`, job `images`) builds the orchestrator image from the root `Dockerfile` and smoke-tests it with `docker run --rm <image> --help`, but only after the `lint`, `test` and `e2e` jobs pass; a red build is never pushed. Only a push to `main` logs in to Harbor (secrets `HARBOR_USERNAME`, `HARBOR_PASSWORD`) and pushes it with `regctl`, in 50MB chunks. The `e2e` job builds and loads its own images and does not use the pushed one, so it does not wait for `images`.
 
 - Orchestrator image: `harbor.szymonrichert.pl/containers/agents-orchestrator:<sha7>`, where `<sha7>` is the first seven characters of the commit sha. Tags are immutable; there is no `latest`.
-- Agent image: no agent image is built here. Agent pods run the claude-code-wrapper image named by `ORCH_AGENT_IMAGE`; the recommended one is `harbor.szymonrichert.pl/containers/claude-code-wrapper:fb005fd`. This is the value for the chart's `agentImage` and agents-helmfile, and the commit the dev dependency `claude-code-wrapper` in `pyproject.toml` is pinned to, so config validation tests the wrapper the agents run.
+- Agent image: no agent image is built here. Agent pods run the claude-code-wrapper image named by `ORCH_AGENT_IMAGE`; the recommended one is `harbor.szymonrichert.pl/containers/claude-code-wrapper:5fd93ff`. This is the value for the chart's `agentImage` and agents-helmfile, and the commit the dev dependency `claude-code-wrapper` in `pyproject.toml` is pinned to, so config validation tests the wrapper the agents run.
 - any-mcp: it reaches agent pods through the rendered onStart hook, not through an image. The `any-mcp` dependency in `pyproject.toml` and `ORCH_ANY_MCP_REF` pin the same release tag (`v0.5.0`). The dev dependency `any-mcp-tatara-orchestrator` in `pyproject.toml` (the orchestrator plugin from the plugins repo) and `ORCH_ANY_MCP_PLUGINS_REF` pin the same plugins release tag (`v0.1.0`).
-- The onStart script (`k8s/on_start.py`, ConfigMap key `on-start.sh`) runs before claude starts, on every pod start: it installs any-mcp into `/opt/any-mcp` when `/opt/any-mcp/.ref` differs from `ORCH_ANY_MCP_REF`, writes the session's any-mcp config to `/opt/any-mcp/etc/any-mcp.yaml`, runs `/opt/any-mcp/bin/any-mcp plugins install --config /opt/any-mcp/etc/any-mcp.yaml` (every run, so every `plugins[].source` of the config is installed into the any-mcp venv, branch and tag refs refreshed), then `/opt/any-mcp/bin/any-mcp --help`. The orchestrator plugin is one of those sources: the reserved entry is `source: git::<ORCH_ANY_MCP_PLUGINS_REPO>//orchestration/orchestrator?ref=<ORCH_ANY_MCP_PLUGINS_REF>` (no `plugin` key), installed as the package `any-mcp-tatara-orchestrator`. The rendered `plugins` list is the base config's entries (the spec's `any_mcp_config`, else the `ORCH_ANY_MCP_CONFIG_FILE` default), then one `{name, source}` per `spec.any_mcp_sources` entry in order, then the reserved entry (omitted without `ORCH_AGENT_API_URL`; the sources are rendered either way). A failed install fails the onStart hook, which blocks the session. Changing `ORCH_ANY_MCP_PLUGINS_REPO`, `ORCH_ANY_MCP_PLUGINS_REF` or a session's sources changes the config hash and rolls its pods.
+- The onStart script (`k8s/on_start.py`, ConfigMap key `on-start.sh`) runs before claude starts, on every pod start: it installs any-mcp into `/opt/any-mcp` when `/opt/any-mcp/.ref` differs from `ORCH_ANY_MCP_REF`, writes the session's any-mcp config to `/opt/any-mcp/etc/any-mcp.yaml`, runs `/opt/any-mcp/bin/any-mcp plugins install --config /opt/any-mcp/etc/any-mcp.yaml` (every run, so every `plugins[].source` of the config is installed into the any-mcp venv, branch and tag refs refreshed), then `/opt/any-mcp/bin/any-mcp --help`. The orchestrator plugin is one of those sources: the reserved entry is `source: git::<ORCH_ANY_MCP_PLUGINS_REPO>//orchestration/orchestrator?ref=<ORCH_ANY_MCP_PLUGINS_REF>` (no `plugin` key), installed as the package `any-mcp-tatara-orchestrator`. The rendered `plugins` list is the base config's entries (the spec's `any_mcp_config`, else the `ORCH_ANY_MCP_CONFIG_FILE` default), then one `{name, source}` per `spec.any_mcp_sources` entry in order, then the reserved entry (omitted without `ORCH_AGENT_API_URL`; the sources are rendered either way). A failed install does not block the session: the script logs `on-start: <step> failed (exit N)` to stderr, exits 0 and the hook is `on_error: allow`, so the pod stays Ready without the failed piece. Changing `ORCH_ANY_MCP_PLUGINS_REPO`, `ORCH_ANY_MCP_PLUGINS_REF` or a session's sources changes the config hash and rolls its pods.
 
 ## Helm chart
 
@@ -279,9 +282,10 @@ Command hooks run `sh -c` in the agent pod with the wrapper's full environment, 
 
 The chart is published to `oci://harbor.szymonrichert.pl/charts/agents-orchestrator` with immutable versions; Harbor rejects a repeated version and CI fails first with a clear message. `scripts/chart-version.sh` picks the version from `version` in `chart/agents-orchestrator/Chart.yaml`:
 
-- Every push to `main` (after the `chart` and `images` jobs pass) publishes `<version>-main.<sha7>`, with `appVersion` set to `<sha7>`. agents-helmfile can pin that exact version.
-- A tag `vX.Y.Z` publishes `X.Y.Z`. The tag must equal Chart.yaml's `version`, otherwise the job fails. The tagged commit must already have been built by main CI: the job checks that `harbor.szymonrichert.pl/containers/agents-orchestrator:<sha7>` exists before packaging.
+- Every push to `main` (after the `chart`, `images`, `lint`, `test` and `e2e` jobs pass) publishes `<version>-main.<sha7>`, with `appVersion` set to `<sha7>`. agents-helmfile can pin that exact version.
+- A tag `vX.Y.Z` (after the `chart`, `lint`, `test` and `e2e` jobs pass on the tag) publishes `X.Y.Z`. The tag must equal Chart.yaml's `version`, otherwise the job fails. The tagged commit must already have been built by main CI: the job checks that `harbor.szymonrichert.pl/containers/agents-orchestrator:<sha7>` exists before packaging.
 - To release: bump `version` in Chart.yaml, merge to `main`, wait for CI, then `git tag vX.Y.Z` on that commit and push the tag.
+- Gate: nothing reaches Harbor, neither the image nor a chart, until `lint`, `test` and `e2e` have passed on that commit, so a red build is never pushed or published; the chart and image publish only from jobs that need all three.
 - Publishing a version that already exists fails with `chart version <v> already published; bump chart/agents-orchestrator/Chart.yaml version`.
 - The Harbor robot (`HARBOR_USERNAME`, `HARBOR_PASSWORD`) needs push on both the `containers` and `charts` projects.
 ## Kubernetes permissions
@@ -428,6 +432,10 @@ A save runs only after a successful restore: `restored`, `miss` (no archive exis
 A restore reports `miss` on HTTP 404 from the presigned GET. S3 returns 404 for a missing key only when the signer can list the bucket, otherwise 403, and the CLI cannot tell a 403 for a missing key from a 403 for a denied request: it reports `download_failed: HTTP 403`, which skips the save. Grant the cache credentials `s3:ListBucket` on the bucket so a first use is a 404 and saves.
 
 Save never follows symlinks, skips sockets, FIFOs and device files, and skips every symlink whose target is absolute or resolves outside the workspace (for example a `.venv` interpreter link). The count is reported as `skipped_links`.
+
+### Transcripts
+
+The Claude transcripts of a cache-enabled session (the PVC subtree `sessions`, every agent pod's `/sessions`) are backed up as their own object `<ORCH_CACHE_S3_PREFIX>sessions/<slug>.tar.zst` by the same Jobs, in `agent-<slug>-sessions-restore|save`, recorded in `status.cache.sessions_restore` and `status.cache.sessions_save` with the run shape above. On a session's first converge with `spec.cache` set the restore runs before its agent pods start (the StatefulSet is held at zero replicas meanwhile), unless a pod or the StatefulSet of the session already exists (`skipped`, reason `pods_exist`) or the cache is not configured (`skipped`, reason `not_configured`); the agents then resume the restored wrapper sessions. At discard the transcripts save runs after the workdir save, by the workdir rule on `sessions_restore`, except that a session without a sessions restore record (older than the feature) or one skipped with `pods_exist` saves too. Without `spec.cache` or a configured cache nothing is backed up; the session view's `backup` says what a discard would save and `backup.last_transcripts_backup` is the last finished transcripts save.
 
 ### Job CLI
 
@@ -623,7 +631,7 @@ Plain SQL migrations (`src/agents_orchestrator/db/migrations`), psycopg 3, no OR
 | `turns` | one row per wrapper turn: origin, start, completion, status, final text, usage |
 | `events` | every stored wrapper event; UNIQUE(agent_id, wrapper_session_id, seq), where wrapper_session_id is the claude-code-wrapper's own session id; the global bigserial id is the SSE id and the page cursor |
 | `commands` | queue: `interrupt`, `compact`, `restart`, `rebootstrap` with status and result |
-| `leadership_requests` | queue: `handover` (from the leader) or `user` requests with target agent, epoch, status (`queued`, `applied`, `rejected`); the api inserts, the dispatcher decides |
+| `leadership_requests` | queue: `handover` (from the leader) or `user` requests with target agent, epoch, status (`queued`, `applied`, `rejected`); the api inserts, and the reconciler a `rollout` handover from an idle leader; the dispatcher decides |
 | `session_leaders` | one row per hive: leader agent, `epoch`, `since`, `reason` (`initial`, `user`, `handover: <reason>`, `leader_lost`, `lease_expired`, `scale_down`, `compaction`), `unready_since`, feed cursor and pushed hive-state hash; the dispatcher is the only writer (see Leadership) |
 | `checks` | queue: a shell command run as a Kubernetes Job; exit code and log tail |
 
@@ -686,7 +694,7 @@ Response 201 with the session view. Errors: 422 `invalid_request` (bad slug, bot
 
 ### `GET /api/v1/sessions/{session_id}`
 
-One session view: `id`, `slug`, `spec`, `desired`, `status`, `generation`, `observed_generation`, `created_at`, `preset_id` (null for a raw-spec session or once the preset is deleted), `preset_name`, `summary` (`state` of `working`, `waiting`, `booting`, `error`, `deleting`; `ready`, `replicas`, `context_pct_max`, `auto_compact_pct`, `queued`, `failed`), `hive`, `max_replicas` (the cap), `static`, `leader_agent_id` and `leader_epoch` (both null for an alone session or before the first election), `leader_since` and `leader_reason` (when the current leader's term began and why it began: `initial`, `user`, `handover: <reason>`, `leader_lost`, `lease_expired`, `scale_down` or `compaction`; null without a leader), `closes_at` (`created_at` plus `spec.autoclose_after_seconds`, null when unset), and `init_edited_since_run` (same rule as `edited_since_run` of the init-scripts view; also in the list and the status stream). Response 200. Errors: 404 `not_found`.
+One session view: `id`, `slug`, `spec`, `desired`, `status`, `generation`, `observed_generation`, `created_at`, `preset_id` (null for a raw-spec session or once the preset is deleted), `preset_name`, `summary` (`state` of `working`, `waiting`, `booting`, `error`, `deleting`; `ready`, `replicas`, `context_pct_max`, `auto_compact_pct`, `queued`, `failed`, `oldest_queued_at`: the `created_at` of the session's oldest `queued` message, null when none is queued), `hive`, `max_replicas` (the cap), `static`, `leader_agent_id` and `leader_epoch` (both null for an alone session or before the first election), `leader_since` and `leader_reason` (when the current leader's term began and why it began: `initial`, `user`, `handover: <reason>`, `leader_lost`, `lease_expired`, `scale_down` or `compaction`; null without a leader), `closes_at` (`created_at` plus `spec.autoclose_after_seconds`, null when unset), `init_edited_since_run` (same rule as `edited_since_run` of the init-scripts view; also in the list and the status stream), and `backup`, what a discard would save now: `{"workdir": bool, "transcripts": bool, "reason": string or null, "last_transcripts_backup": {"finished_at", "bytes"} or null}`. Each flag is true only when the discard would really run that save (the reconciler's own save rule, see [Transcripts](#transcripts)): `spec.cache` is set, the cache is configured and the target's restore allows the save. `reason` is null when both run, else `no_session_cache` (no `spec.cache`, nothing is backed up), `cache_not_configured` (the orchestrator has no S3 cache, nothing is backed up) or the skip reason of the save (for example `restore_running`, `download_failed`, `restore_skipped`), the workdir's before the transcripts'. `last_transcripts_backup` is the `finished_at` and `bytes` of `status.cache.sessions_save` once it is `saved`, null otherwise. Response 200. Errors: 404 `not_found`.
 
 ### `DELETE /api/v1/sessions/{session_id}`
 
@@ -850,7 +858,7 @@ Lists the shells of every ready agent of the session. The agents are queried con
 }
 ```
 
-`attached` is true while a client is attached; an exited shell stays listed with `alive` false and its `exit_code` until closed or reaped. Errors: 404 `not_found` (session), 503 `unavailable`.
+`attached` is true while at least one client is attached (the wrapper reports a subscriber count, the orchestrator reports whether it is above zero); an exited shell stays listed with `alive` false and its `exit_code` until closed or reaped. Errors: 404 `not_found` (session), 503 `unavailable`.
 
 ### `DELETE /api/v1/agents/{agent_id}/terminals/{terminal_id}`
 
@@ -927,7 +935,7 @@ The `/sessions/{session_id}/events/stream` frames are named by the stored wrappe
 | `snapshot` | `/stream` | `{"sessions": [{"session": <session view>, "agents": [<agent view>]}]}`, sent once on connect |
 | `session_status` | `/stream` | `{"session": <session view>}` when a session changed |
 | `agent_status` | `/stream` | `{"session_id", "agent": <agent view>}` when an agent changed |
-| `message_status` | `/stream` | `{"session_id", "queued", "failed", "messages": [<changed message views>]}` |
+| `message_status` | `/stream` | `{"session_id", "queued", "failed", "oldest_queued_at", "messages": [<changed message views>]}`; `oldest_queued_at` as in the session `summary`, sent also when only it changed |
 | `session_removed` | `/stream` | `{"session_id"}` when a discard completed |
 | `leader_changed` | `/stream` | `{"session_id", "agent_id", "epoch", "reason"}` on NOTIFY `leader_changed`; the `session_status` and `agent_status` frames that follow carry the new leader |
 
@@ -947,7 +955,7 @@ Create-time only fields of the session `spec` (also accepted on `POST /api/v1/pr
 | `plugins` | `{marketplaces: [{name, source}], install: [{plugin: name@marketplace, scope: user, project or local, required}]}` | `plugins` |
 | `turn_stall_seconds` | number >= 0 | `sessions.turn_stall_seconds` |
 | `max_restarts` | integer 0 to 10 | `sessions.max_restarts` |
-| `restart_continue_prompt` | string | `sessions.restart_continue_prompt` |
+| `restart_continue_prompt` | string; replaces `ORCH_DEFAULT_RESTART_CONTINUE_PROMPT`, empty disables the continuation | `sessions.restart_continue_prompt` |
 | `turn_max_seconds` | number >= 0 | `limits.turn_max_seconds` |
 | `agent_commands` | subset of `compact`, `context`, `mcp`, `reload-plugins`, `reload-skills` | `sessions.commands.agent` |
 

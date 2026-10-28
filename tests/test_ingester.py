@@ -28,7 +28,9 @@ from agents_orchestrator.db import queue, status
 from agents_orchestrator.db.leadership import CHANNEL as LEADERSHIP_CHANNEL
 from agents_orchestrator.ingester import Ingester
 from agents_orchestrator.ingester.loop import map_state
+from agents_orchestrator.reconciler.wrapper_sessions import WrapperSessionBootstrapper
 from agents_orchestrator.settings import Settings
+from agents_orchestrator.spec import SessionSpec
 from agents_orchestrator.tokens import derive_tokens
 from agents_orchestrator.wrapper import Snapshot, WrapperClient
 
@@ -868,6 +870,55 @@ async def test_close_replayed_after_resume_not_honoured(harness, pool, listener)
     await h.stored_through(h.last_fake_seq())
     assert (await events_rows(pool, h.agent_id))[-1]["data"] == {"text": "live"}
     assert h.agent_id in ingester.agent_ids()
+
+
+async def test_wrapper_resume_after_an_honoured_close_reattaches(harness, pool) -> None:
+    """A busy pod deleted by hand (kind e2e AC6, CI run 40676464845).
+
+    Its wrapper's graceful shutdown stops the session and emits `session_closed`; the snapshot
+    is stopped, so the ingester honours the close, marks the agent dead and ends the task. The
+    new pod's wrapper resumes the session itself (`sessions.resume_on_start`, D5) and continues
+    the turn, so nothing the ingester watches changes. The reconciler's bootstrap then lists the
+    stored session live; its adopt of a dead agent records the resume marker, so the ingester
+    re-attaches from the close seq and the continued turn completes.
+    """
+    h = await harness()
+    await h.start()
+    accepted = await h.client.submit_turn(h.wrapper_session_id, "a long task")
+    await h.stored_through(h.last_fake_seq())
+    closed_seq = h.shut_down()
+    await h.stored_through(closed_seq)
+
+    async def state_is(want: str) -> bool:
+        return await h.state() == want
+
+    await wait_until(lambda: state_is("dead"))
+    opened = len(h.opened)
+
+    await h.client.resume_session(h.wrapper_session_id)  # the wrapper's own: nothing recorded
+    h.fake.set_session_state("busy")
+    h.fake.sessions[h.wrapper_session_id].current_turn_id = accepted.turn_id
+    await asyncio.sleep(0.3)
+    assert await h.state() == "dead" and len(h.opened) == opened  # nothing re-attaches by itself
+
+    async with pool.connection() as conn:
+        agent = await agents_repo.get_agent(conn, h.agent_id)
+    assert agent is not None
+    boot = WrapperSessionBootstrapper(pool, lambda url, token: WrapperClient(url, token))
+    token = derive_tokens(MASTER_KEY.encode(), h.session_id).auth
+    assert await boot.bootstrap(agent, SessionSpec(), token) is None
+
+    await wait_until(lambda: state_is("busy"))  # the attach projects the snapshot first
+    await wait_until(lambda: len(h.opened) > opened)
+    assert h.opened[opened:] == [closed_seq]
+    assert (await status_row(pool, h.agent_id))["current_turn_id"] == accepted.turn_id
+    await h.fake.complete_turn(accepted.turn_id, "continued")
+    await h.stored_through(h.last_fake_seq())
+    (turn,) = await fetch(
+        pool, "SELECT status, final_text FROM turns WHERE turn_id=%s", (accepted.turn_id,)
+    )
+    assert turn == {"status": "completed", "final_text": "continued"}
+    assert await h.state() == "idle"
 
 
 async def test_resume_reattaches_from_last_stored_seq(harness, pool) -> None:

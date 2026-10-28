@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
+import pytest
 import pytest_asyncio
 from factories import insert_session
 from fakes.fake_wrapper import FakeWrapper
@@ -141,6 +143,38 @@ async def test_session_list_fans_out(rig):
     again = (await rig.http.get(rig.list_url())).json()
     assert again["unavailable_agents"] == [] and len(again["terminals"]) == 4
     assert_error(await rig.http.get(f"/api/v1/sessions/{uuid.uuid4()}/terminals"), 404, "not_found")
+
+
+@pytest.mark.parametrize(("count", "attached"), [(0, False), (1, True), (2, True), (5, True)])
+def test_view_maps_subscriber_count_to_attached(count, attached):
+    """The wrapper reports `attached` as a subscriber count, never past 1 as a bool."""
+    target = workspace.WrapperTarget(uuid.uuid4(), uuid.uuid4(), "pod-0", "http://x", "ses_1", "t")
+    body = {
+        "terminal_id": "term_0123456789ab",
+        "session_id": "ses_1",
+        "created_at": "2026-10-28T00:00:00Z",
+        "alive": True,
+        "exit_code": None,
+        "attached": count,
+        "rows": 24,
+        "cols": 80,
+    }
+    assert workspace._terminal_view(target, body).attached is attached
+
+
+async def test_attached_is_true_for_any_subscriber_count(rig):
+    """The wrapper reports `attached` as a subscriber count; the view says if any is attached."""
+    fake, _, row = await rig.agent(0)
+    made = (await rig.http.post(rig.create_url(row))).json()
+    assert made["attached"] is False
+    clients = fake.terminals[made["terminal_id"]].clients
+    clients.update({asyncio.Queue(), asyncio.Queue()})
+    r = await rig.http.get(rig.list_url())
+    assert r.status_code == 200, r.text
+    assert [t["attached"] for t in r.json()["terminals"]] == [True]
+    clients.clear()
+    r = await rig.http.get(rig.list_url())
+    assert [t["attached"] for t in r.json()["terminals"]] == [False]
 
 
 async def test_session_list_without_ready_agent_is_empty(rig):

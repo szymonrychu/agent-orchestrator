@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -165,10 +166,11 @@ async def test_session_summary_state_and_gauge_max(http, pool):
     await insert_agent(pool, c["id"], ready=False)
     await set_agent_status(pool, a0["id"], state="idle", context_pct=30.0)
     await set_agent_status(pool, a1["id"], state="idle", context_pct=62.5)
-    await insert_message(pool, c["id"], status="queued")
+    first = await insert_message(pool, c["id"], status="queued")
     await insert_message(pool, c["id"], status="queued")
     await insert_message(pool, c["id"], status="failed")
     summary = (await http.get(f"/api/v1/sessions/{c['id']}")).json()["summary"]
+    assert datetime.fromisoformat(summary.pop("oldest_queued_at")) == first["created_at"]
     assert summary == {
         "state": "waiting",
         "ready": 2,

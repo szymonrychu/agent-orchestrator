@@ -7,11 +7,18 @@ can answer 429. The order is therefore adopt first:
    falls through
 3. otherwise a new session is created in the one rendered workdir (`render.workdir_path`)
 
+A recreated session whose Claude transcripts were restored (deploy-safe-agent-sessions D7) has
+each pod's wrapper list its restored session as stopped with a transcript (pod names are stable
+per slug), so step 2 resumes it and step 3 never replaces it.
+
 A stored session is kept only while adoptable, resumed when stopped or failed with a transcript,
 and otherwise cleared (also when the wrapper no longer lists it) so the agent bootstraps again.
 Every successful resume, of the stored session or in step 2, records `agents.wrapper_resumed_at`
 (deploy-safe-agent-sessions D3) so the ingester re-attaches to the resumed session, also after
-it stored the session's `session_closed`; an adopt or create records none.
+it stored the session's `session_closed`. So does keeping a live stored session of an agent whose
+`agent_status` is dead: the wrapper resumed it itself (`sessions.resume_on_start`, D5, after a
+pod restart) once the ingester had honoured its close and ended the stream, which nothing else
+would restart. Any other adopt, or a create, records none.
 Errors never raise out of `bootstrap`: they come back as a message for the session status and
 the next tick bootstraps it again.
 """
@@ -95,6 +102,8 @@ class WrapperSessionBootstrapper:
                 (s for s in listed if s.wrapper_session_id == agent.wrapper_session_id), None
             )
             if stored is not None and stored.state in ADOPTABLE:
+                if await self._left_dead(agent):  # resumed by the wrapper itself: re-attach
+                    await self._record(agent, stored, resumed=True)
                 return None
             if (
                 stored is not None
@@ -121,6 +130,10 @@ class WrapperSessionBootstrapper:
         snap, resumed = await self._pick(client, listed, spec)
         await self._record(agent, snap, resumed=resumed)
         return None
+
+    async def _left_dead(self, agent: Agent) -> bool:
+        async with self.pool.connection() as conn:
+            return await agents_repo.agent_state(conn, agent.id) == "dead"
 
     async def _record(self, agent: Agent, snap: Snapshot, *, resumed: bool) -> None:
         async with self.pool.connection() as conn:

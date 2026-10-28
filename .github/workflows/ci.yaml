@@ -5,6 +5,9 @@ on:
     tags: ["v*"]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -21,6 +24,7 @@ jobs:
       - run: mise run test
 
   images:
+    needs: [lint, test, e2e]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -34,7 +38,7 @@ jobs:
         run: docker build -t agents-orchestrator:ci .
       - name: Smoke test
         run: docker run --rm agents-orchestrator:ci --help
-      - uses: regclient/actions/regctl-installer@main
+      - uses: regclient/actions/regctl-installer@dd58ad94f76adb73d8ac1bf75ed25f01545d5b32 # main as of 2026-10-25
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
       - name: Login to Harbor
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -60,7 +64,7 @@ jobs:
       - run: uv run pytest tests/test_chart_*.py -q
 
   e2e:
-    needs: [images, chart]
+    needs: [chart]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -78,9 +82,15 @@ jobs:
               || echo "Harbor login failed; the wrapper base image is built from source"
           fi
       - run: mise run test:e2e
+      # The real-wrapper leg of tests/test_fake_wrapper_contract.py (marker integration) runs
+      # against the test agent image scripts/e2e.sh just built on the pinned wrapper base; the
+      # image stays in the runner's Docker store after the kind cluster is deleted.
+      - run: mise run test:integration
+        env:
+          ORCH_TEST_WRAPPER_IMAGE: agents-orchestrator-agent-test:e2e
 
   chart-publish:
-    needs: [chart, images]
+    needs: [chart, images, lint, test, e2e]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
@@ -89,7 +99,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: jdx/mise-action@v2
-      - uses: regclient/actions/regctl-installer@main
+      - uses: regclient/actions/regctl-installer@dd58ad94f76adb73d8ac1bf75ed25f01545d5b32 # main as of 2026-10-25
       - name: Compute version
         run: |
           SHA7="${GITHUB_SHA::7}"
@@ -118,7 +128,7 @@ jobs:
         run: helm push "agents-orchestrator-$VERSION.tgz" "$CHART_REPO"
 
   chart-publish-tag:
-    needs: [chart]
+    needs: [chart, lint, test, e2e]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     env:
@@ -127,7 +137,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: jdx/mise-action@v2
-      - uses: regclient/actions/regctl-installer@main
+      - uses: regclient/actions/regctl-installer@dd58ad94f76adb73d8ac1bf75ed25f01545d5b32 # main as of 2026-10-25
       - name: Compute version
         run: |
           SHA7="${GITHUB_SHA::7}"

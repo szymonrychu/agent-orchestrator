@@ -175,7 +175,7 @@ def _ccw_config(session: Session, settings: Settings) -> dict[str, Any]:
                     "type": "command",
                     "run": "sh /etc/ccw/on-start.sh",
                     "blocking": True,
-                    "on_error": "deny",
+                    "on_error": "allow",
                     "timeout_seconds": settings.on_start_timeout_seconds,
                 }
             ]
@@ -185,6 +185,7 @@ def _ccw_config(session: Session, settings: Settings) -> dict[str, Any]:
             "resume_on_start": True,
             "idle_timeout_seconds": 0,
             "ask_user_question": "deny",
+            "restart_continue_prompt": _escape(settings.default_restart_continue_prompt),
         },
         "prompts": {"system_append": ASK_IN_WRITING_PROMPT},
         "limits": {
@@ -353,6 +354,10 @@ def render_session(
         "spec": {
             "replicas": spec.replicas,
             "podManagementPolicy": "Parallel",
+            # The controller never replaces a pod; the reconciler's replacer rolls idle ones
+            # (reconciler/rollout.py). In this object, so it reaches Kubernetes in the same
+            # server-side apply as any template change of the release that switches to it.
+            "updateStrategy": {"type": "OnDelete"},
             "serviceName": names["service"],
             "selector": selector(slug),
             "template": {

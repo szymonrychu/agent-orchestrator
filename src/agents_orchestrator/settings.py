@@ -104,6 +104,9 @@ class Settings(BaseSettings):
     default_memory_limit: str = "8Gi"
     default_replicas: int = 1
     default_auto_compact_pct: int = 95
+    default_restart_continue_prompt: str = (
+        "Claude was restarted. Continue the task where you left off."
+    )
 
     pvc_storage_class: str = "rook-ceph-rwx"
     pvc_size: str = "20Gi"

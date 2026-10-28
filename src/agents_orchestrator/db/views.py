@@ -19,6 +19,8 @@ SELECT c.id AS session_id,
          WHERE m.session_id = c.id AND m.status = 'queued') AS queued,
        (SELECT count(*) FROM messages m
          WHERE m.session_id = c.id AND m.status = 'failed') AS failed,
+       (SELECT min(m.created_at) FROM messages m
+         WHERE m.session_id = c.id AND m.status = 'queued') AS oldest_queued_at,
        l.agent_id AS leader_agent_id, l.epoch AS leader_epoch,
        l.since AS leader_since, l.reason AS leader_reason
 FROM sessions c
@@ -74,6 +76,7 @@ def summarize(
         "auto_compact_pct": session.spec.auto_compact_pct or default_auto_compact_pct,
         "queued": agg.get("queued", 0),
         "failed": agg.get("failed", 0),
+        "oldest_queued_at": agg.get("oldest_queued_at"),
     }
 
 

@@ -119,8 +119,9 @@ async def set_wrapper_session(
     """Record the agent's wrapper session; `created_at` None means the database clock.
 
     `resumed` marks a successful resume: `wrapper_resumed_at` takes `clock_timestamp()`, so every
-    resume writes a new value and the ingester's `AgentRef` changes and re-attaches. A created
-    or adopted session clears the marker.
+    resume writes a new value and the ingester's `AgentRef` changes and re-attaches. The
+    bootstrapper also passes it when the wrapper resumed the stored session itself while the
+    agent is dead. A created or adopted session clears the marker.
     """
     async with conn.transaction():
         row = await _one(
@@ -174,6 +175,13 @@ async def list_states(conn: psycopg.AsyncConnection, session_id: uuid.UUID) -> d
         (session_id,),
     )
     return {agent_id: state for agent_id, state in await cur.fetchall()}
+
+
+async def agent_state(conn: psycopg.AsyncConnection, agent_id: uuid.UUID) -> str | None:
+    """The stored `agent_status.state` of one agent (the ingester writes it), or None."""
+    cur = await conn.execute("SELECT state FROM agent_status WHERE agent_id = %s", (agent_id,))
+    row = await cur.fetchone()
+    return row[0] if row is not None else None
 
 
 async def by_pod_ip(conn: psycopg.AsyncConnection, session_id: uuid.UUID, ip: str) -> Agent | None:

@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import json
 import re
+import stat
+import subprocess
+from pathlib import Path
 
 import pytest
 from any_mcp.config import AnyMcpConfig
 from any_mcp_tatara_orchestrator import OrchestratorPlugin
 
 from agents_orchestrator.k8s import on_start
+from agents_orchestrator.k8s.on_start import render_on_start
 from agents_orchestrator.settings import Settings
 from agents_orchestrator.spec import SessionSpec
 
@@ -263,3 +267,120 @@ async def test_allowed_tools_exist_in_plugin():
     )
     assert named == {"orchestrator_init_scripts_edit", "orchestrator_session_send"}
     assert allowed | {n.removeprefix("orchestrator_") for n in named} <= offered
+
+
+def _fake_tools(tmp_path: Path) -> tuple[Path, Path]:
+    """Fake `python3 -m venv`, `pip` and `any-mcp` that log their argv to calls.log.
+
+    `VENV_EXIT`, `PIP_EXIT` and `PLUGINS_EXIT` make the venv, the package install or
+    `any-mcp plugins install` exit with that code; any-mcp exists only after a pip install
+    succeeded, as with a real venv.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "calls.log"
+    any_mcp = tmp_path / "any-mcp.stub"
+    any_mcp.write_text(
+        f"""#!/bin/sh
+echo "any-mcp $*" >> {log}
+if [ "$1 $2" = "plugins install" ]; then
+  exit "${{PLUGINS_EXIT:-0}}"
+fi
+"""
+    )
+    pip = tmp_path / "pip.stub"
+    pip.write_text(
+        f"""#!/bin/sh
+echo "pip $*" >> {log}
+if [ "${{PIP_EXIT:-0}}" != 0 ]; then
+  exit "$PIP_EXIT"
+fi
+cp {any_mcp} "$(dirname "$0")/any-mcp"
+chmod +x "$(dirname "$0")/any-mcp"
+"""
+    )
+    python3 = bin_dir / "python3"
+    python3.write_text(
+        f"""#!/bin/sh
+echo "python3 $*" >> {log}
+if [ "${{VENV_EXIT:-0}}" != 0 ]; then
+  exit "$VENV_EXIT"
+fi
+mkdir -p "$3/bin"
+cp {pip} "$3/bin/pip"
+chmod +x "$3/bin/pip"
+"""
+    )
+    python3.chmod(python3.stat().st_mode | stat.S_IEXEC)
+    return log, tmp_path / "any-mcp"
+
+
+def _run_script(tmp_path: Path, **exits: int) -> subprocess.CompletedProcess[str]:
+    script = render_on_start(
+        SessionSpec(any_mcp_config={"a": 1}), make_settings(any_mcp_ref="v1.0.0")
+    )
+    path = tmp_path / "on-start.sh"
+    path.write_text(script.replace("/opt/any-mcp", str(tmp_path / "any-mcp")))
+    env = {"PATH": f"{tmp_path / 'bin'}:/usr/bin:/bin", **{k: str(v) for k, v in exits.items()}}
+    return subprocess.run(["sh", str(path)], env=env, capture_output=True, text=True)
+
+
+def test_plugin_install_failure_logged_and_exits_zero(tmp_path):
+    """D6: a failed `any-mcp plugins install` is one stderr line, exit 0, no --help check."""
+    log, root = _fake_tools(tmp_path)
+    done = _run_script(tmp_path, PLUGINS_EXIT=1)
+    assert done.returncode == 0
+    assert done.stderr.splitlines() == ["on-start: any-mcp plugins install failed (exit 1)"]
+    calls = log.read_text()
+    assert f"any-mcp plugins install --config {root}/etc/any-mcp.yaml" in calls
+    assert "any-mcp --help" not in calls
+    assert (root / ".ref").read_text().strip() == "v1.0.0"
+    assert json.loads((root / "etc" / "any-mcp.yaml").read_text()) == {"a": 1}
+
+
+def test_any_mcp_install_failure_logged_and_retried_next_start(tmp_path):
+    """D6: a failed package install writes no .ref, skips both any-mcp steps, retries next start."""
+    log, root = _fake_tools(tmp_path)
+    done = _run_script(tmp_path, PIP_EXIT=1)
+    assert done.returncode == 0
+    assert done.stderr.splitlines() == ["on-start: any-mcp package install failed (exit 1)"]
+    calls = log.read_text()
+    assert "pip install --no-cache-dir" in calls
+    assert "any-mcp plugins install" not in calls and "any-mcp --help" not in calls
+    assert not (root / ".ref").exists()
+    assert json.loads((root / "etc" / "any-mcp.yaml").read_text()) == {"a": 1}
+
+    log.write_text("")
+    done = _run_script(tmp_path)
+    assert done.returncode == 0 and done.stderr == ""
+    calls = log.read_text()
+    assert calls.count("pip install") == 1
+    assert "any-mcp plugins install" in calls and calls.splitlines()[-1] == "any-mcp --help"
+    assert (root / ".ref").read_text().strip() == "v1.0.0"
+
+
+@pytest.mark.parametrize(
+    "failing,step",
+    [
+        ("VENV_EXIT", "any-mcp package install"),
+        ("PIP_EXIT", "any-mcp package install"),
+        ("PLUGINS_EXIT", "any-mcp plugins install"),
+    ],
+)
+def test_install_exit_two_never_propagates(tmp_path, failing, step):
+    """The wrapper denies on exit 2 whatever on_error says, so an install exit 2 never escapes."""
+    log, root = _fake_tools(tmp_path)
+    done = _run_script(tmp_path, **{failing: 2})
+    assert done.returncode == 0
+    assert done.stderr.splitlines() == [f"on-start: {step} failed (exit 2)"]
+    assert "any-mcp --help" not in log.read_text()
+
+
+def test_config_write_failure_still_fails(tmp_path):
+    """Only the installs are swallowed: a config that cannot be written fails the script."""
+    _fake_tools(tmp_path)
+    root = tmp_path / "any-mcp"
+    root.mkdir()
+    (root / ".ref").write_text("v1.0.0\n")
+    (root / "etc").write_text("not a directory")
+    assert _run_script(tmp_path).returncode != 0
