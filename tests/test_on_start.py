@@ -27,7 +27,8 @@ HIVE_TOOLS = [
 ]
 SESSION_TOOLS = ["sessions_list", "session_send"]
 INIT_SCRIPTS_TOOLS = ["init_scripts_get", "init_scripts_edit"]
-TAIL_TOOLS = [*SESSION_TOOLS, *INIT_SCRIPTS_TOOLS]
+CHAT_TOOLS = ["chat_rooms", "chat_send", "chat_react", "chat_status"]
+TAIL_TOOLS = [*SESSION_TOOLS, *INIT_SCRIPTS_TOOLS, *CHAT_TOOLS]
 SECRET = "s3cr3t-token-value"
 PLUGINS_REPO = "https://github.com/szymonrychu/any-mcp-tatara-plugins"
 PLUGINS_REF = Settings.model_fields["any_mcp_plugins_ref"].default
@@ -61,7 +62,8 @@ def entries(spec: SessionSpec, settings: Settings | None = None) -> dict:
 @pytest.mark.parametrize("messaging", [None, False, True])
 @pytest.mark.parametrize("static", [False, True])
 def test_alone_session_tools_entry(messaging, static):
-    """D11: an alone session gets only the session tools, whatever session_messaging says."""
+    """D11, D13: an alone session gets the session, init-scripts and chat tools, whatever
+    session_messaging says."""
     spec = SessionSpec(replicas=1, static=static, session_messaging=messaging)
     assert on_start.orchestrator_allow(spec) == TAIL_TOOLS
     entry = entries(spec)["orchestrator"]
@@ -85,10 +87,13 @@ def test_alone_session_tools_entry(messaging, static):
     ],
 )
 def test_hive_session_tools(messaging, spec_fields, hive_allow):
-    """D11: hive tools, scale when scalable, then the session tools, whatever session_messaging."""
+    """D11, D13: hive tools, scale when scalable, then the session, init-scripts and chat tools
+    (the list ends with the chat tools), whatever session_messaging says."""
     spec = SessionSpec(session_messaging=messaging, **spec_fields)
-    assert on_start.orchestrator_allow(spec) == [*hive_allow, *TAIL_TOOLS]
-    assert entries(spec)["orchestrator"]["allow"] == [*hive_allow, *TAIL_TOOLS]
+    allow = on_start.orchestrator_allow(spec)
+    assert allow == [*hive_allow, *TAIL_TOOLS]
+    assert allow[-len(CHAT_TOOLS) :] == CHAT_TOOLS
+    assert entries(spec)["orchestrator"]["allow"] == allow
 
 
 def test_static_hive_has_no_scale_tool():
@@ -266,6 +271,7 @@ async def test_allowed_tools_exist_in_plugin():
         )
     )
     assert named == {"orchestrator_init_scripts_edit", "orchestrator_session_send"}
+    assert set(CHAT_TOOLS) <= allowed
     assert allowed | {n.removeprefix("orchestrator_") for n in named} <= offered
 
 

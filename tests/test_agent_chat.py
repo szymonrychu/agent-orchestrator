@@ -19,6 +19,9 @@ from typing import Any
 
 import httpx
 import pytest
+from any_mcp.testing import PluginHarness
+from any_mcp_tatara_orchestrator import OrchestratorPlugin
+from fakes.fake_chat import DEFAULT_ROOM, FakeChat
 from fastapi.routing import APIRoute
 from test_api_sessions import assert_error
 
@@ -486,6 +489,130 @@ def test_readme_documents_chat_routes():
         assert needle in section, needle
 
 
+# ------------------------------------------------------- the released plugin against the routes
+
+
+@dataclass
+class Target:
+    """An app whose chat upstream is a `FakeChat`, and the session the plugin speaks for."""
+
+    app: Any
+    fake: FakeChat
+    session_id: uuid.UUID
+    slug: str
+    leader_ip: str
+    member_ip: str
+
+    def __post_init__(self) -> None:
+        transport = httpx.ASGITransport(app=self.fake.app)
+        self.app.state.chat_http = httpx.AsyncClient(transport=transport)
+
+    def plugin(self, ip: str) -> PluginHarness:
+        """The released orchestrator plugin, calling this app from the pod IP `ip`."""
+        config = {
+            "base_url": f"http://orch:{AGENT_PORT}",
+            "token": agent_token(self.session_id),
+            "session": str(self.session_id),
+            "agent": "a0",
+            "slug": self.slug,
+        }
+        transport = httpx.ASGITransport(app=self.app, client=(ip, 4321))
+        return PluginHarness(OrchestratorPlugin, config=config, transport=transport)
+
+    async def direct(self, method: str, path: str, **kw: Any) -> httpx.Response:
+        """The same route called without the plugin, as the leader."""
+        headers = {
+            "X-Orch-Session": str(self.session_id),
+            "Authorization": f"Bearer {agent_token(self.session_id)}",
+        }
+        transport = httpx.ASGITransport(app=self.app, client=(self.leader_ip, 4321))
+        async with httpx.AsyncClient(
+            transport=transport, base_url=f"http://orch:{AGENT_PORT}"
+        ) as http:
+            return await http.request(method, path, headers=headers, **kw)
+
+
+def memory_target(monkeypatch: pytest.MonkeyPatch) -> Target:
+    rig = make_rig(monkeypatch)
+    fake = FakeChat(CHAT_TOKEN)
+    return Target(rig.app, fake, rig.session.id, rig.session.slug, LEADER_IP, MEMBER_IP)
+
+
+async def check_chat_tools_parity(target: Target) -> None:
+    """The four chat tools return what the routes return, and a member's calls are refused."""
+    fake = target.fake
+    async with target.plugin(target.leader_ip) as h:
+        rooms = await h.call("chat_rooms")
+        sent = await h.call("chat_send", {"text": "hello from the plugin", "room": DEFAULT_ROOM})
+        reacted = await h.call("chat_react", {"to": "m3", "key": "\U0001f44d"})
+        status = await h.call("chat_status", {"id": "s1"})
+        missing = await h.call("chat_status", {"id": "s99"})
+    for result in (rooms, sent, reacted, status):
+        assert not result.is_error, result.text
+    direct_rooms = await target.direct("GET", "/agent/v1/chat/rooms")
+    assert rooms.structured == direct_rooms.json() == {"rooms": fake.rooms}
+    assert sent.structured == {"id": "s1", "status": "queued"}
+    assert reacted.structured == {"id": "s2", "status": "queued"}
+    body = {"text": "hello from the plugin", "room": DEFAULT_ROOM}
+    direct_send = await target.direct("POST", "/agent/v1/chat/messages", json=body)
+    assert direct_send.status_code == 202
+    assert direct_send.json() == {"id": "s3", "status": "queued"}
+    direct_react = await target.direct(
+        "POST", "/agent/v1/chat/reactions", json={"to": "m3", "key": "\U0001f44d"}
+    )
+    assert direct_react.json() == {"id": "s4", "status": "queued"}
+    direct_status = await target.direct("GET", "/agent/v1/chat/messages/s1")
+    assert status.structured == direct_status.json()
+    assert status.structured["id"] == "s1" and status.structured["kind"] == "message"
+    # an unknown id is the upstream's 404, passed through by the relay and the plugin
+    direct_missing = await target.direct("GET", "/agent/v1/chat/messages/s99")
+    assert direct_missing.status_code == 404
+    assert missing.is_error
+    assert missing.structured["error"]["status"] == 404
+    assert missing.structured["error"]["code"] == direct_missing.json()["error"]["code"]
+    # the plugin sent the same bodies as the direct calls and the same identity headers
+    plugin_calls = [c for c in fake.calls if c.method == "POST"][:2]
+    assert plugin_calls[0].json() == {"text": "hello from the plugin", "room": DEFAULT_ROOM}
+    assert plugin_calls[1].json() == {"to": "m3", "key": "\U0001f44d"}
+    for call in fake.calls:
+        assert call.headers["x-orch-session"] == str(target.session_id)
+        assert call.headers["x-orch-slug"] == target.slug
+    # only the leader's calls succeed
+    fake.calls.clear()
+    async with target.plugin(target.member_ip) as h:
+        for name, args in (
+            ("chat_rooms", {}),
+            ("chat_send", {"text": "x"}),
+            ("chat_react", {"to": "m1", "key": "x"}),
+            ("chat_status", {"id": "s1"}),
+        ):
+            refused = await h.call(name, args)
+            assert refused.is_error, name
+            assert refused.structured["error"]["code"] == "not_leader", refused.text
+    assert fake.calls == []
+
+
+async def test_chat_tools_parity(monkeypatch):
+    """The released plugin drives chat_rooms, chat_send, chat_react and chat_status against the
+    real agent routes and the contract fake of the chat upstream (design D16)."""
+    await check_chat_tools_parity(memory_target(monkeypatch))
+
+
+async def test_chat_send_max_text_through_plugin(monkeypatch):
+    """16000 four-byte characters through the released plugin and the real relay reach the
+    upstream byte for byte (interrogate Act 6, design D5)."""
+    target = memory_target(monkeypatch)
+    text = "\U0001f600" * 16000
+    async with target.plugin(target.leader_ip) as h:
+        sent = await h.call("chat_send", {"text": text})
+    assert not sent.is_error, sent.text
+    assert sent.structured == {"id": "s1", "status": "queued"}
+    (call,) = target.fake.calls
+    assert call.path == "/chat/v1/messages"
+    assert call.json()["text"] == text
+    assert len(call.body) > 64000
+
+
 # ------------------------------------------------------------------- DB-backed (CI, Docker)
 
 
@@ -529,3 +656,23 @@ async def test_leader_only_and_identity_db(pool, dsn, monkeypatch):
     assert sent.headers["x-orch-slug"] == "chat-db"
     assert sent.headers["x-orch-session"] == str(sid)
     assert sent.headers["authorization"] == f"Bearer {CHAT_TOKEN}"
+
+
+async def test_chat_tools_parity_db(pool, dsn):
+    """The same parity over the DB-backed identity and leadership reads."""
+    from factories import insert_agent, insert_session
+
+    row = await insert_session(pool, slug="chat-parity", spec={"replicas": 2, "max_replicas": 2})
+    a0 = await insert_agent(pool, row["id"], ordinal=0, ready=True)
+    a1 = await insert_agent(pool, row["id"], ordinal=1, ready=True)
+    async with pool.connection() as conn:
+        for agent, ip in ((a0, LEADER_IP), (a1, MEMBER_IP)):
+            await conn.execute("UPDATE agents SET pod_ip = %s WHERE id = %s", (ip, agent["id"]))
+        await conn.execute(
+            "INSERT INTO session_leaders (session_id, agent_id, epoch, since, reason)"
+            " VALUES (%s, %s, 1, now(), 'start')",
+            (row["id"], a0["id"]),
+        )
+    app = create_app(settings(database_url=dsn), pool)
+    target = Target(app, FakeChat(CHAT_TOKEN), row["id"], "chat-parity", LEADER_IP, MEMBER_IP)
+    await check_chat_tools_parity(target)

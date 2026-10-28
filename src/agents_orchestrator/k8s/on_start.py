@@ -28,19 +28,21 @@ HIVE_TOOLS = [
 ]
 SESSION_TOOLS = ["sessions_list", "session_send"]
 INIT_SCRIPTS_TOOLS = ["init_scripts_get", "init_scripts_edit"]
+CHAT_TOOLS = ["chat_rooms", "chat_send", "chat_react", "chat_status"]
 
 
 def orchestrator_allow(spec: SessionSpec) -> list[str]:
     """The orchestrator tools this session's agents may call.
 
-    Every session gets the session tools (D11) then the init-scripts tools, alone sessions
-    included; the agent API decides what each caller may list, send and edit, so the list never
-    depends on `session_messaging`.
+    Every session gets the session tools (D11), the init-scripts tools and the chat tools (D13),
+    alone sessions included; the agent API decides what each caller may list, send, edit and say
+    in the chat (leader only), so the list never depends on `session_messaging`.
     """
+    shared = [*SESSION_TOOLS, *INIT_SCRIPTS_TOOLS, *CHAT_TOOLS]
     if not spec.hive:
-        return [*SESSION_TOOLS, *INIT_SCRIPTS_TOOLS]
+        return shared
     scale = [SCALE_TOOL] if spec.scalable else []
-    return [*HIVE_TOOLS, *scale, *SESSION_TOOLS, *INIT_SCRIPTS_TOOLS]
+    return [*HIVE_TOOLS, *scale, *shared]
 
 
 def _orchestrator_entry(
