@@ -7,6 +7,10 @@ can answer 429. The order is therefore adopt first:
    falls through
 3. otherwise a new session is created in the one rendered workdir (`render.workdir_path`)
 
+A recreated session whose Claude transcripts were restored (deploy-safe-agent-sessions D7) has
+each pod's wrapper list its restored session as stopped with a transcript (pod names are stable
+per slug), so step 2 resumes it and step 3 never replaces it.
+
 A stored session is kept only while adoptable, resumed when stopped or failed with a transcript,
 and otherwise cleared (also when the wrapper no longer lists it) so the agent bootstraps again.
 Every successful resume, of the stored session or in step 2, records `agents.wrapper_resumed_at`

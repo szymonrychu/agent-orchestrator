@@ -525,6 +525,33 @@ class FakeWrapper:
             ses.current_turn_id = None
         self._set_state(ses, state)
 
+    def add_persisted_session(
+        self,
+        workdir: str,
+        *,
+        name: str | None = None,
+        model: str | None = None,
+        turns_completed: int = 1,
+        created_at: str | None = None,
+    ) -> str:
+        """A session found on disk at start, as the wrapper's `load_persisted` lists it.
+
+        A session persisted live comes back `stopped` (its claude died with the old process),
+        with its completed turns and transcript, so the wrapper's resume accepts it. No event
+        is emitted: the fake starts with it rather than observing a transition. `workdir` is
+        the path the wrapper reports (`/workdir/...`). Returns the session id.
+        """
+        sid = self._new_id("ses_")
+        backing = Path(self._tmp.name, sid).resolve()
+        backing.mkdir(exist_ok=True)
+        ses = _Session(sid, name, workdir, model, backing_dir=str(backing), state="stopped")
+        ses.turns_completed = turns_completed
+        ses.has_transcript = turns_completed > 0
+        if created_at is not None:
+            ses.created_at = created_at
+        self.sessions[sid] = ses
+        return sid
+
     # ------------------------------------------------------------------ http
 
     def _abort(self, request: Request) -> None:

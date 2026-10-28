@@ -412,3 +412,46 @@ async def test_successful_resume_records_resume_marker(env, fake):
     (agent,) = await env.agents(c.id)
     assert agent.wrapper_session_id == busy
     assert agent.wrapper_resumed_at is None
+
+
+async def test_restored_stopped_session_resumed_not_created(env, fake):
+    """A recreated session's new agents resume the transcripts restored onto their pods (D7).
+
+    Each pod's wrapper lists the session restored into its own `/sessions/<pod>/` as stopped
+    with a transcript; the new agent row adopts and resumes it, and no session is created.
+    """
+    async with FakeWrapper() as other:
+        c = await env.session("alpha", replicas=2, workdir="repo")
+        other.token = fake.token
+        wrappers = {"agent-alpha-0": fake, "agent-alpha-1": other}
+        restored = {
+            pod: w.add_persisted_session(
+                workdir_path(c.spec), name="repo", created_at="2026-10-27T10:00:00.000Z"
+            )
+            for pod, w in wrappers.items()
+        }
+
+        def route(url: str, token: str) -> WrapperClient:
+            env.factory_calls.append((url, token))
+            pod = url.split("//", 1)[1].split(".", 1)[0]
+            return WrapperClient(wrappers[pod].base_url, token)
+
+        assert env.rec.bootstrapper is not None
+        env.rec.bootstrapper.wrapper_factory = route
+        await env.rec.reconcile_once()
+
+        agents = await env.agents(c.id)
+        assert sorted(a.pod_name for a in agents) == sorted(wrappers)
+        for agent in agents:
+            wrapper, sid = wrappers[agent.pod_name], restored[agent.pod_name]
+            assert agent.wrapper_session_id == sid
+            assert agent.wrapper_resumed_at is not None  # resumed, so the ingester re-attaches
+            assert list(wrapper.sessions) == [sid]
+            assert wrapper.sessions[sid].state == "ready"
+            assert ("POST", f"/v1/sessions/{sid}/resume") in wrapper.requests
+
+        await env.rec.reconcile_once()  # steady state: the resumed sessions are kept
+        assert {a.pod_name: a.wrapper_session_id for a in await env.agents(c.id)} == restored
+        for wrapper in wrappers.values():
+            assert ("POST", "/v1/sessions") not in wrapper.requests
+            assert len(wrapper.sessions) == 1
