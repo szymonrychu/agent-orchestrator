@@ -11,12 +11,13 @@ session, which the controller recreates on the new template:
 - never while its agent is busy (`BUSY`, the predicate the scale-down drain shares: state
   `busy`, or a message dispatched to it is still `dispatching` or `verifying`) or leads
   (`LEADS`). There is no deadline: a pod running a deploy is never rolled by that deploy (D2)
-- the leader last: once every other pod is current, the leader is idle (`BUSY`, so leadership
-  never moves mid-turn for a rollout, like the lease and compaction handovers) and an idle
+- the leader last: once every other pod is current, the leader is idle (`BUSY`) and an idle
   eligible member exists, a `handover` request with reason `rollout` is queued from the leader,
-  the one request the reconciler inserts; the dispatcher's pass
-  applies it like every handover, and the old leader's pod is deleted only once
-  `session_leaders` names another agent. A session of one agent rolls its pod when idle.
+  the one request the reconciler inserts; the dispatcher's pass applies it only at the
+  leader's turn boundary (a leader that claimed a message after the request was queued keeps
+  it queued until the turn ends), like the lease and compaction handovers, so leadership never
+  moves mid-turn for a rollout; the old leader's pod is deleted only once `session_leaders`
+  names another agent. A session of one agent rolls its pod when idle.
 
 Before the delete the agent is marked unready, so the dispatcher stops picking it, and its idle
 test is read again; a message claimed between that read and the delete is retried by the

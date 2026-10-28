@@ -563,6 +563,47 @@ async def test_rollout_handover_waits_for_an_idle_leader(env):
     assert env.pod_deletes() == ["agent-alpha-1"]
 
 
+async def test_queued_rollout_handover_applied_at_the_leaders_turn_boundary(env):
+    # queued while the leader was idle, then the leader claims a message before the pass: the
+    # request stays queued until the turn ends, so leadership never moves mid-turn
+    c, agents, _ = await rolling(env, replicas=2)
+    await lead(env, c.id, agents[0].id)
+    await env.tick()
+    env.ready(1)
+    await env.tick()
+    assert [r["status"] for r in await env.handovers(c.id)] == ["queued"]
+
+    async def lpass():
+        async with env.pool.connection() as conn:
+            return await leadership.leadership_pass(conn, c.id)
+
+    async def leader_id():
+        got = await env.rows("SELECT agent_id FROM session_leaders WHERE session_id = %s", (c.id,))
+        return got[0]["agent_id"]
+
+    claimed = await insert_message(env.pool, c.id, status="dispatching", agent_id=agents[0].id)
+    for status in ("dispatching", "verifying"):
+        await env.execute("UPDATE messages SET status = %s WHERE id = %s", (status, claimed["id"]))
+        assert await lpass() is None
+        assert await leader_id() == agents[0].id
+        assert [r["status"] for r in await env.handovers(c.id)] == ["queued"]
+    await env.execute("UPDATE messages SET status = 'sent' WHERE id = %s", (claimed["id"],))
+    await set_agent_status(env.pool, agents[0].id, state="busy")
+    assert await lpass() is None
+    assert await leader_id() == agents[0].id
+    assert [r["status"] for r in await env.handovers(c.id)] == ["queued"]
+    await env.tick()
+    assert env.pod_deletes() == ["agent-alpha-1"]  # the leader's pod is held meanwhile
+
+    await set_agent_status(env.pool, agents[0].id, state="idle")
+    change = await lpass()
+    assert change is not None
+    assert (change.agent_id, change.reason) == (agents[1].id, "handover: rollout")
+    assert [r["status"] for r in await env.handovers(c.id)] == ["applied"]
+    await env.tick()
+    assert env.pod_deletes() == ["agent-alpha-1", "agent-alpha-0"]
+
+
 async def test_leader_held_without_idle_eligible_member(env):
     c, agents, _ = await rolling(env, replicas=2)
     await lead(env, c.id, agents[0].id)
