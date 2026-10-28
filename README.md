@@ -147,14 +147,17 @@ A Postgres connection is required. Set exactly one of these; none, or more than 
 | Secret | Key | Created when | Override |
 |---|---|---|---|
 | `<fullname>-database` | `uri` | `postgres.url` or the host parts are set | `postgres.existingSecret` |
-| `<fullname>-master-key` | `master-key` | `masterKey.value` is set | `masterKey.existingSecret` + `existingSecretKey` |
+| `<fullname>-master-key` | `masterKey.existingSecretKey` (default `master-key`) | `masterKey.value` is set | `masterKey.existingSecret` + `existingSecretKey` |
 | `<fullname>-claude` | `CLAUDE_CODE_OAUTH_TOKEN` | `claude.token` is set | `claude.existingSecret` + `existingSecretKey` |
+| `<fullname>-chat` | `chat.existingSecretKey` (default `chat-token`) | `chat.token` is set and `chat.existingSecret` is not | `chat.existingSecret` + `existingSecretKey` |
 
 The master key and the Claude token each need a value or an `existingSecret`; with neither the render fails. The agent pods in the release namespace read the Claude Secret, so `existingSecret` must live there.
 
+The chat relay is optional. `chat.url` becomes `ORCH_CHAT_URL` in the settings ConfigMap and `ORCH_CHAT_TOKEN` comes from `chat.existingSecret` (key `chat.existingSecretKey`, default `chat-token`) or else from the chart Secret `<fullname>-chat` built from `chat.token`; `existingSecret` wins. `ORCH_CHAT_TOKEN` is a `secretKeyRef` on the api container only (not its migrate init container, not the dispatcher, ingester or reconciler), and the api pod rolls when the chart-made token changes (`checksum/chat-secret`). Set `chat.url` together with `chat.token` or `chat.existingSecret`, or none of them: one without the other fails the render naming all three. With none, neither variable renders and every `/agent/v1/chat/*` call answers 503 `chat_unconfigured`.
+
 ### Settings ConfigMap
 
-`<fullname>-settings` carries `ORCH_NAMESPACE` (the release namespace), `ORCH_AGENT_IMAGE` (`agentImage`, required), `ORCH_CLAUDE_SECRET_NAME` (`claude.existingSecret` or `<fullname>-claude`), `ORCH_AGENT_SERVICE_ACCOUNT` (`<fullname>-agent` with `serviceAccount.create`, else `default`) and, only with `kubeAccess.enabled`, `ORCH_KUBE_ACCESS_SERVICE_ACCOUNT` (`<fullname>-kube-access`; without it `kube_access` sessions are refused). Every entry of `env` is added verbatim; each key must start with `ORCH_` or the render fails naming it. No secret value is ever written to the ConfigMap; the database URL and master key reach the containers through `secretKeyRef`.
+`<fullname>-settings` carries `ORCH_NAMESPACE` (the release namespace), `ORCH_AGENT_IMAGE` (`agentImage`, required), `ORCH_CLAUDE_SECRET_NAME` (`claude.existingSecret` or `<fullname>-claude`), `ORCH_AGENT_SERVICE_ACCOUNT` (`<fullname>-agent` with `serviceAccount.create`, else `default`) and, only with `kubeAccess.enabled`, `ORCH_KUBE_ACCESS_SERVICE_ACCOUNT` (`<fullname>-kube-access`; without it `kube_access` sessions are refused) and, only with the chat relay configured, `ORCH_CHAT_URL` (`chat.url`; see Secrets). Every entry of `env` is added verbatim; each key must start with `ORCH_` or the render fails naming it. No secret value is ever written to the ConfigMap; the database URL and master key reach the containers through `secretKeyRef`.
 
 ### Service API
 

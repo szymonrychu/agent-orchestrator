@@ -122,6 +122,35 @@ env:
 {{- end }}
 
 {{/*
+"true" when the chat relay is configured, empty when it is off. chat.url and a token source
+(chat.token or chat.existingSecret) go together; one without the other fails the render.
+*/}}
+{{- define "agents-orchestrator.chatEnabled" -}}
+{{- $token := or .Values.chat.token .Values.chat.existingSecret -}}
+{{- if and .Values.chat.url $token -}}
+true
+{{- else if or .Values.chat.url $token -}}
+{{- fail "agents-orchestrator: set chat.url together with chat.token or chat.existingSecret, or none of them" -}}
+{{- end -}}
+{{- end }}
+
+{{/* Name of the Secret holding ORCH_CHAT_TOKEN: existingSecret wins over the chart Secret. */}}
+{{- define "agents-orchestrator.chatSecretName" -}}
+{{- default (printf "%s-chat" (include "agents-orchestrator.fullname" .)) .Values.chat.existingSecret -}}
+{{- end }}
+
+{{/* ORCH_CHAT_TOKEN env entry (api container only); empty when the chat relay is off. */}}
+{{- define "agents-orchestrator.chatTokenEnv" -}}
+{{- if include "agents-orchestrator.chatEnabled" . -}}
+- name: ORCH_CHAT_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "agents-orchestrator.chatSecretName" . }}
+      key: {{ .Values.chat.existingSecretKey | default "chat-token" }}
+{{- end -}}
+{{- end }}
+
+{{/*
 ORCH_AGENT_API_URL: the cluster-internal agents Service URL, unless env.ORCH_AGENT_API_URL overrides it.
 */}}
 {{- define "agents-orchestrator.agentApiUrl" -}}
