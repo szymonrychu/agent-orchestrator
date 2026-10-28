@@ -37,6 +37,20 @@ class SaveEnv(Env):
 
         self.rec.cache.write_status = spy
 
+    async def session(self, slug: str = "alpha", cache: bool = True, **spec):
+        """A session whose sessions restore record skips the transcripts save.
+
+        The discard then follows the workdir save alone; the transcripts save is pinned by
+        tests/test_sessions_backup.py.
+        """
+        c = await super().session(slug, cache, **spec)
+        if not cache:
+            return c
+        skip = {"state": "skipped", "reason": "not_configured"}
+        status = {**c.status, "cache": {"sessions_restore": skip}}
+        async with self.pool.connection() as conn:
+            return await sessions.set_status(conn, c.id, status, c.observed_generation)
+
     async def ready(self, slug: str = "alpha", restore: str = "miss"):
         """A cached session whose restore finished with `restore`."""
         c = await self.session(slug)
