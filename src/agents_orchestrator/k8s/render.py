@@ -185,6 +185,7 @@ def _ccw_config(session: Session, settings: Settings) -> dict[str, Any]:
             "resume_on_start": True,
             "idle_timeout_seconds": 0,
             "ask_user_question": "deny",
+            "restart_continue_prompt": _escape(settings.default_restart_continue_prompt),
         },
         "prompts": {"system_append": ASK_IN_WRITING_PROMPT},
         "limits": {

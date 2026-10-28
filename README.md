@@ -40,6 +40,7 @@ Every process reads `ORCH_*` variables (the contract `agents-orchestrator-settin
 | `ORCH_DEFAULT_MEMORY_LIMIT` | `8Gi` | api, reconciler | agent container memory limit filled in when a session is created and the key is empty |
 | `ORCH_DEFAULT_REPLICAS` | `1` | api | default agents per session |
 | `ORCH_DEFAULT_AUTO_COMPACT_PCT` | `95` | api | auto-compact threshold percent (gauge tick and CLAUDE_AUTOCOMPACT_PCT_OVERRIDE) |
+| `ORCH_DEFAULT_RESTART_CONTINUE_PROMPT` | `Claude was restarted. Continue the task where you left off.` | reconciler | `sessions.restart_continue_prompt` rendered into every agent wrapper config unless `spec.wrapper.restart_continue_prompt` is set: the prompt that continues a turn cut off by a claude crash or a wrapper shutdown (pod restart) instead of failing it; `$` is escaped like a `spec.wrapper` string; empty disables the continuation |
 | `ORCH_PVC_STORAGE_CLASS` | `rook-ceph-rwx` | api, reconciler | RWX storage class |
 | `ORCH_PVC_SIZE` | `20Gi` | api, reconciler | workspace PVC size |
 | `ORCH_CLAUDE_SECRET_NAME` | `agents-orchestrator-claude` | api, reconciler | Secret holding Claude credentials |
@@ -948,7 +949,7 @@ Create-time only fields of the session `spec` (also accepted on `POST /api/v1/pr
 | `plugins` | `{marketplaces: [{name, source}], install: [{plugin: name@marketplace, scope: user, project or local, required}]}` | `plugins` |
 | `turn_stall_seconds` | number >= 0 | `sessions.turn_stall_seconds` |
 | `max_restarts` | integer 0 to 10 | `sessions.max_restarts` |
-| `restart_continue_prompt` | string | `sessions.restart_continue_prompt` |
+| `restart_continue_prompt` | string; replaces `ORCH_DEFAULT_RESTART_CONTINUE_PROMPT`, empty disables the continuation | `sessions.restart_continue_prompt` |
 | `turn_max_seconds` | number >= 0 | `limits.turn_max_seconds` |
 | `agent_commands` | subset of `compact`, `context`, `mcp`, `reload-plugins`, `reload-skills` | `sessions.commands.agent` |
 

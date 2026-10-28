@@ -789,6 +789,7 @@ def test_no_wrapper_block_renders_unchanged():
         "resume_on_start": True,
         "idle_timeout_seconds": 0,
         "ask_user_question": "deny",
+        "restart_continue_prompt": "Claude was restarted. Continue the task where you left off.",
     }
     assert cfg["claude"]["permissions"] == {
         "deny": ["EnterPlanMode", "ExitPlanMode", "AskUserQuestion"]
@@ -797,6 +798,36 @@ def test_no_wrapper_block_renders_unchanged():
     assert cfg["prompts"] == {"system_append": render.ASK_IN_WRITING_PROMPT}
     assert set(cfg["limits"]) == {"shutdown_timeout_seconds"}
     assert "plugins" not in cfg
+
+
+def test_default_restart_continue_prompt_rendered(tmp_path, monkeypatch):
+    default = "Claude was restarted. Continue the task where you left off."
+    assert make_settings().default_restart_continue_prompt == default
+    cfg = config_of(render.render_session(make_session(), make_settings(), TOKENS))
+    assert cfg["sessions"]["restart_continue_prompt"] == default
+    custom = make_settings(default_restart_continue_prompt="Resume ${HOME} now.")
+    objs = render.render_session(make_session(), custom, TOKENS)
+    assert config_of(objs)["sessions"]["restart_continue_prompt"] == "Resume $${HOME} now."
+    for k, v in {
+        "CCW_AUTH_TOKEN": TOKENS.auth,
+        "CCW_PEER_TOKEN": TOKENS.peer,
+        "CCW_PEER_URL": "http://agent-alpha-0.agent-alpha.agents.svc:8080",
+        "CLAUDE_CODE_OAUTH_TOKEN": "oauth",
+        "POD_NAME": "agent-alpha-0",
+        "HOME": "/root",
+    }.items():
+        monkeypatch.setenv(k, v)
+    path = tmp_path / "config.yaml"
+    path.write_text(by_kind(objs)["ConfigMap"]["data"]["config.yaml"])
+    assert load_config(path).sessions.restart_continue_prompt == "Resume ${HOME} now."
+
+
+def test_spec_restart_continue_prompt_overrides_default():
+    settings = make_settings(default_restart_continue_prompt="operator default")
+    for prompt in ("continue please", ""):
+        session = make_session(wrapper={"restart_continue_prompt": prompt})
+        cfg = config_of(render.render_session(session, settings, TOKENS))
+        assert cfg["sessions"]["restart_continue_prompt"] == prompt
 
 
 def test_hive_with_agent_commands_validates(tmp_path, monkeypatch):
