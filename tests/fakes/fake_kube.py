@@ -7,7 +7,16 @@
 - Applying a StatefulSet simulates its controller: pods `<sts>-<i>` for i < replicas carrying the
   pod template labels; scaling down removes the higher ordinals, deleting the StatefulSet
   removes its pods, and deleting a pod of a live StatefulSet recreates it with a new uid.
-  Readiness and phase are controlled with `set_pod`; `controller_paused` freezes the pods.
+  Readiness and phase are controlled with `set_pod`; `controller_paused` freezes the pods and
+  the StatefulSet status.
+- Revisions: `metadata.generation` counts spec changes; the controller sets
+  `status.observedGeneration` and `status.updateRevision` (`<sts>-<hash of the template>`), and
+  labels every pod it creates `controller-revision-hash: <updateRevision>`. Under
+  `updateStrategy: OnDelete` a template change leaves existing pods on their old revision until
+  they are deleted, and a deleted pod returns at the update revision. Under RollingUpdate (the
+  default) no pod is recreated, as before; existing pods are relabelled at the update revision.
+- `graceful_pod_deletes` keeps a deleted pod terminating (`metadata.deletionTimestamp` set, its
+  labels and readiness unchanged) until `finish_termination`, like a real grace period.
 - `seed` places objects (the orchestrator's own, unlabelled ones, or foreign ones) without
   recording them; `seed_orchestrator_objects` seeds what the chart puts in the same namespace.
 - `fail(kind, name)` injects an error for one object.
@@ -19,13 +28,16 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import itertools
+import json
 import uuid
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 from agents_orchestrator.k8s.kube import FIELD_MANAGER, Forbidden, KubeError
+from agents_orchestrator.reconciler.rollout import REVISION_LABEL
 
 READ_VERBS = frozenset({"get", "list", "watch"})
 ORCHESTRATOR_LABELS = {
@@ -72,7 +84,8 @@ class _Failure:
 class FakeKube:
     namespace: str = "agents"
     pods_ready: bool = False
-    controller_paused: bool = False  # the StatefulSet controller lags: no pod changes
+    controller_paused: bool = False  # the StatefulSet controller lags: no pod or status changes
+    graceful_pod_deletes: bool = False  # a deleted pod stays terminating until finish_termination
     objects: dict[tuple[str, str, str], dict[str, Any]] = field(default_factory=dict)
     applies: list[Apply] = field(default_factory=list)
     deletes: list[tuple[str, str, str]] = field(default_factory=list)
@@ -183,6 +196,12 @@ class FakeKube:
                 ],
             }
 
+    def finish_termination(self, name: str) -> None:
+        """A terminating pod is gone; its StatefulSet controller recreates it."""
+        pod = self.objects.pop(("Pod", self.namespace, name))
+        assert pod["metadata"].get("deletionTimestamp"), f"pod {name} is not terminating"
+        self._recreate(pod)
+
     def has(self, kind: str, name: str, namespace: str | None = None) -> bool:
         return (kind, namespace or self.namespace, name) in self.objects
 
@@ -243,6 +262,7 @@ class FakeKube:
         stored.pop("stringData", None)  # a Secret's data is write-only for this fake
         self.objects[key] = stored
         if obj["kind"] == "StatefulSet":
+            self._sts_applied(stored, previous)
             self._sync_pods(stored)
         return copy.deepcopy(stored)
 
@@ -277,14 +297,16 @@ class FakeKube:
 
     async def delete_pod(self, namespace: str, name: str) -> bool:
         self._check("delete", "Pod", namespace, name)
-        pod = self.objects.pop(("Pod", namespace, name), None)
+        key = ("Pod", namespace, name)
+        pod = self.objects.get(key)
         if pod is None:
             return False
-        self.deletes.append(("Pod", namespace, name))
-        owner = pod["metadata"].get("annotations", {}).get("fake/statefulset")
-        sts = self.objects.get(("StatefulSet", namespace, owner)) if owner else None
-        if sts is not None:
-            self._sync_pods(sts)  # the controller recreates the pod, unready, with a new uid
+        self.deletes.append(key)
+        if self.graceful_pod_deletes:
+            pod["metadata"].setdefault("deletionTimestamp", "2026-10-28T00:00:00Z")
+            return True
+        del self.objects[key]
+        self._recreate(pod)
         return True
 
     async def create_job(self, obj: dict[str, Any]) -> dict[str, Any]:
@@ -355,12 +377,41 @@ class FakeKube:
             and o["metadata"].get("annotations", {}).get("fake/job") == job_name
         ]
 
+    def _recreate(self, pod: dict[str, Any]) -> None:
+        owner = pod["metadata"].get("annotations", {}).get("fake/statefulset")
+        sts = self.objects.get(("StatefulSet", self.namespace, owner)) if owner else None
+        if sts is not None:
+            self._sync_pods(sts)  # the controller recreates the pod, unready, with a new uid
+
+    def _sts_applied(self, sts: dict[str, Any], previous: dict[str, Any] | None) -> None:
+        """Generation, status and, under RollingUpdate, the existing pods' revision label."""
+        meta = sts["metadata"]
+        if previous is None:
+            meta["generation"], status = 1, {}
+        else:
+            changed = previous.get("spec") != sts.get("spec")
+            meta["generation"] = previous["metadata"].get("generation", 1) + changed
+            status = copy.deepcopy(previous.get("status") or {})
+        sts["status"] = status
+        if self.controller_paused:
+            return
+        template = json.dumps(sts["spec"]["template"], sort_keys=True).encode()
+        revision = f"{meta['name']}-{hashlib.sha256(template).hexdigest()[:10]}"
+        status["observedGeneration"] = meta["generation"]
+        status["updateRevision"] = revision
+        if (sts["spec"].get("updateStrategy") or {}).get("type") != "OnDelete":
+            for pod in self._pods_of(meta["name"]):
+                pod["metadata"]["labels"][REVISION_LABEL] = revision
+
     def _sync_pods(self, sts: dict[str, Any]) -> None:
         if self.controller_paused:
             return
         name = sts["metadata"]["name"]
         replicas = sts["spec"].get("replicas", 1)
-        labels = sts["spec"]["template"]["metadata"].get("labels", {})
+        labels = dict(sts["spec"]["template"]["metadata"].get("labels", {}))
+        revision = (sts.get("status") or {}).get("updateRevision")
+        if revision is not None:
+            labels[REVISION_LABEL] = revision
         wanted = {f"{name}-{i}" for i in range(replicas)}
         for pod in self._pods_of(name):
             if pod["metadata"]["name"] not in wanted:

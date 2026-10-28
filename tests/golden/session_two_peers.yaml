@@ -97,6 +97,8 @@
   spec:
     replicas: 2
     podManagementPolicy: Parallel
+    updateStrategy:
+      type: OnDelete
     serviceName: agent-alpha
     selector:
       matchLabels:

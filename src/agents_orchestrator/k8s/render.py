@@ -354,6 +354,10 @@ def render_session(
         "spec": {
             "replicas": spec.replicas,
             "podManagementPolicy": "Parallel",
+            # The controller never replaces a pod; the reconciler's replacer rolls idle ones
+            # (reconciler/rollout.py). In this object, so it reaches Kubernetes in the same
+            # server-side apply as any template change of the release that switches to it.
+            "updateStrategy": {"type": "OnDelete"},
             "serviceName": names["service"],
             "selector": selector(slug),
             "template": {

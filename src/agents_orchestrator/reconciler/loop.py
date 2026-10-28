@@ -34,12 +34,13 @@ from agents_orchestrator.db.export import export_session_history
 from agents_orchestrator.db.pool import listen, notify
 from agents_orchestrator.db.sessions import Session, SessionNotFound
 from agents_orchestrator.k8s.kube import FIELD_MANAGER, KubeApi, Obj, is_owned, pod_ready
-from agents_orchestrator.k8s.labels import object_names, prefix, session_labels
+from agents_orchestrator.k8s.labels import object_names, session_labels
 from agents_orchestrator.k8s.render import pod_url, render_session
 from agents_orchestrator.reconciler.cache import CacheGate, CacheRunner
 from agents_orchestrator.reconciler.checks import CheckRunner
 from agents_orchestrator.reconciler.discard_hook import HookResult, resolve_hook, run_discard_hook
 from agents_orchestrator.reconciler.init import InitGate, InitRunner
+from agents_orchestrator.reconciler.rollout import BUSY, LEADS, Replacer, agent_pods, terminating
 from agents_orchestrator.reconciler.wrapper_sessions import WrapperSessionBootstrapper
 from agents_orchestrator.settings import Settings
 from agents_orchestrator.tokens import tokens_for
@@ -60,16 +61,13 @@ WrapperFactory = Callable[[str, str], Any]
 """(base_url, auth_token) -> wrapper client; used by session bootstrap."""
 
 
-def _agent_pods(slug: str, pods: list[Obj]) -> list[str]:
-    """The names of the session's own agent pods (`agent-<slug>-<ordinal>`), never a Job's."""
-    base = prefix(slug) + "-"
-    return [
-        p["metadata"]["name"]
-        for p in pods
-        if is_owned(p, slug)
-        and p["metadata"]["name"].startswith(base)
-        and p["metadata"]["name"][len(base) :].isdigit()
-    ]
+# (ordinal, busy) of each draining agent; a leader counts as busy (D8), see `_draining`.
+_DRAINING = (
+    f"SELECT a.ordinal, {BUSY} OR {LEADS}"
+    " FROM agents a LEFT JOIN agent_status s ON s.agent_id = a.id"
+    " WHERE a.session_id = %s AND a.ordinal >= %s AND a.gone_at IS NULL"
+    " ORDER BY a.ordinal"
+)
 
 
 class Reconciler:
@@ -91,6 +89,7 @@ class Reconciler:
         self.checks = CheckRunner(pool, kube, settings)
         self.init = InitRunner(pool, kube, settings, write_status=self._write_status)
         self.cache = CacheRunner(pool, kube, settings, write_status=self._write_status)
+        self.replacer = Replacer(pool, kube, settings)
         self.bootstrapper = (
             WrapperSessionBootstrapper(pool, wrapper_factory)
             if wrapper_factory is not None
@@ -276,7 +275,10 @@ class Reconciler:
             problems = await self._bootstrap_wrapper_sessions(session)
             if any(g.degraded for g in gates):  # a failed restore or init starts them anyway
                 phase = "degraded"
+        rollout = await self.replacer.step(session)  # outdated pods roll one idle pod a tick
         fields: dict[str, Any] = {"phase": phase, "ready": ready, "replicas": replicas}
+        if rollout is not None:
+            fields["rollout"] = rollout
         drain = ""
         if draining:
             fields["drain"] = {
@@ -289,9 +291,8 @@ class Reconciler:
             filter(None, [message, drain, *(g.message for g in gates), *problems])
         )
         log.debug("session %s in %s: %s", slug, ns, phase)
-        await self._write_status(
-            session, fields, session.generation, drop=() if draining else ("drain",)
-        )
+        drop = (*(() if draining else ("drain",)), *(() if rollout else ("rollout",)))
+        await self._write_status(session, fields, session.generation, drop=drop)
 
     async def _draining(self, session_id: UUID, replicas: int) -> list[tuple[int, bool]]:
         """(ordinal, busy) of each agent at or above `replicas` that is not gone (D3).
@@ -301,16 +302,7 @@ class Reconciler:
         held until the leader row names a staying agent; the drain deadline bounds the hold).
         """
         async with self.pool.connection() as conn:
-            cur = await conn.execute(
-                "SELECT a.ordinal, COALESCE(s.state = 'busy', false) OR EXISTS ("
-                "  SELECT 1 FROM messages m WHERE m.session_id = a.session_id"
-                "  AND m.agent_id = a.id AND m.status IN ('dispatching', 'verifying'))"
-                "  OR EXISTS (SELECT 1 FROM session_leaders l WHERE l.agent_id = a.id)"
-                " FROM agents a LEFT JOIN agent_status s ON s.agent_id = a.id"
-                " WHERE a.session_id = %s AND a.ordinal >= %s AND a.gone_at IS NULL"
-                " ORDER BY a.ordinal",
-                (session_id, replicas),
-            )
+            cur = await conn.execute(_DRAINING, (session_id, replicas))
             return [(ordinal, busy) for ordinal, busy in await cur.fetchall()]
 
     async def _drain_replicas(self, session: Session) -> tuple[int, str | None]:
@@ -355,7 +347,7 @@ class Reconciler:
         ns = self.settings.namespace
         if await self.kube.get_object("StatefulSet", ns, object_names(slug)["statefulset"]):
             return True
-        return bool(_agent_pods(slug, await self.kube.list_pods(ns, session_labels(slug))))
+        return bool(agent_pods(slug, await self.kube.list_pods(ns, session_labels(slug))))
 
     async def _foreign(self, slug: str, objs: list[Obj]) -> list[str]:
         """`foreign_object <kind>/<name>` for each rendered name held by an unlabelled object."""
@@ -380,21 +372,18 @@ class Reconciler:
                     await self.kube.delete(kind, ns, name)
 
     async def _observe(self, session: Session) -> int:
-        """Pods into agents rows; returns the number of ready pods within replicas."""
+        """Pods into agents rows; returns the number of ready pods within replicas.
+
+        A terminating pod is never ready: its agent is not picked while its grace period runs.
+        """
         slug, replicas = session.slug, session.spec.replicas
         pods = await self.kube.list_pods(self.settings.namespace, session_labels(slug))
-        base = prefix(slug) + "-"
-        seen: dict[int, Obj] = {}
-        for pod in pods:
-            name = pod["metadata"]["name"]
-            suffix = name[len(base) :] if name.startswith(base) else ""
-            if is_owned(pod, slug) and suffix.isdigit():  # check Job pods are not agents
-                seen[int(suffix)] = pod
+        seen = agent_pods(slug, pods)  # check Job pods are not agents
         ready = 0
         async with self.pool.connection() as conn:
             for ordinal, pod in sorted(seen.items()):
                 name = pod["metadata"]["name"]
-                is_ready = pod_ready(pod) and ordinal < replicas
+                is_ready = pod_ready(pod) and not terminating(pod) and ordinal < replicas
                 ready += is_ready
                 await agents_repo.upsert_agent(
                     conn,
@@ -507,10 +496,13 @@ class Reconciler:
                     obj["spec"]["replicas"] = 0
                     await self.kube.apply(obj, field_manager=FIELD_MANAGER, force=True)
 
-        running = _agent_pods(slug, await self.kube.list_pods(ns, session_labels(slug)))
+        running = sorted(
+            p["metadata"]["name"]
+            for p in agent_pods(slug, await self.kube.list_pods(ns, session_labels(slug))).values()
+        )
         timed_out = (now - started).total_seconds() >= self.settings.discard_quiesce_timeout_seconds
         if running and not timed_out:
-            fields["message"] = "waiting for agent pods to stop: " + ", ".join(sorted(running))
+            fields["message"] = "waiting for agent pods to stop: " + ", ".join(running)
             await self._write_status(
                 session,
                 {"phase": "deleting", **fields},
