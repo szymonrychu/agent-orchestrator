@@ -3267,13 +3267,7 @@
             "anyOf": [
               {
                 "items": {
-                  "enum": [
-                    "compact",
-                    "context",
-                    "mcp",
-                    "reload-plugins",
-                    "reload-skills"
-                  ],
+                  "pattern": "^(\\*|[a-zA-Z0-9_][a-zA-Z0-9:_-]*)$",
                   "type": "string"
                 },
                 "type": "array"

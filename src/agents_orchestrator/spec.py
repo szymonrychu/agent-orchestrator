@@ -221,7 +221,8 @@ INSTRUCTIONS_MAX = 2000
 SYSTEM_APPEND_MAX = 16384
 RESERVED_MCP_SERVERS = ("any-mcp", "ccw")
 WELL_KNOWN_MARKETPLACES = frozenset({"claude-plugins-official"})
-AGENT_COMMANDS = ("compact", "context", "mcp", "reload-plugins", "reload-skills")
+# A Claude Code slash command name (design D2), or "*" for any command.
+AgentCommand = Annotated[str, Field(pattern=r"^(\*|[a-zA-Z0-9_][a-zA-Z0-9:_-]*)$")]
 _MCP_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _PLUGIN_RE = re.compile(r"^[^@\s]+@[^@\s]+$")
 _INSTRUCTIONS_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
@@ -368,9 +369,7 @@ class WrapperSettings(_Strict):
     max_restarts: int | None = Field(default=None, ge=0, le=10)
     restart_continue_prompt: str | None = None
     turn_max_seconds: float | None = Field(default=None, ge=0)
-    agent_commands: (
-        list[Literal["compact", "context", "mcp", "reload-plugins", "reload-skills"]] | None
-    ) = None
+    agent_commands: list[AgentCommand] | None = None
 
     @field_validator("hooks")
     @classmethod

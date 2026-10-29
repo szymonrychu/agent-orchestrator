@@ -978,11 +978,13 @@ Create-time only fields of the session `spec` (also accepted on `POST /api/v1/pr
 | `max_restarts` | integer 0 to 10 | `sessions.max_restarts` |
 | `restart_continue_prompt` | string; replaces `ORCH_DEFAULT_RESTART_CONTINUE_PROMPT`, empty disables the continuation | `sessions.restart_continue_prompt` |
 | `turn_max_seconds` | number >= 0 | `limits.turn_max_seconds` |
-| `agent_commands` | subset of `compact`, `context`, `mcp`, `reload-plugins`, `reload-skills` | `sessions.commands.agent` |
+| `agent_commands` | list of slash command names matching `^[a-zA-Z0-9_][a-zA-Z0-9:_-]*$`, or `*` for any command | `sessions.commands.agent` |
 
 Hooks: the event is one of the 21 wrapper events (`onCreate`, `onResume`, `onDestroy`, `onTurn`, `onTurnComplete`, `onStop`, `onTick`, `onAgentResponse`, `onAgentToolCall`, `onToolResult`, `onSubagentStart`, `onSubagentStop`, `onInterrupt`, `onCommand`, `onCommandComplete`, `onError`, `preJoin`, `postJoin`, `preLeave`, `postLeave`, `onStart`). An action is `{type: command, run, env}` or `{type: webhook, url, secret, headers, retries}` plus the common `timeout_seconds`, `blocking`, `on_error` (`allow` or `deny`); `matcher` (a regex) only on `onAgentToolCall` and `onToolResult`; `interval_seconds` (required) and `when` (`busy` or `always`) only on `onTick`. `run` is at most 16384 characters; command `env` keys match `[A-Z_][A-Z0-9_]*`; a webhook `url` is http or https.
 
 Reserved entries stay first and cannot be removed or reordered: the `onStart` hook, the lock-check `onAgentToolCall` hook, the denies `EnterPlanMode`, `ExitPlanMode`, `AskUserQuestion`, the `any-mcp` MCP server and the ask-in-writing prompt. User hooks and denies follow them, user MCP servers sit beside `any-mcp` (the names `any-mcp` and `ccw` and names outside `[A-Za-z0-9_-]{1,64}` are refused), and `system_append` follows the built-in prompt after a blank line.
+
+Client commands: every rendered config carries `sessions.commands.client: ["*"]`, so the wrapper accepts any slash command the orchestrator sends (the orchestrator is the wrapper's only client): chat and superleader slash messages and `POST /api/v1/agents/{agent_id}/compact`. `agent_commands` sets only `sessions.commands.agent`, the commands the agent itself may queue; unset renders no `agent` key and the wrapper allows the agent none.
 
 Escaping: every string value in `spec.wrapper` (not keys) has each `$` doubled to `$$` before it reaches the wrapper config, so the wrapper's `${VAR}` interpolation yields the literal text and a pod environment variable such as `${CLAUDE_CODE_OAUTH_TOKEN}` cannot be read through it. A shell command still sees `$VAR` at run time.
 
