@@ -20,6 +20,7 @@ PLUGIN_SUBDIR = "orchestration/orchestrator"
 SCALE_TOOL = "scale"
 HIVE_TOOLS = [
     "me",
+    "activity",
     "leadership_handover",
     "lock_claim",
     "lock_release",
@@ -69,7 +70,7 @@ def _orchestrator_entry(
             "max_replicas": spec.max_replicas or spec.replicas,
             "static": spec.static,
             "hive": spec.hive,
-            "auto_compact_pct": spec.auto_compact_pct,
+            "auto_compact_pct": spec.auto_compact_pct or settings.default_auto_compact_pct,
         },
     }
 

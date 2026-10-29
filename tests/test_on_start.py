@@ -24,6 +24,7 @@ from agents_orchestrator.tokens import SessionTokens
 
 HIVE_TOOLS = [
     "me",
+    "activity",
     "leadership_handover",
     "lock_claim",
     "lock_release",
@@ -177,6 +178,15 @@ def test_hive_entry_and_allow():
     }
     cfg = written_config(on_start.render_on_start(spec, make_settings(), "alpha"))
     AnyMcpConfig.model_validate(cfg)
+
+
+def test_plugin_config_effective_auto_compact():
+    """D9: a spec without auto_compact_pct renders the settings default, so the advice shows."""
+    spec = SessionSpec(replicas=2)
+    assert spec.auto_compact_pct is None
+    assert entries(spec)["orchestrator"]["config"]["auto_compact_pct"] == 95
+    custom = entries(spec, make_settings(default_auto_compact_pct=88))["orchestrator"]
+    assert custom["config"]["auto_compact_pct"] == 88
 
 
 def test_plugin_entry_session_key():
