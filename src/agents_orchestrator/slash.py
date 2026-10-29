@@ -44,7 +44,8 @@ _CLASS = f"[{_WHITESPACE}]"
 # (f"<!-- agents-{run_kind}:{run_id} -->") and posted by runs.py:_post_once as
 # f"{text}\n\n{marker}". The orchestrator does not depend on agents-common.
 _RUN_MARKER = re.compile(rf"\n\n<!-- agents-[^{_WHITESPACE}:]+:[^{_WHITESPACE}]+ -->{_CLASS}*\Z")
-_NAME = re.compile(r"[a-zA-Z0-9_][a-zA-Z0-9:_-]*")
+NAME_PATTERN = r"[a-zA-Z0-9_][a-zA-Z0-9:_-]*"
+_NAME = re.compile(NAME_PATTERN)
 
 
 def _ignorable(char: str) -> bool:

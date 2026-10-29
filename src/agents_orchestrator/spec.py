@@ -15,6 +15,8 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from agents_orchestrator.slash import NAME_PATTERN
+
 if TYPE_CHECKING:
     from agents_orchestrator.settings import Settings
 
@@ -222,7 +224,7 @@ SYSTEM_APPEND_MAX = 16384
 RESERVED_MCP_SERVERS = ("any-mcp", "ccw")
 WELL_KNOWN_MARKETPLACES = frozenset({"claude-plugins-official"})
 # A Claude Code slash command name (design D2), or "*" for any command.
-AgentCommand = Annotated[str, Field(pattern=r"^(\*|[a-zA-Z0-9_][a-zA-Z0-9:_-]*)$")]
+AgentCommand = Annotated[str, Field(pattern=rf"^(\*|{NAME_PATTERN})$")]
 _MCP_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _PLUGIN_RE = re.compile(r"^[^@\s]+@[^@\s]+$")
 _INSTRUCTIONS_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")

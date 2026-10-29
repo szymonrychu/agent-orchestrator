@@ -6,8 +6,11 @@ import sys
 import unicodedata
 
 import pytest
+from pydantic import TypeAdapter, ValidationError
 
+from agents_orchestrator import slash
 from agents_orchestrator.slash import parse
+from agents_orchestrator.spec import AgentCommand
 
 LONG_NAME = "a" * 100
 
@@ -125,3 +128,15 @@ def test_no_whitespace_or_invisible_char_hides_a_slash_command() -> None:
         if parse(f"{char}/exit") is None or parse(f"/exit{char}x") is None:
             hidden.append(f"U+{code:04X}")
     assert hidden == []
+
+
+def test_agent_command_pattern_shares_slash_name() -> None:
+    assert slash._NAME.pattern == slash.NAME_PATTERN
+    adapter = TypeAdapter(AgentCommand)
+    for ok in ("*", "compact", "plugin:cmd", "_x"):
+        assert adapter.validate_python(ok) == ok
+    for bad in ("/x", "a.b", "-x"):
+        with pytest.raises(ValidationError):
+            adapter.validate_python(bad)
+    metadata = AgentCommand.__metadata__[0].metadata[0]
+    assert metadata.pattern == rf"^(\*|{slash.NAME_PATTERN})$"
