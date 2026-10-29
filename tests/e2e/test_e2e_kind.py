@@ -77,7 +77,8 @@ READY_TIMEOUT = 900  # onStart pip-installs any-mcp from GitHub in every pod
 TURN_TIMEOUT = 300
 DISCARD_TIMEOUT = 180
 LEADER_TIMEOUT = 90  # election and handover are applied within the dispatcher poll
-HIVE_PUSH_TIMEOUT = 150  # hive push every 10 s, feed rows settle for 5 s
+HIVE_PUSH_TIMEOUT = 150  # hive push pass every 10 s
+HIVE_QUIET_WINDOW = 30  # three push passes in which no feed note may arrive
 ALONE_SLUG = "e2e-alone"
 SHELL_TIMEOUT = 60
 EVIL_ORIGIN = "http://evil.example"
@@ -1151,36 +1152,40 @@ def test_advisory_locks(api: httpx.Client, session: dict[str, Any]) -> None:
 def test_hive_notes_delivered(api: httpx.Client, session: dict[str, Any]) -> None:
     cid = session["id"]
     writer, reader = sorted(agents_of(api, cid), key=lambda a: a["ordinal"])
-    resp = api.post(
-        f"/sessions/{cid}/messages",
-        json={"text": WRITE_PROMPT, "target_agent_id": writer["id"]},
+    mid = post_message(api, cid, WRITE_PROMPT, writer["id"])
+    wait_for(
+        "the note-writing turn to complete",
+        lambda: turn_completed(message(api, mid)),
+        TURN_TIMEOUT,
+        2,
     )
-    assert resp.status_code == 202, resp.text
 
     def notes() -> list[dict[str, Any]]:
         events = (e for page in all_events(api, cid) for e in page)
         return [e for e in events if e["type"] == "note_received"]
 
-    def feed_on_reader() -> bool:
-        return any(
-            e["agent_id"] == reader["id"]
-            and e["data"].get("key") is None
-            and NOTE_FILE in e["data"].get("text", "")
-            for e in notes()
-        )
+    def hive_state_on_both() -> list[dict[str, Any]] | None:
+        received = notes()
+        for agent in (writer, reader):
+            keyed = [
+                e
+                for e in received
+                if e["agent_id"] == agent["id"] and e["data"].get("key") == "hive_state"
+            ]
+            if not keyed or "hive-state" not in keyed[-1]["data"]["text"]:
+                return None
+        return received
 
-    wait_for(
-        f"a feed note naming {NOTE_FILE} on the other agent", feed_on_reader, HIVE_PUSH_TIMEOUT, 3
-    )
-    received = notes()
-    for agent in (writer, reader):
-        keyed = [
-            e
-            for e in received
-            if e["agent_id"] == agent["id"] and e["data"].get("key") == "hive_state"
-        ]
-        assert keyed, (agent["pod_name"], received)
-        assert "hive-state" in keyed[-1]["data"]["text"], keyed[-1]
+    wait_for("the hive_state note on both agents", hive_state_on_both, HIVE_PUSH_TIMEOUT, 3)
+    time.sleep(HIVE_QUIET_WINDOW)
+    feed = [
+        e
+        for e in notes()
+        if e["agent_id"] == reader["id"]
+        and e["data"].get("key") is None
+        and NOTE_FILE in e["data"].get("text", "")
+    ]
+    assert feed == [], feed
 
 
 def test_alone_session_has_no_hive_tools(api: httpx.Client, session: dict[str, Any]) -> None:
