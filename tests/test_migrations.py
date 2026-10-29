@@ -108,9 +108,9 @@ def test_concurrent_migrate_serialises(empty_dsn):
     [t.start() for t in threads]
     [t.join() for t in threads]
     assert not errors
-    assert sorted(len(r) for r in results) == [0, 8]
+    assert sorted(len(r) for r in results) == [0, 9]
     with psycopg.connect(empty_dsn) as c:
-        assert c.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 8
+        assert c.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 9
 
 
 async def test_events_unique_agent_session_seq(pool):
