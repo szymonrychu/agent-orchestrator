@@ -10,6 +10,7 @@ from typing import Any
 import yaml
 
 from agents_orchestrator.db.sessions import Session
+from agents_orchestrator.dispatcher.hive import compact_pct
 from agents_orchestrator.k8s.labels import object_names, prefix, selector, session_labels
 from agents_orchestrator.k8s.on_start import render_on_start
 from agents_orchestrator.settings import Settings
@@ -146,8 +147,7 @@ def _ccw_config(session: Session, settings: Settings) -> dict[str, Any]:
         "env": {
             "claude_code_oauth_token": "${CLAUDE_CODE_OAUTH_TOKEN}",
             "disable_autoupdater": True,
-            "claude_autocompact_pct_override": spec.auto_compact_pct
-            or settings.default_auto_compact_pct,
+            "claude_autocompact_pct_override": compact_pct(spec.auto_compact_pct, settings),
         },
     }
     model = spec.model or settings.default_model

@@ -7,6 +7,7 @@ import json
 import shlex
 from typing import Any
 
+from agents_orchestrator.dispatcher.hive import compact_pct
 from agents_orchestrator.settings import Settings
 from agents_orchestrator.spec import SessionSpec, source_plugin_name
 
@@ -70,7 +71,7 @@ def _orchestrator_entry(
             "max_replicas": spec.max_replicas or spec.replicas,
             "static": spec.static,
             "hive": spec.hive,
-            "auto_compact_pct": spec.auto_compact_pct or settings.default_auto_compact_pct,
+            "auto_compact_pct": compact_pct(spec.auto_compact_pct, settings),
         },
     }
 

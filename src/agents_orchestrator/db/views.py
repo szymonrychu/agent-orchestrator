@@ -9,6 +9,8 @@ import psycopg
 from psycopg.rows import dict_row
 
 from agents_orchestrator.db.sessions import Session
+from agents_orchestrator.dispatcher.hive import compact_pct
+from agents_orchestrator.settings import Settings
 
 _AGGREGATES = """
 SELECT c.id AS session_id,
@@ -53,9 +55,7 @@ async def session_aggregates(
         return {r["session_id"]: r for r in await cur.fetchall()}
 
 
-def summarize(
-    session: Session, agg: dict[str, Any] | None, default_auto_compact_pct: int
-) -> dict[str, Any]:
+def summarize(session: Session, agg: dict[str, Any] | None, settings: Settings) -> dict[str, Any]:
     agg = agg or {}
     ready = agg.get("ready", 0)
     if session.desired == "deleting":
@@ -73,7 +73,7 @@ def summarize(
         "ready": ready,
         "replicas": session.spec.replicas,
         "context_pct_max": agg.get("context_pct_max"),
-        "auto_compact_pct": session.spec.auto_compact_pct or default_auto_compact_pct,
+        "auto_compact_pct": compact_pct(session.spec.auto_compact_pct, settings),
         "queued": agg.get("queued", 0),
         "failed": agg.get("failed", 0),
         "oldest_queued_at": agg.get("oldest_queued_at"),

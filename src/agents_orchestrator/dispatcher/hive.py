@@ -95,10 +95,9 @@ class HiveState:
 # ---------------------------------------------------------------- the note text
 
 
-def compact_pct(spec: dict[str, Any], settings: Settings) -> int:
-    """The effective compaction point: `spec.auto_compact_pct`, else the pods' default."""
-    compact = spec.get("auto_compact_pct")
-    return settings.default_auto_compact_pct if compact is None else compact
+def compact_pct(auto_compact_pct: int | None, settings: Settings) -> int:
+    """The effective compaction point: the spec's `auto_compact_pct`, else the pods' default."""
+    return settings.default_auto_compact_pct if auto_compact_pct is None else auto_compact_pct
 
 
 def handover_threshold(spec: dict[str, Any], settings: Settings) -> int:
@@ -106,7 +105,7 @@ def handover_threshold(spec: dict[str, Any], settings: Settings) -> int:
 
     The effective compaction point less HANDOVER_MARGIN_PCT, at least 1.
     """
-    return max(compact_pct(spec, settings) - HANDOVER_MARGIN_PCT, 1)
+    return max(compact_pct(spec.get("auto_compact_pct"), settings) - HANDOVER_MARGIN_PCT, 1)
 
 
 def hive_state_payload(
@@ -321,7 +320,7 @@ async def _read(
         epoch=leader["epoch"],
         hashes=_load_hashes(leader["state_hash"]),
         members=members,
-        compact_pct=compact_pct(spec, settings),
+        compact_pct=compact_pct(spec.get("auto_compact_pct"), settings),
         peers=typed.peers,
         scalable=typed.scalable,
         outcomes=outcomes,

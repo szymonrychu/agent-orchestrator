@@ -99,7 +99,7 @@ def _view(session: repo.Session, agg: dict | None, settings: Settings) -> schema
         created_at=session.created_at,
         preset_id=session.preset_id,
         preset_name=session.preset_name,
-        summary=views.summarize(session, agg, settings.default_auto_compact_pct),
+        summary=views.summarize(session, agg, settings),
         hive=session.spec.hive,
         max_replicas=session.spec.max_replicas or session.spec.replicas,
         static=session.spec.static,
