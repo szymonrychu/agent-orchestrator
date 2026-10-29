@@ -139,7 +139,9 @@ class Dispatcher:
         """Run the leadership pass for every hive session that needs one (D7).
 
         Before the claims, so a message claimed on this wake already sees the new leader. One
-        failing session is logged and never holds up the others or the message drain.
+        failing session is logged and never holds up the others or the message drain. A pass
+        may have decided a request without a leader change (a rejection), so the push loop is
+        woken after any pass: the requester learns the outcome (D6).
         """
         async with self.pool.connection() as conn:
             for session_id in await leadership.leadership_candidates(conn):
@@ -148,8 +150,8 @@ class Dispatcher:
                 except Exception:
                     log.exception("leadership pass for session %s failed", session_id)
                     continue
+                self._push_wake.set()
                 if change is not None:
-                    self._push_wake.set()
                     log.info(
                         "session %s leader %s epoch %s (%s)",
                         session_id,
