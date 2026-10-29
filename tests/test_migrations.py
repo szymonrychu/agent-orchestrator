@@ -53,7 +53,9 @@ def test_fresh_database_gets_all_tables(empty_dsn):
         }
         versions = [r[0] for r in c.execute("SELECT version FROM schema_migrations")]
     assert tables >= TABLES
-    assert versions == ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009"]
+    assert versions == [
+        "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0011",
+    ]  # fmt: skip
 
 
 def test_presets_migration_on_existing_sessions(empty_dsn, tmp_path):
@@ -74,6 +76,7 @@ def test_presets_migration_on_existing_sessions(empty_dsn, tmp_path):
         "0007",
         "0008",
         "0009",
+        "0011",
     ]
     with psycopg.connect(empty_dsn) as c:
         row = c.execute(
@@ -108,9 +111,9 @@ def test_concurrent_migrate_serialises(empty_dsn):
     [t.start() for t in threads]
     [t.join() for t in threads]
     assert not errors
-    assert sorted(len(r) for r in results) == [0, 9]
+    assert sorted(len(r) for r in results) == [0, 10]
     with psycopg.connect(empty_dsn) as c:
-        assert c.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 9
+        assert c.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 10
 
 
 async def test_events_unique_agent_session_seq(pool):
@@ -302,11 +305,13 @@ def _cols(c, table):
     }
 
 
-def test_0003_hive_schema(empty_dsn):
-    run_migrations(empty_dsn)
+def test_0003_hive_schema(empty_dsn, tmp_path):
+    for path in sorted(MIGRATIONS_DIR.glob("000[1-3]_*.sql")):
+        shutil.copy(path, tmp_path / path.name)
+    assert run_migrations(empty_dsn, tmp_path) == ["0001", "0002", "0003"]
     with psycopg.connect(empty_dsn) as c:
         lr = _cols(c, "leadership_requests")
-        cl = _cols(c, "session_leaders")
+        cl = _cols(c, "cluster_leaders")
         fl = _cols(c, "file_locks")
         ag = _cols(c, "agents")
         idx = [
@@ -324,21 +329,21 @@ def test_0003_hive_schema(empty_dsn):
             )
         ]
     assert set(lr) == {
-        "id", "session_id", "kind", "from_agent_id", "to_agent_id", "reason", "epoch",
+        "id", "cluster_id", "kind", "from_agent_id", "to_agent_id", "reason", "epoch",
         "status", "reject_reason", "created_at", "decided_at",
     }  # fmt: skip
     assert lr["to_agent_id"][1] == "YES" and lr["epoch"][1] == "YES"
     assert lr["reason"][1] == "NO" and lr["status"][1] == "NO"
     assert set(cl) == {
-        "session_id", "agent_id", "epoch", "since", "reason", "unready_since",
+        "cluster_id", "agent_id", "epoch", "since", "reason", "unready_since",
         "feed_cursor", "state_hash", "state_pushed_at",
     }  # fmt: skip
     assert cl["feed_cursor"] == ("bigint", "NO") and cl["state_hash"][1] == "YES"
     assert cl["epoch"] == ("integer", "NO")
-    assert set(fl) == {"session_id", "path", "agent_id", "claimed_at"}
-    assert pk == ["path", "session_id"]
+    assert set(fl) == {"cluster_id", "path", "agent_id", "claimed_at"}
+    assert pk == ["cluster_id", "path"]
     assert ag["pod_ip"] == ("text", "YES")
-    assert any("(session_id, id)" in i and "queued" in i for i in idx)
+    assert any("(cluster_id, id)" in i and "queued" in i for i in idx)
 
 
 def test_0003_idempotent(empty_dsn, tmp_path):
@@ -454,21 +459,27 @@ def test_0004_renames_wrapper_session_columns(empty_dsn, tmp_path):
     assert not any("session" in n and "wrapper_session" not in n for n in constraints | indexes)
 
 
-async def test_0003_feed_cursor_default(pool):
-    cl = await insert_session(pool)
-    ag = await insert_agent(pool, cl["id"])
-    async with pool.connection() as conn:
-        assert (await (await conn.execute("SELECT count(*) FROM session_leaders")).fetchone())[
-            0
-        ] == 0
-        await conn.execute(
-            "INSERT INTO session_leaders (session_id, agent_id, epoch, since, reason)"
+def test_0003_feed_cursor_default(empty_dsn, tmp_path):
+    for path in sorted(MIGRATIONS_DIR.glob("000[1-3]_*.sql")):
+        shutil.copy(path, tmp_path / path.name)
+    assert run_migrations(empty_dsn, tmp_path) == ["0001", "0002", "0003"]
+    with psycopg.connect(empty_dsn, autocommit=True) as c:
+        session = c.execute(
+            "INSERT INTO clusters (id, slug, spec) VALUES (gen_random_uuid(), 's', '{}')"
+            " RETURNING id"
+        ).fetchone()[0]
+        agent = c.execute(
+            "INSERT INTO agents (id, cluster_id, ordinal, pod_name)"
+            " VALUES (gen_random_uuid(), %s, 0, 's-0') RETURNING id",
+            (session,),
+        ).fetchone()[0]
+        assert c.execute("SELECT count(*) FROM cluster_leaders").fetchone()[0] == 0
+        c.execute(
+            "INSERT INTO cluster_leaders (cluster_id, agent_id, epoch, since, reason)"
             " VALUES (%s, %s, 1, now(), 'init')",
-            (cl["id"], ag["id"]),
+            (session, agent),
         )
-        row = await (
-            await conn.execute("SELECT feed_cursor, state_hash FROM session_leaders")
-        ).fetchone()
+        row = c.execute("SELECT feed_cursor, state_hash FROM cluster_leaders").fetchone()
     assert row == (0, None)
 
 
@@ -514,7 +525,7 @@ def test_0005_renames_clusters_to_sessions(empty_dsn, tmp_path):
             "INSERT INTO file_locks (cluster_id, path, agent_id) VALUES (%s, 'a.py', %s)",
             (unit, agent),
         )
-    assert run_migrations(empty_dsn) == ["0005", "0006", "0007", "0008", "0009"]
+    assert run_migrations(empty_dsn) == ["0005", "0006", "0007", "0008", "0009", "0011"]
     with psycopg.connect(empty_dsn) as c:
         assert c.execute(
             "SELECT id, slug, preset_id::text, preset_name FROM sessions"
@@ -672,4 +683,26 @@ def test_0009_created_by_service_column(empty_dsn, tmp_path):
         c.execute(sql)
         c.execute("DELETE FROM schema_migrations WHERE version = '0009'")
     assert run_migrations(empty_dsn, tmp_path) == ["0009"]
+    assert run_migrations(empty_dsn, tmp_path) == []
+
+
+def test_drop_feed_cursor_migration(empty_dsn, tmp_path):
+    for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
+        if path.name < "0011":
+            shutil.copy(path, tmp_path / path.name)
+    assert run_migrations(empty_dsn, tmp_path)[-1] == "0009"
+    with psycopg.connect(empty_dsn) as c:
+        assert _cols(c, "session_leaders")["feed_cursor"] == ("bigint", "NO")
+    shutil.copy(MIGRATIONS_DIR / "0011_drop_feed_cursor.sql", tmp_path)
+    assert run_migrations(empty_dsn, tmp_path) == ["0011"]
+    with psycopg.connect(empty_dsn) as c:
+        cols = _cols(c, "session_leaders")
+    assert "feed_cursor" not in cols
+    assert {"session_id", "agent_id", "epoch", "since", "reason", "unready_since"} <= set(cols)
+    sql = (MIGRATIONS_DIR / "0011_drop_feed_cursor.sql").read_text()
+    with psycopg.connect(empty_dsn, autocommit=True) as c:
+        c.execute(sql)
+        c.execute(sql)
+        c.execute("DELETE FROM schema_migrations WHERE version = '0011'")
+    assert run_migrations(empty_dsn, tmp_path) == ["0011"]
     assert run_migrations(empty_dsn, tmp_path) == []

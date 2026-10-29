@@ -204,14 +204,12 @@ async def _set_leader(
 ) -> LeaderChange:
     """Insert the first leader row (epoch 1) or move the existing one to `epoch + 1`.
 
-    A new row starts its feed cursor at the session's newest event, so history is never
-    pushed as current activity. Every change NOTIFYs `leader_changed`.
+    Every change NOTIFYs `leader_changed`.
     """
     row = await _one(
         conn,
-        "INSERT INTO session_leaders (session_id, agent_id, epoch, since, reason, feed_cursor)"
-        " VALUES (%(c)s, %(a)s, 1, now(), %(r)s,"
-        "  (SELECT coalesce(max(id), 0) FROM events WHERE session_id = %(c)s))"
+        "INSERT INTO session_leaders (session_id, agent_id, epoch, since, reason)"
+        " VALUES (%(c)s, %(a)s, 1, now(), %(r)s)"
         " ON CONFLICT (session_id) DO UPDATE SET agent_id = EXCLUDED.agent_id,"
         "  epoch = session_leaders.epoch + 1, since = now(), reason = EXCLUDED.reason,"
         "  unready_since = NULL"
