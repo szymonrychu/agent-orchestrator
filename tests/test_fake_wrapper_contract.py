@@ -1098,6 +1098,15 @@ COMMAND_RECORD_KEYS = {
 }
 
 
+def test_fake_deny_mirrors_wrapper_default() -> None:
+    """The fake's COMMAND_DENY is the pinned wrapper's DEFAULT_COMMAND_DENY, lower-cased."""
+    from claude_code_wrapper.config import DEFAULT_COMMAND_DENY
+    from fakes.fake_wrapper import COMMAND_DENY
+
+    assert {name.lower() for name in DEFAULT_COMMAND_DENY} == COMMAND_DENY
+    assert len(COMMAND_DENY) == 51
+
+
 async def test_commands_any_name_and_denied(leg: Leg) -> None:
     sid = await leg.create()
     url = f"/v1/sessions/{sid}/commands"
@@ -1109,7 +1118,7 @@ async def test_commands_any_name_and_denied(leg: Leg) -> None:
         assert isinstance(record["id"], str) and record["id"]
         assert (record["name"], record["args"]) == (name, args)
         assert record["state"] == "queued" and record["origin"] == "client"
-    for name in ("exit", "Reset"):
+    for name in ("exit", "Reset", "plugin", "Marketplace", "routines", "memory", "usage-credits"):
         denied = await leg.http.post(url, json={"name": name})
         assert denied.status_code == 403, name
         assert denied.json()["error"]["code"] == "command_denied"

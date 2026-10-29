@@ -57,8 +57,10 @@ TERMINAL_SIZE = range(1, 1001)
 ACTIVE_STATES = ("ready", "busy")
 
 # the wrapper's slash command rules (design D2, D4, D5)
-# Copied from claude_code_wrapper.config.DEFAULT_COMMAND_DENY: keep the two in step. Names that
-# end, replace or move the claude session, or touch the account; matched case-insensitively.
+# Copied from claude_code_wrapper.config.DEFAULT_COMMAND_DENY (claude-code-wrapper v0.4.1, 51 names;
+# test_fake_deny_mirrors_wrapper_default pins the two together). Names that end, replace or move the
+# claude session, touch the account, install or change plugins, or open ui/ide surfaces; matched
+# case-insensitively.
 COMMAND_DENY = frozenset(
     {
         "exit",
@@ -87,6 +89,31 @@ COMMAND_DENY = frozenset(
         "setup-vertex",
         "web-setup",
         "design-login",
+        "add-dir",
+        "app",
+        "bug",
+        "daemon",
+        "design-consent",
+        "design-revoke",
+        "desktop",
+        "export",
+        "extra-usage",
+        "feedback",
+        "heapdump",
+        "ide",
+        "import",
+        "install",
+        "install-github-app",
+        "install-slack-app",
+        "marketplace",
+        "memory",
+        "plugin",
+        "plugins",
+        "remote-env",
+        "routines",
+        "schedule",
+        "terminal-setup",
+        "usage-credits",
     }
 )
 COMMAND_NAME_RE = re.compile(r"[a-zA-Z0-9_][a-zA-Z0-9:_-]*")
