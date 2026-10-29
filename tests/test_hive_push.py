@@ -469,6 +469,135 @@ async def test_handover_due_runs_when_hive_state_unchanged(env):
     assert len(env.notes(a0, DUE)) == 2
 
 
+# ---------------------------------------------------------------- leadership_request
+
+OUTCOME = "leadership_request"
+
+
+async def handover(env, c, from_agent, to_agent, *, epoch: int = 1) -> int:
+    """Queue an agent handover request the way the agent API does."""
+    async with env.pool.connection() as conn:
+        return await leadership.insert_request(
+            conn,
+            c["id"],
+            "handover",
+            from_agent["id"],
+            None if to_agent is None else to_agent["id"],
+            "test",
+            epoch,
+        )
+
+
+async def test_leadership_request_applied_note(env):
+    c, (a0, a1, a2) = await env.hive()
+    await env.push()
+    rid = await handover(env, c, a0, a1)
+    await env.lpass(c["id"])
+    assert await env.push() == 4  # the new hive_state to all three, plus the outcome to a0
+    (text,) = env.notes(a0, OUTCOME)
+    assert text == f"handover request {rid} applied: agent-1 leads at epoch 2"
+    sent = [n for n in env.fake.notes[a0["wrapper_session_id"]] if n["key"] == OUTCOME]
+    assert sent[0]["source"] == "orchestrator"
+    assert env.notes(a1, OUTCOME) == [] and env.notes(a2, OUTCOME) == []  # only the requester
+
+    # an untargeted request has no to_agent_id: the note names the leader as of the push
+    rid = await handover(env, c, a1, None, epoch=2)
+    await env.lpass(c["id"])
+    await env.push()
+    (text,) = env.notes(a1, OUTCOME)
+    leader = (await env.leader_row(c["id"]))["agent_id"]
+    pod = (await env.rows("SELECT pod_name FROM agents WHERE id = %s", (leader,)))[0]["pod_name"]
+    assert text == f"handover request {rid} applied: {pod} leads at epoch 3"
+    assert pod != "agent-1"
+
+
+async def test_leadership_request_rejected_note(env):
+    c, (a0, a1, a2) = await env.hive()
+    await env.push()
+    await env.run("UPDATE agents SET ready = false WHERE id = %s", (a1["id"],))
+    r_target = await handover(env, c, a0, a1)
+    r_not_leader = await handover(env, c, a2, a1)
+    r_stale = await handover(env, c, a0, a2, epoch=7)
+    await env.lpass(c["id"])
+    await env.push()
+    assert env.notes(a0, OUTCOME) == [
+        f"handover request {r_target} rejected: target_not_ready",
+        f"handover request {r_stale} rejected: stale_epoch",
+    ]
+    assert env.notes(a2, OUTCOME) == [f"handover request {r_not_leader} rejected: not_leader"]
+    assert env.notes(a1, OUTCOME) == []
+
+    # no_peers: an untargeted request while no other agent is ready
+    await env.run("UPDATE agents SET ready = false WHERE id = %s", (a2["id"],))
+    r_none = await handover(env, c, a0, None)
+    await env.lpass(c["id"])
+    await env.push()
+    assert env.notes(a0, OUTCOME)[-1] == f"handover request {r_none} rejected: no_peers"
+    row = await env.leader_row(c["id"])
+    assert row["epoch"] == 1  # no request changed the leader
+
+
+async def test_leadership_request_once_and_window(env):
+    c, (a0, a1, a2) = await env.hive()
+    await env.push()
+    rid = await handover(env, c, a0, a1)
+    async with env.pool.connection() as conn:  # a user request has no requester: no note
+        await leadership.insert_request(conn, c["id"], "user", None, a1["id"], "test", None)
+    await env.lpass(c["id"])
+    await env.push()
+    assert len(env.notes(a0, OUTCOME)) == 1
+    assert all(env.notes(a, OUTCOME) == [] for a in (a1, a2))
+    await env.push()
+    await env.push()
+    assert len(env.notes(a0, OUTCOME)) == 1  # once per request id
+
+    # a restarted dispatcher (a fresh HiveState) says it once more: at most one duplicate
+    assert await env.push(hive.HiveState()) == 1
+    assert len(env.notes(a0, OUTCOME)) == 2
+
+    # tracking is pruned with the window
+    assert env.state.outcome_sent[c["id"]] == {rid}
+    await env.run(
+        "UPDATE leadership_requests SET decided_at = now() - make_interval(secs => %s)"
+        " WHERE id = %s",
+        (hive.OUTCOME_WINDOW_SECONDS + 10, rid),
+    )
+    await env.push()
+    assert env.state.outcome_sent[c["id"]] == set()
+
+    # decided before the window: never sent
+    old = await handover(env, c, a1, a0, epoch=2)
+    await env.lpass(c["id"])
+    await env.run(
+        "UPDATE leadership_requests SET decided_at = now() - make_interval(secs => %s)"
+        " WHERE id = %s",
+        (hive.OUTCOME_WINDOW_SECONDS + 10, old),
+    )
+    assert await env.push(hive.HiveState()) == 3  # the hive_state for the new leader, no outcome
+    assert len(env.notes(a0, OUTCOME)) == 2 and env.notes(a1, OUTCOME) == []
+
+
+async def test_leadership_request_gone_requester_and_retry(env):
+    c, (a0, a1, a2) = await env.hive()
+    await env.push()
+    rid = await handover(env, c, a0, a1)
+    await env.lpass(c["id"])
+    await env.run("UPDATE agents SET url = 'http://127.0.0.1:1' WHERE id = %s", (a0["id"],))
+    await env.push()
+    assert env.notes(a0, OUTCOME) == []  # the push failed
+    assert env.state.outcome_sent.get(c["id"], set()) == set()  # and is not remembered
+    await env.run("UPDATE agents SET url = %s WHERE id = %s", (env.fake.base_url, a0["id"]))
+    await env.push()
+    assert env.notes(a0, OUTCOME) == [f"handover request {rid} applied: agent-1 leads at epoch 2"]
+
+    # a requester that is gone gets nothing
+    r2 = await handover(env, c, a1, a2, epoch=2)
+    await env.lpass(c["id"])
+    await env.run("UPDATE agents SET gone_at = now() WHERE id = %s", (a1["id"],))
+    await env.push()
+    assert env.notes(a1, OUTCOME) == [] and r2 not in env.state.outcome_sent.get(c["id"], set())
+
+
 # ---------------------------------------------------------------- gating
 
 
@@ -576,3 +705,29 @@ async def test_concurrent_pushes_claim_once(env):
     for agent in (a0, a1, a2):
         assert len(env.notes(agent)) == 1
         assert env.notes(agent, key=None) == []
+
+
+async def test_dispatcher_run_pushes_after_decision(env, monkeypatch):
+    monkeypatch.setattr(hive, "PUSH_INTERVAL_SECONDS", 60)  # no timer tick inside the test
+    c, (a0, a1, a2) = await env.hive()
+    env.fake.token = tokens_for(env.settings, c["id"]).auth
+    settings = env.settings.model_copy(update={"dispatch_poll_seconds": 300})  # no poll tick
+    stop = asyncio.Event()
+    dispatcher = Dispatcher(env.pool, settings)
+    task = asyncio.create_task(dispatcher.run(stop))
+    try:
+        async with asyncio.timeout(15):
+            while not env.notes(a2):  # the first push: hive_state everywhere
+                await asyncio.sleep(0.1)
+        dispatcher.hive.last_tick.clear()  # the per-session 10 s throttle has run out
+        # the target goes unready after the API accepted the request: the dispatcher rejects it
+        await env.run("UPDATE agents SET ready = false WHERE id = %s", (a1["id"],))
+        rid = await handover(env, c, a0, a1)
+        async with asyncio.timeout(15):
+            while not env.notes(a0, OUTCOME):
+                await asyncio.sleep(0.1)
+    finally:
+        stop.set()
+        await task
+    assert env.notes(a0, OUTCOME) == [f"handover request {rid} rejected: target_not_ready"]
+    assert (await env.leader_row(c["id"]))["epoch"] == 1  # no leader change woke the push

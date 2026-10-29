@@ -19,6 +19,11 @@ The one exception is the leader's keyed `handover_due` note (hive-decoupling D4)
 `agent_status.context_pct` is at or above the handover threshold is told, once per leader, epoch,
 5% bucket and candidate list, to hand leadership over, to whom and how. It is evaluated on every
 push tick, outside the hash and claim path above, and remembered per session in `HiveState`.
+
+The other keyed note is the requester's `leadership_request` outcome (hive-decoupling D6): each
+`handover` request an agent made that the dispatcher decided (applied or rejected) within the
+last OUTCOME_WINDOW_SECONDS is reported once per request id and process to the agent that made
+it. The decision is read from `leadership_requests`, so any number of dispatchers can send it.
 """
 
 from __future__ import annotations
@@ -52,6 +57,8 @@ PUSH_INTERVAL_SECONDS = 10
 PUSH_TIMEOUT_SECONDS = 3
 STATE_KEY = "hive_state"
 DUE_KEY = "handover_due"
+OUTCOME_KEY = "leadership_request"
+OUTCOME_WINDOW_SECONDS = 300
 HANDOVER_MARGIN_PCT = 15
 BUCKET_PCT = 5
 PULL_SENTENCE = (
@@ -76,11 +83,13 @@ DueKey = tuple[uuid.UUID, int, int, tuple[tuple[str, str], ...]]
 
 @dataclass
 class HiveState:
-    """In-memory push state of one dispatcher: the throttle clock and the last `handover_due`
-    key per session. A restart re-sends one note at most."""
+    """In-memory push state of one dispatcher: the throttle clock, the last `handover_due` key
+    and the `leadership_request` outcomes already sent (request ids, pruned to the window) per
+    session. A restart re-sends each of them at most once more."""
 
     last_tick: dict[uuid.UUID, float] = field(default_factory=dict)
     due_sent: dict[uuid.UUID, DueKey] = field(default_factory=dict)
+    outcome_sent: dict[uuid.UUID, set[int]] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------- the note text
@@ -211,6 +220,14 @@ def render_handover_due(
     return "\n".join(lines)
 
 
+def render_outcome(outcome: dict[str, Any], leader: str, epoch: int) -> str:
+    """The `leadership_request` note: an applied request names the leader as of now."""
+    head = f"handover request {outcome['id']}"
+    if outcome["status"] == "applied":
+        return f"{head} applied: {feed._clean(leader)} leads at epoch {epoch}"
+    return f"{head} rejected: {feed._clean(outcome['reject_reason'])}"
+
+
 def state_hash(leader: str, epoch: int, members: list[dict[str, Any]]) -> str:
     """Changes with leader, epoch, member set, wrapper sessions and ready; never with a member's
     state or context, which members pull with `orchestrator_me`."""
@@ -236,6 +253,8 @@ class _Plan:
     compact_pct: int
     peers: bool
     scalable: bool
+    # handover requests decided within OUTCOME_WINDOW_SECONDS that an agent made, by id
+    outcomes: list[dict[str, Any]]
     # ELIGIBLE successors, best first; None while the leader is below the threshold
     candidates: list[dict[str, Any]] | None = None
 
@@ -282,6 +301,14 @@ async def _read(
         if lead is not None and _is_due(lead, threshold):
             await cur.execute(_CANDIDATES, (cid, leader["agent_id"], threshold))
             candidates = await cur.fetchall()
+        await cur.execute(
+            "SELECT id, from_agent_id, status, reject_reason FROM leadership_requests"
+            " WHERE session_id = %s AND kind = 'handover' AND from_agent_id IS NOT NULL"
+            " AND status IN ('applied', 'rejected')"
+            " AND decided_at > now() - make_interval(secs => %s) ORDER BY id",
+            (cid, OUTCOME_WINDOW_SECONDS),
+        )
+        outcomes = await cur.fetchall()
     typed = SessionSpec.model_validate(spec)
     return _Plan(
         session_id=cid,
@@ -297,6 +324,7 @@ async def _read(
         compact_pct=compact_pct(spec, settings),
         peers=typed.peers,
         scalable=typed.scalable,
+        outcomes=outcomes,
         candidates=candidates,
     )
 
@@ -374,6 +402,30 @@ async def _push_due(plan: _Plan, state: HiveState, client_factory: ClientFactory
     return int(outcome == "ok")
 
 
+async def _push_outcomes(plan: _Plan, state: HiveState, client_factory: ClientFactory) -> int:
+    """Tell each requester how its decided handover request ended, once per request id.
+
+    Only a requester that is not gone and has a wrapper session is told. The sent ids are kept
+    per session and pruned to the requests still inside the window; a failed push is not
+    remembered, so the next tick retries it.
+    """
+    sent = state.outcome_sent.get(plan.session_id, set()) & {o["id"] for o in plan.outcomes}
+    state.outcome_sent[plan.session_id] = sent
+    receivers = {m["id"]: m for m in plan.receivers}
+    todo = [o for o in plan.outcomes if o["id"] not in sent and o["from_agent_id"] in receivers]
+    pushes = []
+    for o in todo:
+        member = receivers[o["from_agent_id"]]
+        client = client_factory(plan.session_id, member["url"])
+        text = render_outcome(o, plan.leader, plan.epoch)
+        pushes.append(_note(client, member["wrapper_session_id"], text, OUTCOME_KEY))
+    outcomes = await asyncio.gather(*pushes)
+    for o, outcome in zip(todo, outcomes, strict=True):
+        if outcome != "failed":
+            sent.add(o["id"])
+    return sum(outcome == "ok" for outcome in outcomes)
+
+
 async def _claim(conn: psycopg.AsyncConnection, plan: _Plan, current: str) -> list[dict[str, Any]]:
     """Under the lock, before any push: record the work as taken, so a second dispatcher that
     reads while this one is on the wire finds nothing left to push.
@@ -445,7 +497,8 @@ async def _push_session(
         }
         await _release(pool, plan, current, failed, all_ok=not failed)
         sent = sum(outcome == "ok" for outcome in outcomes)
-    return sent + await _push_due(plan, state, client_factory)
+    sent += await _push_due(plan, state, client_factory)
+    return sent + await _push_outcomes(plan, state, client_factory)
 
 
 async def push_once(
