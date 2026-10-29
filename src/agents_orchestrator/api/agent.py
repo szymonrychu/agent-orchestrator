@@ -10,11 +10,11 @@ from __future__ import annotations
 import hmac
 import posixpath
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated, Any
 from xml.sax.saxutils import escape
 
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Header, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from agents_orchestrator.api import schemas
@@ -22,9 +22,11 @@ from agents_orchestrator.api import sessions as sessions_api
 from agents_orchestrator.api.errors import ApiError
 from agents_orchestrator.api.sessions import Cfg, Pool, edit_init_scripts, init_scripts_view
 from agents_orchestrator.db import agents as agents_repo
+from agents_orchestrator.db import events as events_repo
 from agents_orchestrator.db import file_locks, leadership
 from agents_orchestrator.db import queue as q
 from agents_orchestrator.db import sessions as sessions_repo
+from agents_orchestrator.dispatcher import feed
 from agents_orchestrator.spec import WORKDIR_ROOT
 from agents_orchestrator.tokens import tokens_for
 
@@ -495,4 +497,49 @@ async def locks_check(request: Request, agent: Caller, pool: Pool) -> LockCheckO
             f"Advisory lock: {_peer_text(lock.path)} is claimed by {_peer_text(lock.agent)} "
             f"since {since}. Coordinate with them or the leader before editing."
         )
+    )
+
+
+# ---------------------------------------------------------------- activity of the session
+
+ACTIVITY_DEFAULT_LIMIT = 50
+ACTIVITY_MAX_LIMIT = 200
+
+
+class ActivityLine(BaseModel):
+    id: int
+    agent: str
+    text: str
+    ts: datetime
+
+
+class Activity(BaseModel):
+    lines: list[ActivityLine]
+
+
+@router.get(
+    "/activity",
+    response_model=Activity,
+    summary="Recent activity lines of the caller's session, oldest first (read-only)",
+)
+async def activity(
+    agent: Caller,
+    pool: Pool,
+    peer: Annotated[str | None, Query(alias="agent")] = None,
+    limit: Annotated[int, Query(ge=1, le=ACTIVITY_MAX_LIMIT)] = ACTIVITY_DEFAULT_LIMIT,
+) -> Activity:
+    """The digest of the newest stored tool calls, results and finished turns of the caller's
+    session, own lines included. `agent` keeps one pod's lines; a name that matches nothing
+    gives an empty list, since gone agents' lines are history."""
+    async with pool.connection() as conn:
+        workdir = f"{WORKDIR_ROOT}/{await _workdir(conn, agent)}"
+        rows = await events_repo.recent_activity_rows(conn, agent.session_id)
+    lines, _ = feed.digest_lines(rows, datetime.now(UTC), workdir)
+    stamps = {row["id"]: row["ts"] for row in rows}
+    kept = [line for line in lines if peer is None or line.agent == peer]
+    return Activity(
+        lines=[
+            ActivityLine(id=line.id, agent=line.agent, text=line.text, ts=stamps[line.id])
+            for line in kept[-limit:]
+        ]
     )

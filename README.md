@@ -1032,6 +1032,16 @@ The caller's identity, the leader and the hive members.
 
 `leader` and `epoch` come from the session's leader record and are null while there is none. `members` are the not-gone agents by ordinal; `state` is the stored agent state and `context_pct` is null when unknown.
 
+### `GET /agent/v1/activity`
+
+What the session's agents did recently, pulled on demand. The route is read-only: it reads the stored `events` rows of the caller's session and writes nothing. The session is always the token's; there is no way to name another. Query: `agent` (a pod name, optional) keeps one agent's lines, and `limit` (1 to 200, default 50) caps how many come back. The route reads the session's newest 1000 `tool_call`, `tool_result` and `turn_completed` rows and runs the same digest the leader feed used (`dispatcher/feed.py`), then returns the last `limit` lines, oldest first, the caller's own lines included. Response 200:
+
+```json
+{"lines": [{"id": 412, "agent": "pod-1", "text": "pod-1 ran: pytest -q (exit 1)", "ts": "2026-10-29T12:00:00Z"}]}
+```
+
+`text` is one escaped line: `<pod> wrote|edited <path>` (paths under the session workdir are made relative), `<pod> ran: <command, 200 characters> (<ok|exit N|failed>)` and `<pod> finished a turn: <first line of the final text>`. `id` is the id of the event the line comes from and `ts` its timestamp. A `Bash` call younger than `PENDING_BASH_TIMEOUT_SECONDS` (60 s) with no stored result is omitted and shows up once its result is stored; an older one without a result is listed without a status. An `agent` that names no line gives `{"lines": []}`, not 404, because the lines of agents that have left stay history. Errors: 422 `invalid_request` (a `limit` outside 1 to 200), plus the 401 and 403 above. Backs the plugin tool `orchestrator_activity`.
+
 ### `POST /agent/v1/leadership/handover`
 
 The current leader hands leadership away. Body `{to?, reason, epoch}`: `to` is the pod name of a member (omitted: any agent), `reason` is 1 to 500 characters, `epoch` is the epoch the caller read from `GET /agent/v1/me`. Queues a `handover` request and sends `NOTIFY leadership_requested {session_id}`; the dispatcher re-checks everything at apply time. There is no takeover route. Response 202 `{request_id}`. Errors, checked in this order: 409 `alone` (a single-agent session), 409 `not_leader` (the caller is not the current leader, or there is none), 409 `stale_epoch` (`epoch` differs from the current epoch), 404 `not_found` (unknown `to`), 422 `invalid_request`.

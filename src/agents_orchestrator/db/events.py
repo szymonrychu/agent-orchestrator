@@ -8,11 +8,14 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import psycopg
+from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from agents_orchestrator.db.pool import notify
 
 MAX_LIMIT = 500
+ACTIVITY_WINDOW = 1000
+ACTIVITY_TYPES = ("tool_call", "tool_result", "turn_completed")
 CHANNEL = "events"
 _COLUMNS = "id, session_id, agent_id, wrapper_session_id, seq, ts, type, turn_id, data"
 
@@ -181,3 +184,24 @@ async def page(
     has_more = len(rows) > limit
     events = [_row(r) for r in reversed(rows[:limit])]
     return Page(events, has_more, events[-1]["id"] if events else None)
+
+
+async def recent_activity_rows(
+    conn: psycopg.AsyncConnection, session_id: uuid.UUID, limit: int = ACTIVITY_WINDOW
+) -> list[dict[str, Any]]:
+    """The session's newest `limit` activity rows (tool calls, tool results, finished turns),
+    ascending by id, each carrying `agent` (the pod name; 'agent' when the row has none).
+
+    Read-only: the ingester is the only writer of `events`.
+    """
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "SELECT e.id, e.type, e.data, e.ts, coalesce(a.pod_name, 'agent') AS agent"
+            " FROM events e LEFT JOIN agents a ON a.id = e.agent_id"
+            " WHERE e.session_id = %s AND e.type = ANY(%s)"
+            " ORDER BY e.id DESC LIMIT %s",
+            (session_id, list(ACTIVITY_TYPES), limit),
+        )
+        rows = await cur.fetchall()
+    rows.reverse()
+    return rows
