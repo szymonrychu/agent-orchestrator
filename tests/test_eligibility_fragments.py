@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 
 from agents_orchestrator.db import eligibility, leadership, queue, sessions
+from agents_orchestrator.dispatcher import hive
 
 
 def test_no_limit_is_the_only_spelling_of_the_literal() -> None:
@@ -25,6 +26,7 @@ def test_call_sites_embed_the_shared_fragments() -> None:
     assert eligibility.ELIGIBLE in leadership._CANDIDATES
     assert eligibility.HANDOVER_TRIGGER in leadership._CANDIDATES
     assert eligibility.ELIGIBLE in leadership._FREE_LONGEST
+    assert eligibility.ELIGIBLE in hive._CANDIDATES
     assert eligibility.HANDOVER_TRIGGER in queue._HANDOVER_PENDING
     assert eligibility.ELIGIBLE in queue._HANDOVER_PENDING
 

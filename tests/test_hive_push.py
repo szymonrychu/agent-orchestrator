@@ -310,6 +310,165 @@ async def test_no_feed_note(env):
         assert "wrote" not in pushed[0]["text"] and "make test" not in pushed[0]["text"]
 
 
+# ---------------------------------------------------------------- handover_due
+
+DUE = "handover_due"
+
+
+async def test_handover_due_sent_to_leader_at_threshold(env):
+    c, (a0, a1, a2) = await env.hive()  # default compaction 95, so the threshold is 80
+    await set_agent_status(env.pool, a0["id"], state="idle", context_pct=79)
+    await set_agent_status(env.pool, a1["id"], state="idle", context_pct=95)
+    await env.push()
+    assert all(env.notes(a, DUE) == [] for a in (a0, a1, a2))  # below the threshold, or a member
+
+    await set_agent_status(env.pool, a0["id"], state="idle", context_pct=80)
+    assert await env.push() == 1  # hive_state is unchanged: only the due note goes out
+    (text,) = env.notes(a0, DUE)
+    assert "80%" in text and "compacts at 95%" in text
+    assert env.notes(a1, DUE) == [] and env.notes(a2, DUE) == []  # members get none
+    sent = [n for n in env.fake.notes[a0["wrapper_session_id"]] if n["key"] == DUE]
+    assert sent[0]["source"] == "orchestrator"
+    assert await env.push() == 0  # one note, not one per tick
+    assert len(env.notes(a0, DUE)) == 1
+
+
+async def test_handover_due_candidates_ranked(env):
+    spec = {"replicas": 7, "max_replicas": 8}
+    c, agents = await env.hive(7, spec=spec)
+    a0, a1, a2, a3, a4, a5, a6 = agents
+    await env.run(  # a6 is leaving: its ordinal is not below spec.replicas
+        "UPDATE sessions SET spec = jsonb_set(spec, '{replicas}', '6') WHERE id = %s", (c["id"],)
+    )
+    await env.run("UPDATE agents SET ready = false WHERE id = %s", (a5["id"],))
+    await set_agent_status(env.pool, a0["id"], state="busy", context_pct=90)
+    await set_agent_status(env.pool, a1["id"], state="busy", context_pct=10)
+    await set_agent_status(env.pool, a2["id"], state="idle", context_pct=40)
+    await set_agent_status(env.pool, a3["id"], state="idle", context_pct=20.4)
+    await set_agent_status(env.pool, a4["id"], state="idle", context_pct=85)  # itself due
+    await set_agent_status(env.pool, a5["id"], state="idle", context_pct=5)
+    await set_agent_status(env.pool, a6["id"], state="idle", context_pct=1)
+    await env.push()
+    (text,) = env.notes(a0, DUE)
+    lines = [
+        f"{a['pod_name']} ({a['pod_name']}/{a['wrapper_session_id']}, {state}, {pct}% context)"
+        for a, state, pct in ((a3, "idle", 20), (a2, "idle", 40), (a1, "busy", 10))
+    ]
+    positions = [text.index(line) for line in lines]
+    assert positions == sorted(positions)
+    for left_out in (a0, a4, a5, a6):  # the leader, an agent itself due, unready, leaving
+        assert f"{left_out['pod_name']} (" not in text.split("Candidates", 1)[1]
+
+
+async def test_handover_due_resend_rules(env):
+    c, (a0, a1, a2) = await env.hive()
+    await set_agent_status(env.pool, a0["id"], state="idle", context_pct=82)
+    await env.push()
+    assert len(env.notes(a0, DUE)) == 1
+
+    await set_agent_status(env.pool, a0["id"], state="idle", context_pct=84)  # same 5% bucket
+    # a candidate's state and context, with the order kept
+    await set_agent_status(env.pool, a2["id"], state="busy", context_pct=30)
+    await env.push()
+    assert len(env.notes(a0, DUE)) == 1
+
+    await set_agent_status(env.pool, a0["id"], state="idle", context_pct=85)  # next bucket
+    await env.push()
+    assert len(env.notes(a0, DUE)) == 2
+
+    await env.run("UPDATE agents SET ready = false WHERE id = %s", (a2["id"],))  # identity
+    await env.push()
+    assert len(env.notes(a0, DUE)) == 3
+    await env.run("UPDATE agents SET ready = true WHERE id = %s", (a2["id"],))
+    await env.push()
+    assert len(env.notes(a0, DUE)) == 4
+
+    await env.run(  # the epoch alone
+        "UPDATE session_leaders SET epoch = epoch + 1 WHERE session_id = %s", (c["id"],)
+    )
+    await env.push()
+    assert len(env.notes(a0, DUE)) == 5 and "epoch=2" in env.notes(a0, DUE)[-1]
+
+    await set_agent_status(env.pool, a0["id"], state="idle", context_pct=50)  # compacted
+    await env.push()
+    assert len(env.notes(a0, DUE)) == 5
+    await set_agent_status(env.pool, a0["id"], state="idle", context_pct=85)  # due again
+    await env.push()
+    assert len(env.notes(a0, DUE)) == 6
+
+    # a new leader is judged on its own gauge, and the old leader is a member now
+    await set_agent_status(env.pool, a1["id"], state="idle", context_pct=10)
+    async with env.pool.connection() as conn:
+        await leadership.insert_request(conn, c["id"], "user", None, a1["id"], "test", None)
+    await env.lpass(c["id"])
+    await env.push()
+    assert len(env.notes(a0, DUE)) == 6 and env.notes(a1, DUE) == []
+    await set_agent_status(env.pool, a1["id"], state="idle", context_pct=81)
+    await env.push()
+    assert len(env.notes(a1, DUE)) == 1 and len(env.notes(a0, DUE)) == 6
+
+
+async def test_handover_due_no_candidate(env):
+    c, (a0, a1) = await env.hive(2)  # scalable: a hive that is not static
+    await env.run("UPDATE agents SET ready = false WHERE id = %s", (a1["id"],))
+    await set_agent_status(env.pool, a0["id"], state="idle", context_pct=90)
+    await env.push()
+    (text,) = env.notes(a0, DUE)
+    assert "no ready successor; keep leading" in text
+    assert "orchestrator_scale" in text and "mcp__ccw__send_message" not in text
+
+    _, (s0, s1) = await env.hive(2, spec={"static": True, "max_replicas": 2})
+    await env.run("UPDATE agents SET ready = false WHERE id = %s", (s1["id"],))
+    await set_agent_status(env.pool, s0["id"], state="idle", context_pct=90)
+    await env.push()
+    (text,) = env.notes(s0, DUE)
+    assert "no ready successor; keep leading" in text and "orchestrator_scale" not in text
+
+
+async def test_handover_due_protocol_text(env):
+    c, (a0, a1, a2) = await env.hive()
+    await set_agent_status(env.pool, a0["id"], state="idle", context_pct=90)
+    await env.push()
+    (text,) = env.notes(a0, DUE)
+    assert text.startswith("<handover-due>") and text.rstrip().endswith("</handover-due>")
+    assert "Your context is 90% of a limit that compacts at 95%" in text
+    assert "hand leadership over before that" in text
+    assert "no ready successor" not in text
+    assert "mcp__ccw__send_message(to=<address from the list>, notify_when_idle=true)" in text
+    assert '"ready"' in text and "<peer-idle-notice>" in text and "<peer-delivery-failed>" in text
+    assert 'orchestrator_leadership_handover(to=<pod_name>, epoch=1, reason="context")' in text
+    assert f"agent-1/{a1['wrapper_session_id']}" in text
+    assert text.count("\n") <= 8
+
+
+async def test_handover_due_without_peers(env):
+    c, (a0, a1, a2) = await env.hive(spec={"peers": False})
+    await set_agent_status(env.pool, a0["id"], state="idle", context_pct=90)
+    await env.push()
+    (text,) = env.notes(a0, DUE)
+    assert "orchestrator_leadership_handover" in text and "reason" in text and "500" in text
+    assert "epoch=1" in text
+    assert "ccw" not in text and "send_message" not in text and "notify_when_idle" not in text
+    assert a1["wrapper_session_id"] not in text  # no addresses without a conversation
+
+
+async def test_handover_due_runs_when_hive_state_unchanged(env):
+    c, (a0, a1, a2) = await env.hive()
+    await env.push()
+    assert len(env.notes(a0)) == 1
+    await set_agent_status(env.pool, a0["id"], state="idle", context_pct=90)
+    assert await env.push() == 1  # the structure hash is unchanged; the due note still goes
+    assert len(env.notes(a0)) == 1 and len(env.notes(a0, DUE)) == 1
+
+    # a failed due push is retried on the next tick
+    await set_agent_status(env.pool, a0["id"], state="idle", context_pct=96)
+    await env.run("UPDATE agents SET url = 'http://127.0.0.1:1' WHERE id = %s", (a0["id"],))
+    assert await env.push() == 0
+    await env.run("UPDATE agents SET url = %s WHERE id = %s", (env.fake.base_url, a0["id"]))
+    assert await env.push() == 1
+    assert len(env.notes(a0, DUE)) == 2
+
+
 # ---------------------------------------------------------------- gating
 
 

@@ -14,6 +14,11 @@ State kept here:
 The hash covers only the structure (leader, epoch, members, wrapper sessions, readiness), so a
 busy/idle flip or a context change pushes nothing. Members pull live state with
 `orchestrator_me` and peers' activity with `orchestrator_activity`; nothing is streamed.
+
+The one exception is the leader's keyed `handover_due` note (hive-decoupling D4): a leader whose
+`agent_status.context_pct` is at or above the handover threshold is told, once per leader, epoch,
+5% bucket and candidate list, to hand leadership over, to whom and how. It is evaluated on every
+push tick, outside the hash and claim path above, and remembered per session in `HiveState`.
 """
 
 from __future__ import annotations
@@ -33,9 +38,11 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from agents_orchestrator.db import leadership
+from agents_orchestrator.db.eligibility import ELIGIBLE
 from agents_orchestrator.db.queue import _CLAIM_LOCK_NAMESPACE
 from agents_orchestrator.dispatcher import feed
 from agents_orchestrator.settings import Settings
+from agents_orchestrator.spec import SessionSpec
 from agents_orchestrator.wrapper.client import NoteOutcome, WrapperClient
 
 log = logging.getLogger(__name__)
@@ -44,34 +51,53 @@ log = logging.getLogger(__name__)
 PUSH_INTERVAL_SECONDS = 10
 PUSH_TIMEOUT_SECONDS = 3
 STATE_KEY = "hive_state"
+DUE_KEY = "handover_due"
 HANDOVER_MARGIN_PCT = 15
+BUCKET_PCT = 5
 PULL_SENTENCE = (
     "Call orchestrator_me for live state and context, orchestrator_activity for what peers did."
 )
 
 ClientFactory = Callable[[uuid.UUID, str], WrapperClient]
 
+# Who could take over from a leader that is due: ELIGIBLE agents other than the leader that are
+# themselves below the threshold (a due candidate would hand leadership straight back), idle
+# before busy, lowest context first (unknown last), then ordinal. Params: session, leader, limit.
+_CANDIDATES = f"""
+SELECT a.pod_name, a.wrapper_session_id, coalesce(s.state, 'unknown') AS state, s.context_pct
+FROM agents a LEFT JOIN agent_status s ON s.agent_id = a.id
+WHERE a.session_id = %s AND a.id <> %s AND {ELIGIBLE} AND coalesce(s.context_pct, 0) < %s
+ORDER BY (s.state = 'idle') IS NOT TRUE, s.context_pct ASC NULLS LAST, a.ordinal
+"""
+
+# What the dispatcher last told a leader: (leader agent id, epoch, 5% bucket, candidate identity).
+DueKey = tuple[uuid.UUID, int, int, tuple[tuple[str, str], ...]]
+
 
 @dataclass
 class HiveState:
-    """In-memory push state of one dispatcher: the throttle clock per session."""
+    """In-memory push state of one dispatcher: the throttle clock and the last `handover_due`
+    key per session. A restart re-sends one note at most."""
 
     last_tick: dict[uuid.UUID, float] = field(default_factory=dict)
+    due_sent: dict[uuid.UUID, DueKey] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------- the note text
 
 
+def compact_pct(spec: dict[str, Any], settings: Settings) -> int:
+    """The effective compaction point: `spec.auto_compact_pct`, else the pods' default."""
+    compact = spec.get("auto_compact_pct")
+    return settings.default_auto_compact_pct if compact is None else compact
+
+
 def handover_threshold(spec: dict[str, Any], settings: Settings) -> int:
     """Context % above which the leader should hand over instead of compacting.
 
-    The effective compaction point (`spec.auto_compact_pct`, else the pods' default
-    `settings.default_auto_compact_pct`) less HANDOVER_MARGIN_PCT, at least 1.
+    The effective compaction point less HANDOVER_MARGIN_PCT, at least 1.
     """
-    compact = spec.get("auto_compact_pct")
-    if compact is None:
-        compact = settings.default_auto_compact_pct
-    return max(compact - HANDOVER_MARGIN_PCT, 1)
+    return max(compact_pct(spec, settings) - HANDOVER_MARGIN_PCT, 1)
 
 
 def hive_state_payload(
@@ -126,6 +152,65 @@ def render_hive_state(payload: dict[str, Any], slug: str, threshold: int) -> str
     return "\n".join(lines)
 
 
+def render_handover_due(
+    context_pct: float,
+    compact: int,
+    epoch: int,
+    candidates: list[dict[str, Any]],
+    *,
+    peers: bool,
+    scalable: bool,
+) -> str:
+    """The `<handover-due>` text block pushed to the leader under the key `handover_due`.
+
+    With `peers` it carries each candidate's ccw address and the brief-then-handover protocol
+    (D5); without, the leader hands over with a reason that summarises the state (D7).
+    """
+    clean = feed._clean
+    lines = [
+        "<handover-due>",
+        f"Your context is {round(context_pct)}% of a limit that compacts at {compact}%; "
+        "hand leadership over before that.",
+    ]
+    if not candidates:
+        hint = "; scale up with orchestrator_scale" if scalable else ""
+        lines.append(f"Candidates: none - no ready successor; keep leading{hint}.")
+    elif peers:
+        listed = []
+        for c in candidates:
+            name = clean(c["pod_name"])
+            parts = [f"{name}/{clean(c['wrapper_session_id'])}", clean(c["state"])]
+            if c["context_pct"] is not None:
+                parts.append(f"{round(c['context_pct'])}% context")
+            listed.append(f"{name} ({', '.join(parts)})")
+        lines.append(f"Candidates, best first: {'; '.join(listed)}.")
+    else:
+        names = ", ".join(clean(c["pod_name"]) for c in candidates)
+        lines.append(f"Candidates, best first: {names}.")
+    if candidates and peers:
+        lines += [
+            "1. Finish the step you are in; reassign or release your locks.",
+            "2. Send the first candidate a brief with "
+            "mcp__ccw__send_message(to=<address from the list>, notify_when_idle=true): the "
+            "user's goal, what is done, what is in flight, open questions to the user, pending "
+            "user messages, locks and branches; then end your turn. The candidate may ask back "
+            'and replies "ready" (or "no" and why).',
+            "3. In the turn carrying the reply or the <peer-idle-notice>, call "
+            f'orchestrator_leadership_handover(to=<pod_name>, epoch={epoch}, reason="context"). '
+            "With no reply within one further user turn, hand over anyway; a "
+            "<peer-delivery-failed> or a send error means the next candidate.",
+        ]
+    elif candidates:
+        lines.append(
+            f"Call orchestrator_leadership_handover(to=<pod_name>, epoch={epoch}, "
+            "reason=<summary>) now, with a reason of at most 500 characters that summarises "
+            "the state: the user's goal, what is done, what is in flight, open questions to "
+            "the user, pending user messages, locks and branches."
+        )
+    lines.append("</handover-due>")
+    return "\n".join(lines)
+
+
 def state_hash(leader: str, epoch: int, members: list[dict[str, Any]]) -> str:
     """Changes with leader, epoch, member set, wrapper sessions and ready; never with a member's
     state or context, which members pull with `orchestrator_me`."""
@@ -144,9 +229,15 @@ class _Plan:
     max_replicas: int
     static: bool
     leader: str
+    leader_id: uuid.UUID
     epoch: int
     hashes: dict[str, str]  # per agent, the state hash it last accepted
     members: list[dict[str, Any]]
+    compact_pct: int
+    peers: bool
+    scalable: bool
+    # ELIGIBLE successors, best first; None while the leader is below the threshold
+    candidates: list[dict[str, Any]] | None = None
 
     @property
     def receivers(self) -> list[dict[str, Any]]:
@@ -167,9 +258,11 @@ async def _read(
 ) -> _Plan | None:
     """Phase 1: under the lock, read the leader row and the members."""
     cid = session["id"]
+    spec = session["spec"]
+    threshold = handover_threshold(spec, settings)
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            "SELECT a.pod_name AS leader, l.epoch, l.state_hash"
+            "SELECT a.pod_name AS leader, l.agent_id, l.epoch, l.state_hash"
             " FROM session_leaders l JOIN agents a ON a.id = l.agent_id WHERE l.session_id = %s",
             (cid,),
         )
@@ -184,18 +277,33 @@ async def _read(
             (cid,),
         )
         members = await cur.fetchall()
-    spec = session["spec"]
+        candidates = None
+        lead = next((m for m in members if m["pod_name"] == leader["leader"]), None)
+        if lead is not None and _is_due(lead, threshold):
+            await cur.execute(_CANDIDATES, (cid, leader["agent_id"], threshold))
+            candidates = await cur.fetchall()
+    typed = SessionSpec.model_validate(spec)
     return _Plan(
         session_id=cid,
         slug=session["slug"],
-        threshold=handover_threshold(spec, settings),
+        threshold=threshold,
         max_replicas=spec.get("max_replicas") or spec.get("replicas") or 1,
         static=bool(spec.get("static")),
         leader=leader["leader"],
+        leader_id=leader["agent_id"],
         epoch=leader["epoch"],
         hashes=_load_hashes(leader["state_hash"]),
         members=members,
+        compact_pct=compact_pct(spec, settings),
+        peers=typed.peers,
+        scalable=typed.scalable,
+        candidates=candidates,
     )
+
+
+def _is_due(member: dict[str, Any], threshold: int) -> bool:
+    """The member's context gauge is at or above the handover threshold."""
+    return member["context_pct"] is not None and member["context_pct"] >= threshold
 
 
 def _load_hashes(raw: str | None) -> dict[str, str]:
@@ -237,6 +345,33 @@ async def _push_agent(
     text = render_hive_state(payload, plan.slug, plan.threshold)
     client = client_factory(plan.session_id, member["url"])
     return await _note(client, member["wrapper_session_id"], text, STATE_KEY)
+
+
+async def _push_due(plan: _Plan, state: HiveState, client_factory: ClientFactory) -> int:
+    """Tell a leader at or above the threshold to hand over, once per due key.
+
+    Runs on every tick, whatever the hive_state hash says. Below the threshold (or with no
+    leader to tell) nothing is sent and the key is forgotten, so a leader that compacted and
+    climbs again is told again. A failed push is not remembered: the next tick retries it.
+    """
+    leader = next((m for m in plan.receivers if m["pod_name"] == plan.leader), None)
+    if plan.candidates is None or leader is None:
+        if plan.candidates is None:
+            state.due_sent.pop(plan.session_id, None)
+        return 0
+    identity = tuple((c["pod_name"], c["wrapper_session_id"]) for c in plan.candidates)
+    pct = leader["context_pct"]
+    key: DueKey = (plan.leader_id, plan.epoch, int(pct // BUCKET_PCT), identity)
+    if state.due_sent.get(plan.session_id) == key:
+        return 0
+    text = render_handover_due(
+        pct, plan.compact_pct, plan.epoch, plan.candidates, peers=plan.peers, scalable=plan.scalable
+    )
+    client = client_factory(plan.session_id, leader["url"])
+    outcome = await _note(client, leader["wrapper_session_id"], text, DUE_KEY)
+    if outcome != "failed":
+        state.due_sent[plan.session_id] = key
+    return int(outcome == "ok")
 
 
 async def _claim(conn: psycopg.AsyncConnection, plan: _Plan, current: str) -> list[dict[str, Any]]:
@@ -301,13 +436,16 @@ async def _push_session(
             return 0
         current = state_hash(plan.leader, plan.epoch, plan.members)
         due = await _claim(conn, plan, current)
-    if not due:
-        return 0
-    outcomes = await asyncio.gather(*(_push_agent(plan, m, client_factory) for m in due))
-    # disabled counts as taken (nothing to retry)
-    failed = {str(m["id"]) for m, outcome in zip(due, outcomes, strict=True) if outcome == "failed"}
-    await _release(pool, plan, current, failed, all_ok=not failed)
-    return sum(outcome == "ok" for outcome in outcomes)
+    sent = 0
+    if due:
+        outcomes = await asyncio.gather(*(_push_agent(plan, m, client_factory) for m in due))
+        # disabled counts as taken (nothing to retry)
+        failed = {
+            str(m["id"]) for m, outcome in zip(due, outcomes, strict=True) if outcome == "failed"
+        }
+        await _release(pool, plan, current, failed, all_ok=not failed)
+        sent = sum(outcome == "ok" for outcome in outcomes)
+    return sent + await _push_due(plan, state, client_factory)
 
 
 async def push_once(
