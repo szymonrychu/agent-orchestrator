@@ -54,7 +54,7 @@ def test_fresh_database_gets_all_tables(empty_dsn):
         versions = [r[0] for r in c.execute("SELECT version FROM schema_migrations")]
     assert tables >= TABLES
     assert versions == [
-        "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0011",
+        "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011",
     ]  # fmt: skip
 
 
@@ -76,6 +76,7 @@ def test_presets_migration_on_existing_sessions(empty_dsn, tmp_path):
         "0007",
         "0008",
         "0009",
+        "0010",
         "0011",
     ]
     with psycopg.connect(empty_dsn) as c:
@@ -525,7 +526,7 @@ def test_0005_renames_clusters_to_sessions(empty_dsn, tmp_path):
             "INSERT INTO file_locks (cluster_id, path, agent_id) VALUES (%s, 'a.py', %s)",
             (unit, agent),
         )
-    assert run_migrations(empty_dsn) == ["0005", "0006", "0007", "0008", "0009", "0011"]
+    assert run_migrations(empty_dsn) == ["0005", "0006", "0007", "0008", "0009", "0010", "0011"]
     with psycopg.connect(empty_dsn) as c:
         assert c.execute(
             "SELECT id, slug, preset_id::text, preset_name FROM sessions"
@@ -688,7 +689,7 @@ def test_0009_created_by_service_column(empty_dsn, tmp_path):
 
 def test_drop_feed_cursor_migration(empty_dsn, tmp_path):
     for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
-        if path.name < "0011":
+        if path.name < "0010":
             shutil.copy(path, tmp_path / path.name)
     assert run_migrations(empty_dsn, tmp_path)[-1] == "0009"
     with psycopg.connect(empty_dsn) as c:
@@ -706,3 +707,55 @@ def test_drop_feed_cursor_migration(empty_dsn, tmp_path):
         c.execute("DELETE FROM schema_migrations WHERE version = '0011'")
     assert run_migrations(empty_dsn, tmp_path) == ["0011"]
     assert run_migrations(empty_dsn, tmp_path) == []
+
+
+def test_0010_slash_message_columns(empty_dsn, tmp_path):
+    for path in sorted(MIGRATIONS_DIR.glob("000[1-9]_*.sql")):
+        shutil.copy(path, tmp_path / path.name)
+    assert run_migrations(empty_dsn, tmp_path)[-1] == "0009"
+    with psycopg.connect(empty_dsn, autocommit=True) as c:
+        session = c.execute(
+            "INSERT INTO sessions (id, slug, spec) VALUES (gen_random_uuid(), 'old', '{}')"
+            " RETURNING id"
+        ).fetchone()[0]
+        old = c.execute(
+            "INSERT INTO messages (session_id, text) VALUES (%s, '/reload-plugins') RETURNING id",
+            (session,),
+        ).fetchone()[0]
+    shutil.copy(MIGRATIONS_DIR / "0010_slash_messages.sql", tmp_path)
+    assert run_migrations(empty_dsn, tmp_path) == ["0010"]
+    with psycopg.connect(empty_dsn, autocommit=True) as c:
+        cols = _cols(c, "messages")
+        assert cols["kind"] == ("text", "NO")
+        assert cols["wrapper_command_id"] == ("text", "YES")
+        assert c.execute(
+            "SELECT text, kind, wrapper_command_id FROM messages WHERE id=%s", (old,)
+        ).fetchall() == [("/reload-plugins", "turn", None)]
+        c.execute(
+            "INSERT INTO messages (session_id, text, kind) VALUES (%s, '/compact', 'command')",
+            (session,),
+        )
+        with pytest.raises(psycopg.errors.CheckViolation):
+            c.execute(
+                "INSERT INTO messages (session_id, text, kind) VALUES (%s, 'x', 'other')",
+                (session,),
+            )
+    sql = (MIGRATIONS_DIR / "0010_slash_messages.sql").read_text()
+    with psycopg.connect(empty_dsn, autocommit=True) as c:
+        c.execute(sql)
+        c.execute(sql)
+        c.execute("DELETE FROM schema_migrations WHERE version = '0010'")
+    assert run_migrations(empty_dsn, tmp_path) == ["0010"]
+    assert run_migrations(empty_dsn, tmp_path) == []
+    with psycopg.connect(empty_dsn) as c:
+        assert c.execute("SELECT kind FROM messages ORDER BY id").fetchall() == [
+            ("turn",),
+            ("command",),
+        ]
+        assert (
+            c.execute(
+                "SELECT count(*) FROM pg_constraint WHERE conrelid = 'messages'::regclass"
+                " AND contype = 'c' AND pg_get_constraintdef(oid) LIKE '%%kind%%'"
+            ).fetchone()[0]
+            == 1
+        )

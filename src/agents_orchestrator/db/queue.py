@@ -133,11 +133,13 @@ async def enqueue_message(
     text: str,
     target_agent_id: uuid.UUID | None = None,
     *,
+    kind: str = "turn",
     sender_session_id: uuid.UUID | None = None,
     sender_slug: str | None = None,
     hop: int = 0,
 ) -> int:
-    """Queue a message; a session message carries its sender and hop (D8).
+    """Queue a message of `kind` 'turn' or 'command' (D1); a session message carries its sender
+    and hop (D8).
 
     A message with a sender is untargeted, so the leader routing delivers it to whoever leads
     the target session at claim time.
@@ -145,9 +147,9 @@ async def enqueue_message(
     async with conn.transaction():
         row = await _one(
             conn,
-            "INSERT INTO messages (session_id, text, target_agent_id, sender_session_id,"
-            " sender_slug, hop) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
-            (session_id, text, target_agent_id, sender_session_id, sender_slug, hop),
+            "INSERT INTO messages (session_id, text, target_agent_id, kind, sender_session_id,"
+            " sender_slug, hop) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            (session_id, text, target_agent_id, kind, sender_session_id, sender_slug, hop),
         )
         assert row is not None
         await notify(conn, "message_queued", {"session_id": str(session_id)})

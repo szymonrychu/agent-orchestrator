@@ -216,10 +216,12 @@ class MessageView(BaseModel):
     id: int
     session_id: uuid.UUID
     text: str
+    kind: Literal["turn", "command"]
     status: MessageStatus
     target_agent_id: uuid.UUID | None
     agent_id: uuid.UUID | None
     turn_id: str | None
+    wrapper_command_id: str | None
     attempts: int
     max_attempts: int
     next_attempt_at: datetime | None

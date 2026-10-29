@@ -53,6 +53,51 @@ async def test_post_message_queues_202(http, pool):
     assert got["target_agent_id"] == str(ag["id"])
 
 
+async def _stored(pool, message_id: int) -> tuple:
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT text, kind, wrapper_command_id FROM messages WHERE id = %s", (message_id,)
+        )
+        return await cur.fetchone()
+
+
+async def test_slash_text_enqueues_command_kind(http, pool):
+    cl = await insert_session(pool)
+    url = f"/api/v1/sessions/{cl['id']}/messages"
+    for text in ("/reload-plugins", "  /compact keep the plan\nand the tests ", "/"):
+        r = await http.post(url, json={"text": text})
+        assert r.status_code == 202, r.text
+        assert await _stored(pool, r.json()["message_id"]) == (text, "command", None)
+
+
+async def test_message_view_has_kind(http, pool):
+    cl = await insert_session(pool)
+    url = f"/api/v1/sessions/{cl['id']}/messages"
+    kinds = {}
+    for text in ("please reload the plugins", "/etc/hosts is a path", "/compact"):
+        r = await http.post(url, json={"text": text})
+        assert r.status_code == 202, r.text
+        got = (await http.get(f"/api/v1/messages/{r.json()['message_id']}")).json()
+        assert got["text"] == text
+        assert got["wrapper_command_id"] is None
+        kinds[text] = got["kind"]
+    assert kinds == {
+        "please reload the plugins": "turn",
+        "/etc/hosts is a path": "turn",
+        "/compact": "command",
+    }
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE messages SET wrapper_command_id = 'cmd_1' WHERE text = '/compact'"
+        )
+    listed = (await http.get(url)).json()
+    assert {(m["text"], m["kind"], m["wrapper_command_id"]) for m in listed} == {
+        ("please reload the plugins", "turn", None),
+        ("/etc/hosts is a path", "turn", None),
+        ("/compact", "command", "cmd_1"),
+    }
+
+
 async def test_post_message_validation(http, pool):
     cl = await insert_session(pool)
     other = await insert_session(pool)

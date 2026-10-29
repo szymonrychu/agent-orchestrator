@@ -1684,6 +1684,14 @@
             "title": "Id",
             "type": "integer"
           },
+          "kind": {
+            "enum": [
+              "turn",
+              "command"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
           "max_attempts": {
             "title": "Max Attempts",
             "type": "integer"
@@ -1753,16 +1761,29 @@
               }
             ],
             "title": "Turn Id"
+          },
+          "wrapper_command_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wrapper Command Id"
           }
         },
         "required": [
           "id",
           "session_id",
           "text",
+          "kind",
           "status",
           "target_agent_id",
           "agent_id",
           "turn_id",
+          "wrapper_command_id",
           "attempts",
           "max_attempts",
           "next_attempt_at",

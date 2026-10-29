@@ -7,6 +7,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query, Response
 
+from agents_orchestrator import slash
 from agents_orchestrator.api import schemas
 from agents_orchestrator.api.errors import ApiError, not_found
 from agents_orchestrator.api.sessions import Pool
@@ -35,10 +36,12 @@ def _message_view(r: dict) -> schemas.MessageView:
         id=r["id"],
         session_id=r["session_id"],
         text=r["text"],
+        kind=r["kind"],
         status=r["status"],
         target_agent_id=r["target_agent_id"],
         agent_id=r["agent_id"],
         turn_id=r["turn_id"],
+        wrapper_command_id=r["wrapper_command_id"],
         attempts=r["attempts"],
         max_attempts=r["max_attempts"],
         next_attempt_at=r["not_before"],
@@ -72,7 +75,10 @@ async def post_message(
                 raise ApiError(422, "invalid_request", "target agent is not in this session")
             if agent["gone_at"] is not None:
                 raise ApiError(422, "target_gone", "target agent is gone")
-        mid = await queue.enqueue_message(conn, session_id, body.text, body.target_agent_id)
+        kind = "command" if slash.parse(body.text) else "turn"
+        mid = await queue.enqueue_message(
+            conn, session_id, body.text, body.target_agent_id, kind=kind
+        )
     return schemas.MessageAccepted(message_id=mid)
 
 
