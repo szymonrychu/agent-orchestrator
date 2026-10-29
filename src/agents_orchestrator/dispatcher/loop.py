@@ -142,9 +142,17 @@ class Dispatcher:
         failing session is logged and never holds up the others or the message drain. A pass
         may have decided a request without a leader change (a rejection), so the push loop is
         woken after any pass: the requester learns the outcome (D6).
+
+        The candidates read opens a transaction on the pooled connection; it is committed before
+        the passes so each pass's own transaction is the outermost one and commits when the pass
+        returns. Left open, a pass would be a savepoint inside it and commit only when the
+        connection is released, after the wake: the push loop would read the request as still
+        queued and the requester's note would wait for the next timer tick.
         """
         async with self.pool.connection() as conn:
-            for session_id in await leadership.leadership_candidates(conn):
+            candidates = await leadership.leadership_candidates(conn)
+            await conn.commit()
+            for session_id in candidates:
                 try:
                     change = await leadership.leadership_pass(conn, session_id)
                 except Exception:

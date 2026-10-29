@@ -707,6 +707,29 @@ async def test_concurrent_pushes_claim_once(env):
         assert env.notes(agent, key=None) == []
 
 
+async def test_leadership_pass_is_committed_before_the_push_wake(env, monkeypatch):
+    """The push loop is woken after a pass, and it reads through another connection: the
+    pass's decision must already be committed when `_drain_leadership` wakes it, or the push
+    reads the request as still queued and the requester's outcome note waits for a timer tick."""
+    c, (a0, a1, a2) = await env.hive()
+    await env.run("UPDATE agents SET ready = false WHERE id = %s", (a1["id"],))
+    rid = await handover(env, c, a0, a1)
+    dispatcher = Dispatcher(env.pool, env.settings)
+    seen: list[tuple[str, bool]] = []
+    real_pass = leadership.leadership_pass
+
+    async def spy(conn, session_id):
+        change = await real_pass(conn, session_id)
+        (row,) = await env.rows("SELECT status FROM leadership_requests WHERE id = %s", (rid,))
+        seen.append((row["status"], dispatcher._push_wake.is_set()))
+        return change
+
+    monkeypatch.setattr(leadership, "leadership_pass", spy)
+    await dispatcher._drain_leadership()
+    assert seen == [("rejected", False)]  # decided and visible to others before the wake
+    assert dispatcher._push_wake.is_set()
+
+
 async def test_dispatcher_run_pushes_after_decision(env, monkeypatch):
     monkeypatch.setattr(hive, "PUSH_INTERVAL_SECONDS", 60)  # no timer tick inside the test
     c, (a0, a1, a2) = await env.hive()
