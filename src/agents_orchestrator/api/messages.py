@@ -32,6 +32,17 @@ def _message_view(r: dict) -> schemas.MessageView:
         if r["has_turn"]
         else None
     )
+    command = (
+        schemas.CommandOutcomeView(
+            state=r["command_state"],
+            result=r["command_result"],
+            error=r["command_error"],
+            turn_id=r["command_turn_id"],
+            at=r["command_at"],
+        )
+        if r["command_state"]
+        else None
+    )
     return schemas.MessageView(
         id=r["id"],
         session_id=r["session_id"],
@@ -49,6 +60,7 @@ def _message_view(r: dict) -> schemas.MessageView:
         created_at=r["created_at"],
         dispatched_at=r["dispatched_at"],
         turn=turn,
+        command=command,
     )
 
 

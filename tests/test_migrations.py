@@ -55,7 +55,32 @@ def test_fresh_database_gets_all_tables(empty_dsn):
     assert tables >= TABLES
     assert versions == [
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011",
+        "0012",
     ]  # fmt: skip
+    assert _command_outcome_index(empty_dsn) == _COMMAND_OUTCOME_INDEX
+    sql = (MIGRATIONS_DIR / "0012_command_outcome_index.sql").read_text()
+    with psycopg.connect(empty_dsn, autocommit=True) as c:
+        c.execute(sql)
+        c.execute("DELETE FROM schema_migrations WHERE version = '0012'")
+    assert run_migrations(empty_dsn) == ["0012"]
+    assert run_migrations(empty_dsn) == []
+    assert _command_outcome_index(empty_dsn) == _COMMAND_OUTCOME_INDEX
+
+
+# the message view's command outcome lookup (D19): agent and record id, the two outcome types
+_COMMAND_OUTCOME_INDEX = (
+    "CREATE INDEX events_command_record_id ON public.events USING btree"
+    " (agent_id, (((data -> 'record'::text) ->> 'id'::text)))"
+    " WHERE (type = ANY (ARRAY['command_completed'::text, 'command_failed'::text]))"
+)
+
+
+def _command_outcome_index(dsn: str) -> str | None:
+    with psycopg.connect(dsn) as c:
+        row = c.execute(
+            "SELECT indexdef FROM pg_indexes WHERE indexname = 'events_command_record_id'"
+        ).fetchone()
+    return row[0] if row else None
 
 
 def test_presets_migration_on_existing_sessions(empty_dsn, tmp_path):
@@ -78,6 +103,7 @@ def test_presets_migration_on_existing_sessions(empty_dsn, tmp_path):
         "0009",
         "0010",
         "0011",
+        "0012",
     ]
     with psycopg.connect(empty_dsn) as c:
         row = c.execute(
@@ -112,9 +138,9 @@ def test_concurrent_migrate_serialises(empty_dsn):
     [t.start() for t in threads]
     [t.join() for t in threads]
     assert not errors
-    assert sorted(len(r) for r in results) == [0, 11]
+    assert sorted(len(r) for r in results) == [0, 12]
     with psycopg.connect(empty_dsn) as c:
-        assert c.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 11
+        assert c.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 12
 
 
 async def test_events_unique_agent_session_seq(pool):
@@ -526,7 +552,9 @@ def test_0005_renames_clusters_to_sessions(empty_dsn, tmp_path):
             "INSERT INTO file_locks (cluster_id, path, agent_id) VALUES (%s, 'a.py', %s)",
             (unit, agent),
         )
-    assert run_migrations(empty_dsn) == ["0005", "0006", "0007", "0008", "0009", "0010", "0011"]
+    assert run_migrations(empty_dsn) == [
+        "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012",
+    ]  # fmt: skip
     with psycopg.connect(empty_dsn) as c:
         assert c.execute(
             "SELECT id, slug, preset_id::text, preset_name FROM sessions"
