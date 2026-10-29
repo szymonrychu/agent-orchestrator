@@ -2,9 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 from agents_orchestrator.dispatcher.feed import (
     PENDING_BASH_TIMEOUT_SECONDS,
-    FeedLine,
     digest_lines,
-    render_feed,
 )
 
 T0 = datetime(2026, 10, 24, 12, 0, 0, tzinfo=UTC)
@@ -92,24 +90,6 @@ def test_turns_leadership_and_exclusions():
         ("a-1", "leader is now a-1 (epoch 3)"),
     ]
     assert "SECRET" not in repr(out)
-
-
-def test_render_feed():
-    lines = [FeedLine(i, f"a-{i % 2}", f"a-{i % 2} wrote f{i}") for i in range(10)]
-    assert render_feed([], "a-0") is None
-    only_own = [FeedLine(1, "a-0", "a-0 wrote f")]
-    assert render_feed(only_own, "a-0") is None
-    out = render_feed(lines, "a-0")
-    assert "a-0 wrote" not in out and out.count("a-1 wrote") == 5
-    dup = [FeedLine(1, "a-1", "a-1 wrote f"), FeedLine(2, "a-1", "a-1 wrote f")]
-    assert render_feed(dup, "a-0") == "a-1 wrote f"
-    many = [FeedLine(i, "a-1", f"a-1 wrote file{i:03d}") for i in range(100)]
-    out = render_feed(many, "a-0", max_chars=200)
-    assert len(out) <= 200
-    first, *rest = out.split("\n")
-    assert first.startswith("... ") and first.endswith(" earlier lines omitted")
-    assert rest[-1] == "a-1 wrote file099"
-    assert int(first.split()[1]) == 100 - len(rest)
 
 
 def test_peer_text_escaped():

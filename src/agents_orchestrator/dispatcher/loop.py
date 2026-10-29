@@ -109,7 +109,7 @@ class Dispatcher:
             await self.aclose()
 
     async def _push_loop(self, stop: asyncio.Event) -> None:
-        """Hive state and feed pushes: their own task, so a slow wrapper never delays drain.
+        """Hive state pushes: their own task, so a slow wrapper never delays drain.
 
         Wakes on `leader_changed` (from any dispatcher), after a local leader change and every
         PUSH_INTERVAL_SECONDS; `push_once` throttles each session itself.

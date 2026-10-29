@@ -1,4 +1,4 @@
-"""Hive state and feed push: the dispatcher's `push_once` against Postgres and the fake wrapper."""
+"""Hive state push: the dispatcher's `push_once` against Postgres and the fake wrapper."""
 
 from __future__ import annotations
 
@@ -189,11 +189,27 @@ async def test_hive_state_on_leader_change(env):
     assert "You are agent-1 (leader)" in env.notes(a1)[-1]
 
 
-async def test_hive_state_on_membership_change_only(env):
+async def test_hive_state_on_structural_change_only(env):
     c, (a0, a1, a2) = await env.hive()
     await env.push()
     assert await env.push() == 0  # nothing changed
     assert all(len(env.notes(a)) == 1 for a in (a0, a1, a2))
+
+    # busy/idle flips and context changes are pulled with orchestrator_me, never pushed
+    await set_agent_status(env.pool, a1["id"], state="busy", context_pct=41)
+    assert await env.push() == 0
+    await set_agent_status(env.pool, a1["id"], state="idle", context_pct=88)
+    assert await env.push() == 0
+    await set_agent_status(env.pool, a1["id"], state="busy", context_pct=48)
+    assert await env.push() == 0
+    assert all(len(env.notes(a)) == 1 for a in (a0, a1, a2))
+
+    await env.run("UPDATE agents SET ready = false WHERE id = %s", (a1["id"],))  # readiness
+    assert await env.push() == 3
+    # the text carries each member's state and context as of the push
+    assert "agent-1 (member, not ready, busy, 48% context)" in env.notes(a0)[-1]
+    await env.run("UPDATE agents SET ready = true WHERE id = %s", (a1["id"],))
+    assert await env.push() == 3
 
     a3 = await env.agent(c["id"], 3)  # joins
     assert await env.push() == 4
@@ -202,26 +218,44 @@ async def test_hive_state_on_membership_change_only(env):
     await env.run("UPDATE agents SET gone_at = now() WHERE id = %s", (a2["id"],))  # leaves
     assert await env.push() == 3
     assert "agent-2" not in env.notes(a0)[-1]
-    assert len(env.notes(a2)) == 2  # a gone agent gets nothing more
+    assert len(env.notes(a2)) == 4  # a gone agent gets nothing more
     assert await env.push() == 0
 
-    # context moves inside one 10% bucket: no push; across buckets: push
-    await set_agent_status(env.pool, a1["id"], state="idle", context_pct=41)
+    await env.run(  # the epoch alone
+        "UPDATE session_leaders SET epoch = epoch + 1 WHERE session_id = %s", (c["id"],)
+    )
     assert await env.push() == 3
-    await set_agent_status(env.pool, a1["id"], state="idle", context_pct=48)
+    assert "Leader: agent-0 (epoch 2)" in env.notes(a3)[-1]
+
+    async with env.pool.connection() as conn:  # the leader
+        await leadership.insert_request(conn, c["id"], "user", None, a1["id"], "test", None)
+    await env.lpass(c["id"])
+    assert await env.push() == 3
+    assert "Leader: agent-1 (epoch 3)" in env.notes(a0)[-1]
     assert await env.push() == 0
-    await set_agent_status(env.pool, a1["id"], state="busy", context_pct=48)
-    assert await env.push() == 3
-    assert "agent-1 (member, ready, busy, 48% context)" in env.notes(a0)[-1]
 
 
 async def test_hive_state_threshold_hint(env):
-    _, (a0, _a1, _a2) = await env.hive(spec={"auto_compact_pct": 80})
+    # effective threshold: coalesce(auto_compact_pct, default 95) - 15, at least 1
+    for spec, threshold in (
+        ({"auto_compact_pct": 80}, 65),
+        ({}, 80),
+        ({"auto_compact_pct": 10}, 1),
+    ):
+        _, (a0, a1, _a2) = await env.hive(spec=spec)
+        await env.push()
+        hint = f"Hand over leadership instead of compacting above {threshold}% context."
+        assert hint in env.notes(a0)[0] and hint in env.notes(a1)[0]
+
+
+async def test_hive_state_points_to_pull_tools(env):
+    _, agents = await env.hive()
     await env.push()
-    assert "Hand over leadership instead of compacting above 65% context" in env.notes(a0)[0]
-    _, (b0, _b1, _b2) = await env.hive()
-    await env.push()
-    assert "Hand over leadership" not in env.notes(b0)[0]
+    sentence = (
+        "Call orchestrator_me for live state and context, orchestrator_activity for what peers did."
+    )
+    for agent in agents:
+        assert sentence in env.notes(agent)[0]
 
 
 async def test_hive_state_repush_on_session_change(env):
@@ -250,132 +284,30 @@ async def test_failed_agent_does_not_repush_others(env):
     assert len(env.notes(a0)) == len(env.notes(a1)) == 1
 
 
-# ---------------------------------------------------------------- feed
+# ---------------------------------------------------------------- no feed
 
 
-async def test_feed_push_and_cursor(env):
+async def test_no_feed_note(env):
     c, (a0, a1, a2) = await env.hive()
-    w1 = await env.write_event(c["id"], a1, "/work/a.py")
+    await env.write_event(c["id"], a1, "/work/a.py")
     bash = {"tool_use_id": "b1", "tool_name": "Bash", "tool_input": {"command": "make test"}}
-    await insert_event(
-        env.pool,
-        c["id"],
-        a2["id"],
-        type="tool_call",
-        data=bash,
-        ts=await env.ago(50),
-        created_at=await env.ago(50),
-    )
-    res = await insert_event(
-        env.pool,
-        c["id"],
-        a2["id"],
-        type="tool_result",
-        data={"tool_use_id": "b1", "tool_name": "Bash", "exit_code": 2, "is_error": True},
-        ts=await env.ago(49),
-        created_at=await env.ago(49),
-    )
-    await env.push()
-    for me, others in ((a0, ("agent-1 wrote /work/a.py", "agent-2 ran: make test (exit 2)")),):
-        (feed,) = env.notes(me, key=None)
-        assert all(line in feed for line in others)
-    (own1,) = env.notes(a1, key=None)
-    assert "agent-1 wrote" not in own1 and "agent-2 ran: make test (exit 2)" in own1
-    (own2,) = env.notes(a2, key=None)
-    assert "agent-2 ran" not in own2 and "agent-1 wrote /work/a.py" in own2
-    assert env.fake.notes[a0["wrapper_session_id"]][-1]["key"] is None
-    row = await env.leader_row(c["id"])
-    assert row["feed_cursor"] == res["id"] > w1["id"]
-
-    assert await env.push() == 0  # nothing new, nothing pushed
-    w2 = await env.write_event(c["id"], a2, "/work/b.py")
-    assert await env.push() == 2  # a0 and a1; a2 is the author
-    assert "agent-2 wrote /work/b.py" in env.notes(a0, key=None)[-1]
-    assert len(env.notes(a2, key=None)) == 1
-    assert (await env.leader_row(c["id"]))["feed_cursor"] == w2["id"]
-
-
-async def test_feed_cursor_starts_at_max(env):
-    c = await insert_session(env.pool, spec={"replicas": 2, "max_replicas": 4})
-    a0, a1 = await env.agent(c["id"], 0), await env.agent(c["id"], 1)
-    old = await env.write_event(c["id"], a1, "/old/history.py", age=3600)
-    await env.lpass(c["id"])  # the leader row is created here
-    assert (await env.leader_row(c["id"]))["feed_cursor"] == old["id"]
-    await env.push()
-    assert env.notes(a0, key=None) == []  # history is not current activity
-    await env.write_event(c["id"], a1, "/new/work.py")
-    await env.push()
-    (feed,) = env.notes(a0, key=None)
-    assert "agent-1 wrote /new/work.py" in feed and "history" not in feed
-
-
-async def test_feed_cursor_settle_window(env):
-    c, (a0, a1, a2) = await env.hive()
-    # a lower id that is still uncommitted while a higher id commits
-    slow = await psycopg.AsyncConnection.connect(env.dsn)
-    try:
-        data = json.dumps(
-            {"tool_use_id": "late", "tool_name": "Write", "tool_input": {"file_path": "/late.py"}}
+    for agent_id, type_, data, age in (
+        (a2["id"], "tool_call", bash, 50),
+        (a2["id"], "tool_result", {"tool_use_id": "b1", "tool_name": "Bash", "exit_code": 0}, 49),
+        (a0["id"], "turn_completed", {"record": {"final_text": "Done: shipped"}}, 48),
+    ):
+        when = await env.ago(age)
+        await insert_event(
+            env.pool, c["id"], agent_id, type=type_, data=data, ts=when, created_at=when
         )
-        cur = await slow.execute(
-            "INSERT INTO events (session_id, agent_id, wrapper_session_id, seq, ts, type, data)"
-            " VALUES (%s, %s, 's', 1, now() - interval '1 hour', 'tool_call', %s::jsonb)"
-            " RETURNING id",
-            (c["id"], a1["id"], data),
-        )
-        low_id = (await cur.fetchone())[0]
-        # the wrapper stamped both rows long ago (a catch-up replay): only the insert time counts
-        high = await env.write_event(c["id"], a2, "/high.py", age=0, ts_age=3600)
-        assert high["id"] > low_id
-        await env.push()
-        assert env.notes(a0, key=None) == []  # inside the settle window: not consumed
-        assert (await env.leader_row(c["id"]))["feed_cursor"] < low_id
-        await slow.commit()
-    finally:
-        await slow.close()
-    await env.run(
-        "UPDATE events SET created_at = now() - interval '60 seconds' WHERE id >= %s", (low_id,)
-    )
-    await env.push()
-    (feed,) = env.notes(a0, key=None)
-    assert "agent-1 wrote /late.py" in feed and "agent-2 wrote /high.py" in feed
-    assert (await env.leader_row(c["id"]))["feed_cursor"] == high["id"]
-
-
-async def test_feed_pending_bash_carried(env):
-    c, (a0, a1, a2) = await env.hive()
-    call = {"tool_use_id": "slow", "tool_name": "Bash", "tool_input": {"command": "sleep 30"}}
-    pending = await insert_event(
-        env.pool,
-        c["id"],
-        a1["id"],
-        type="tool_call",
-        data=call,
-        ts=await env.ago(10),
-        created_at=await env.ago(10),
-    )
-    await env.write_event(c["id"], a2, "/other.py", age=9)
-    await env.push()
-    (feed,) = env.notes(a0, key=None)
-    assert "agent-2 wrote /other.py" in feed and "sleep 30" not in feed
-    # the cursor stays below the pending call
-    assert (await env.leader_row(c["id"]))["feed_cursor"] == pending["id"] - 1
-
-    await insert_event(
-        env.pool,
-        c["id"],
-        a1["id"],
-        type="tool_result",
-        data={"tool_use_id": "slow", "tool_name": "Bash", "exit_code": 0},
-        ts=await env.ago(8),
-        created_at=await env.ago(8),
-    )
-    last = (await env.rows("SELECT max(id) AS m FROM events"))[0]["m"]
-    await env.push()
-    pushed = env.notes(a0, key=None)
-    assert len(pushed) == 2 and "agent-1 ran: sleep 30 (ok)" in pushed[1]
-    assert "other.py" not in pushed[1]  # not pushed twice
-    assert (await env.leader_row(c["id"]))["feed_cursor"] == last
+    assert await env.push() == 3  # the keyed hive_state notes only
+    await env.write_event(c["id"], a2, "/work/b.py")
+    assert await env.push() == 0  # peer activity pushes nothing
+    for agent in (a0, a1, a2):
+        pushed = env.fake.notes[agent["wrapper_session_id"]]
+        assert [n["key"] for n in pushed] == ["hive_state"]
+        assert env.notes(agent, key=None) == []
+        assert "wrote" not in pushed[0]["text"] and "make test" not in pushed[0]["text"]
 
 
 # ---------------------------------------------------------------- gating
@@ -475,13 +407,13 @@ async def test_dispatcher_run_pushes_on_leader_changed(env):
 
 async def test_concurrent_pushes_claim_once(env):
     c, (a0, a1, a2) = await env.hive()
-    await env.write_event(c["id"], a1, "/once.py")
+    await env.write_event(c["id"], a1, "/once.py")  # peer activity adds no note
     env.fake.delay_notes(0.5)  # the second dispatcher reads during the first one's HTTP phase
     first, second = hive.HiveState(), hive.HiveState()
     task = asyncio.create_task(env.push(first))
     await asyncio.sleep(0.25)  # the first is now in its HTTP phase, lock released
     sent = [await env.push(second), await task]
-    assert sorted(sent) == [0, 5]  # 3 hive_state notes and 2 feed notes, once
+    assert sorted(sent) == [0, 3]  # the 3 hive_state notes, once
     for agent in (a0, a1, a2):
         assert len(env.notes(agent)) == 1
-    assert len(env.notes(a0, key=None)) == 1 and len(env.notes(a2, key=None)) == 1
+        assert env.notes(agent, key=None) == []

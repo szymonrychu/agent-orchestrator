@@ -1,4 +1,4 @@
-"""Activity feed content: pure functions over stored `events` rows.
+"""Activity digest: pure functions over stored `events` rows, serving `GET /agent/v1/activity`.
 
 A row is a mapping with `id`, `type`, `data`, `ts` (datetime) and `agent` (the pod name).
 A leadership change is passed as a synthetic row of type `leadership` with
@@ -6,7 +6,8 @@ A leadership change is passed as a synthetic row of type `leadership` with
 
 Only paths, Bash commands with exit status, finished-turn first lines and leadership changes
 get through. Every peer-originated string is XML-escaped and single-line, so it cannot close
-or forge a `<peer-notes>` or `<hive-state>` block.
+or forge a `<hive-state>` block or any other tag in the text an agent reads. The same `_clean`
+escapes the member fields of the pushed `hive_state` note (`dispatcher/hive.py`).
 """
 
 from __future__ import annotations
@@ -90,30 +91,3 @@ def digest_lines(
             text = f"leader is now {_clean(data.get('leader'))} (epoch {int(data.get('epoch', 0))})"
             lines.append(FeedLine(row["id"], agent, text))
     return lines, pending
-
-
-def render_feed(lines: Iterable[FeedLine], for_agent: str, max_chars: int = 4000) -> str | None:
-    """Peers' lines only, consecutive duplicates collapsed, newest kept within `max_chars`."""
-    own = _clean(for_agent)
-    texts: list[str] = []
-    for line in lines:
-        if line.agent == own and not line.text.startswith("leader is now"):
-            continue
-        if not texts or texts[-1] != line.text:
-            texts.append(line.text)
-    if not texts:
-        return None
-    kept: list[str] = []
-    used = 0
-    for text in reversed(texts):
-        omitted = len(texts) - len(kept) - 1
-        note = len(f"... {omitted} earlier lines omitted\n") if omitted else 0
-        if used + len(text) + (1 if kept else 0) + note > max_chars and kept:
-            break
-        kept.append(text)
-        used += len(text) + (1 if len(kept) > 1 else 0)
-    kept.reverse()
-    omitted = len(texts) - len(kept)
-    if omitted:
-        kept.insert(0, f"... {omitted} earlier lines omitted")
-    return "\n".join(kept)

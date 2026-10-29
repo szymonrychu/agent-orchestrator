@@ -1,6 +1,51 @@
 {
   "components": {
     "schemas": {
+      "Activity": {
+        "properties": {
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/ActivityLine"
+            },
+            "title": "Lines",
+            "type": "array"
+          }
+        },
+        "required": [
+          "lines"
+        ],
+        "title": "Activity",
+        "type": "object"
+      },
+      "ActivityLine": {
+        "properties": {
+          "agent": {
+            "title": "Agent",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "ts": {
+            "format": "date-time",
+            "title": "Ts",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "agent",
+          "text",
+          "ts"
+        ],
+        "title": "ActivityLine",
+        "type": "object"
+      },
       "AgentContext": {
         "properties": {
           "used_percentage": {
@@ -3406,6 +3451,100 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/agent/v1/activity": {
+      "get": {
+        "description": "The digest of the newest stored tool calls, results and finished turns of the caller's\nsession, own lines included. `agent` keeps one pod's lines; a name that matches nothing\ngives an empty list, since gone agents' lines are history.",
+        "operationId": "activity_agent_v1_activity_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "agent",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Agent"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-orch-session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Orch-Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Activity"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Recent activity lines of the caller's session, oldest first (read-only)",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
     "/agent/v1/chat/messages": {
       "post": {
         "operationId": "send_message_agent_v1_chat_messages_post",

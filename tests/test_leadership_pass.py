@@ -12,7 +12,6 @@ from pathlib import Path
 import psycopg
 from factories import (
     insert_agent,
-    insert_event,
     insert_message,
     insert_session,
     set_agent_status,
@@ -124,8 +123,6 @@ class Notes:
 
 async def test_initial_leader(pool):
     c, (a0, a1, a2) = await hive(pool)
-    await insert_event(pool, c["id"], a1["id"])
-    last = await insert_event(pool, c["id"], a1["id"])
     change = await lpass(pool, c["id"])
     assert change is not None
     assert (change.session_id, change.agent_id, change.epoch, change.reason) == (
@@ -137,8 +134,7 @@ async def test_initial_leader(pool):
     row = await leader_row(pool, c["id"])
     assert (row["agent_id"], row["epoch"], row["reason"]) == (a0["id"], 1, "initial")
     assert row["since"] is not None and row["unready_since"] is None
-    # history is never pushed as current activity: the cursor starts at the newest event
-    assert row["feed_cursor"] == last["id"]
+    assert "feed_cursor" not in row
     # a second pass changes nothing
     assert await lpass(pool, c["id"]) is None
     assert (await leader_row(pool, c["id"]))["epoch"] == 1
