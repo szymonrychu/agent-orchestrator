@@ -30,6 +30,8 @@ CHECK_FINAL = frozenset({"passed", "failed", "cancelled"})
 # First key of the two-int advisory lock, so the per-session claim lock cannot collide with
 # other advisory locks (the singleton lock) taken with a different namespace.
 _CLAIM_LOCK_NAMESPACE = 0x6F726331  # "orc1"
+# Per wrapper command id: serialises the two writers of a command message's turn link (D10).
+_COMMAND_LINK_LOCK_NAMESPACE = 0x6F726332  # "orc2"
 _SCAN_BATCH = 100
 
 
@@ -561,19 +563,32 @@ async def mark_sent_command(
 
     When the ingester already stored this command's `command_completed` with `result = 'turn'`
     (the event beat this 202), the same guarded update links the promoted turn (D10 hop guard).
+    The command's link lock is taken in its own statement first, so the UPDATE's snapshot sees
+    an event whose ingester transaction committed while this one waited for the lock.
     """
-    row = await _transition(
-        conn,
-        "UPDATE messages SET status = 'sent', wrapper_command_id = %(cmd)s, error = NULL,"
-        " turn_id = (SELECT NULLIF(e.data -> 'record' ->> 'turn_id', '') FROM events e"
-        " WHERE e.agent_id = messages.agent_id AND e.type = 'command_completed'"
-        " AND e.data -> 'record' ->> 'id' = %(cmd)s AND e.data -> 'record' ->> 'result' = 'turn'"
-        " ORDER BY e.id LIMIT 1)"
-        " WHERE id = %(id)s AND status = 'dispatching' AND kind = 'command'"
-        " RETURNING session_id",
-        {"id": id, "cmd": wrapper_command_id},
-    )
+    async with conn.transaction():
+        await _lock_command_link(conn, wrapper_command_id)
+        row = await _transition(
+            conn,
+            "UPDATE messages SET status = 'sent', wrapper_command_id = %(cmd)s, error = NULL,"
+            " turn_id = (SELECT NULLIF(e.data -> 'record' ->> 'turn_id', '') FROM events e"
+            " WHERE e.agent_id = messages.agent_id AND e.type = 'command_completed'"
+            " AND e.data -> 'record' ->> 'id' = %(cmd)s"
+            " AND e.data -> 'record' ->> 'result' = 'turn' ORDER BY e.id LIMIT 1)"
+            " WHERE id = %(id)s AND status = 'dispatching' AND kind = 'command'"
+            " RETURNING session_id",
+            {"id": id, "cmd": wrapper_command_id},
+        )
     return row is not None
+
+
+async def _lock_command_link(conn: psycopg.AsyncConnection, wrapper_command_id: str) -> None:
+    """Until the transaction ends, hold the lock both writers of a command's turn link take
+    first (D10 hop guard): whichever commits second sees the other's write."""
+    await conn.execute(
+        "SELECT pg_advisory_xact_lock(%s, hashtext(%s::text))",
+        (_COMMAND_LINK_LOCK_NAMESPACE, wrapper_command_id),
+    )
 
 
 async def link_command_turn(
@@ -581,14 +596,18 @@ async def link_command_turn(
 ) -> bool:
     """The one writer of "sent command, no turn -> linked turn" (D10 hop guard): a command that
     the wrapper promoted to a turn keeps that turn id on its message, so `turn_hop` finds it and
-    a send from the promoted turn counts the command's hop plus one. Never overwrites."""
-    row = await _transition(
-        conn,
-        "UPDATE messages SET turn_id = %(turn_id)s"
-        " WHERE kind = 'command' AND status = 'sent' AND wrapper_command_id = %(cmd)s"
-        " AND turn_id IS NULL RETURNING session_id",
-        {"turn_id": turn_id, "cmd": wrapper_command_id},
-    )
+    a send from the promoted turn counts the command's hop plus one. Never overwrites. Takes
+    the command's link lock first, so a `mark_sent_command` in flight commits before this
+    UPDATE reads the row."""
+    async with conn.transaction():
+        await _lock_command_link(conn, wrapper_command_id)
+        row = await _transition(
+            conn,
+            "UPDATE messages SET turn_id = %(turn_id)s"
+            " WHERE kind = 'command' AND status = 'sent' AND wrapper_command_id = %(cmd)s"
+            " AND turn_id IS NULL RETURNING session_id",
+            {"turn_id": turn_id, "cmd": wrapper_command_id},
+        )
     return row is not None
 
 
