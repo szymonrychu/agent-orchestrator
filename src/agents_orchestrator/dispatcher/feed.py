@@ -1,13 +1,11 @@
 """Activity digest: pure functions over stored `events` rows, serving `GET /agent/v1/activity`.
 
 A row is a mapping with `id`, `type`, `data`, `ts` (datetime) and `agent` (the pod name).
-A leadership change is passed as a synthetic row of type `leadership` with
-`data = {"leader": <pod name>, "epoch": <int>}`.
 
-Only paths, Bash commands with exit status, finished-turn first lines and leadership changes
-get through. Every peer-originated string is XML-escaped and single-line, so it cannot close
-or forge a `<hive-state>` block or any other tag in the text an agent reads. The same `_clean`
-escapes the member fields of the pushed `hive_state` note (`dispatcher/hive.py`).
+Only paths, Bash commands with exit status and finished-turn first lines get through. Every
+peer-originated string is XML-escaped and single-line, so it cannot close or forge a
+`<hive-state>` block or any other tag in the text an agent reads. The same `_clean` escapes the
+member fields of the pushed `hive_state` note (`dispatcher/hive.py`).
 """
 
 from __future__ import annotations
@@ -53,8 +51,8 @@ def _status(result: Mapping[str, Any]) -> str:
 
 def digest_lines(
     rows: Iterable[Mapping[str, Any]], now: datetime, workdir: str = ""
-) -> tuple[list[FeedLine], list[int]]:
-    """Feed lines for `rows` (ascending id) plus ids of Bash calls still awaiting a result."""
+) -> list[FeedLine]:
+    """Feed lines for `rows` (ascending id); a Bash call still awaiting a result gets none."""
     rows = list(rows)
     results = {
         (r.get("agent"), (r.get("data") or {}).get("tool_use_id")): r["data"]
@@ -62,7 +60,6 @@ def digest_lines(
         if r["type"] == "tool_result"
     }
     lines: list[FeedLine] = []
-    pending: list[int] = []
     for row in rows:
         data = row.get("data") or {}
         kind, agent = row["type"], _clean(row.get("agent"))
@@ -80,14 +77,9 @@ def digest_lines(
                     lines.append(FeedLine(row["id"], agent, f"{cmd} ({_status(res)})"))
                 elif (now - row["ts"]).total_seconds() > PENDING_BASH_TIMEOUT_SECONDS:
                     lines.append(FeedLine(row["id"], agent, cmd))
-                else:
-                    pending.append(row["id"])
         elif kind == "turn_completed":
             record = data.get("record") or {}
             first = next(iter(str(record.get("final_text") or "").strip().splitlines()), "")
             text = f"{agent} finished a turn: {_clean(first, MAX_TEXT)}"
             lines.append(FeedLine(row["id"], agent, text.rstrip()))
-        elif kind == "leadership":
-            text = f"leader is now {_clean(data.get('leader'))} (epoch {int(data.get('epoch', 0))})"
-            lines.append(FeedLine(row["id"], agent, text))
-    return lines, pending
+    return lines

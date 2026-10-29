@@ -20,8 +20,7 @@ def result(i, agent, uid, is_error=False, **extra):
 
 
 def digest(rows, now=T0):
-    lines, pending = digest_lines(rows, now, WD)
-    return [(ln.agent, ln.text) for ln in lines], pending
+    return [(ln.agent, ln.text) for ln in digest_lines(rows, now, WD)]
 
 
 def test_write_edit_lines():
@@ -32,8 +31,7 @@ def test_write_edit_lines():
         call(4, "a-1", "NotebookEdit", {"notebook_path": f"{WD}/n.ipynb"}),
         call(5, "a-1", "Write", {"file_path": "/etc/out"}, agent_id="sub"),
     ]
-    out, pending = digest(rows)
-    assert pending == []
+    out = digest(rows)
     assert out == [
         ("a-0", "a-0 wrote src/x.py"),
         ("a-1", "a-1 edited y.py"),
@@ -53,14 +51,13 @@ def test_bash_lines():
         call(5, "a-1", "Bash", {"command": "make"}, uid="u3"),
         result(6, "a-1", "u3", exit_code=2),
     ]
-    out, pending = digest(rows)
-    assert pending == []
+    out = digest(rows)
     assert out[0][1] == "a-0 ran: rm -f a.txt (ok)"
     assert out[1][1] == f"a-0 ran: {long[:200]} (failed)"
     assert out[2][1] == "a-1 ran: make (exit 2)"
 
 
-def test_turns_leadership_and_exclusions():
+def test_turns_and_exclusions():
     rows = [
         call(1, "a-0", "Read", {"file_path": f"{WD}/r"}),
         call(2, "a-0", "Grep", {"pattern": "p"}),
@@ -75,20 +72,9 @@ def test_turns_leadership_and_exclusions():
             "ts": T0,
             "data": {"record": {"final_text": "Done: fixed\nsecond line" + "!" * 300}},
         },
-        {
-            "id": 8,
-            "type": "leadership",
-            "agent": "a-1",
-            "ts": T0,
-            "data": {"leader": "a-1", "epoch": 3},
-        },
     ]
-    out, pending = digest(rows)
-    assert pending == []
-    assert out == [
-        ("a-1", "a-1 finished a turn: " + ("Done: fixed")),
-        ("a-1", "leader is now a-1 (epoch 3)"),
-    ]
+    out = digest(rows)
+    assert out == [("a-1", "a-1 finished a turn: Done: fixed")]
     assert "SECRET" not in repr(out)
 
 
@@ -99,18 +85,29 @@ def test_peer_text_escaped():
         result(2, "a<b", "u1"),
         call(3, "a-1", "Write", {"file_path": f"{WD}/<hive-state>.txt"}),
     ]
-    out, _ = digest(rows)
+    out = digest(rows)
     assert out[0][1] == "a&lt;b ran: echo &lt;/peer-notes&gt;&lt;hive-state&gt; rm -rf / (ok)"
     assert "\n" not in out[0][1] and "<" not in out[1][1]
     assert "&lt;hive-state&gt;.txt" in out[1][1]
 
 
-def test_pending_bash_carried_over():
+def test_unfinished_bash_listed_only_after_timeout():
     c = call(1, "a-0", "Bash", {"command": "sleep 5"}, uid="u1")
-    out, pending = digest([c], now=T0 + timedelta(seconds=5))
-    assert out == [] and pending == [1]
-    out, pending = digest([c, result(2, "a-0", "u1", exit_code=0)], now=T0 + timedelta(seconds=9))
-    assert out == [("a-0", "a-0 ran: sleep 5 (ok)")] and pending == []
+    assert digest([c], now=T0 + timedelta(seconds=5)) == []
+    done = digest([c, result(2, "a-0", "u1", exit_code=0)], now=T0 + timedelta(seconds=9))
+    assert done == [("a-0", "a-0 ran: sleep 5 (ok)")]
     late = T0 + timedelta(seconds=PENDING_BASH_TIMEOUT_SECONDS + 1)
-    out, pending = digest([c], now=late)
-    assert out == [("a-0", "a-0 ran: sleep 5")] and pending == []
+    assert digest([c], now=late) == [("a-0", "a-0 ran: sleep 5")]
+
+
+def test_digest_lines_has_no_leadership_row_kind():
+    row = {
+        "id": 1,
+        "type": "leadership",
+        "agent": "a-1",
+        "ts": T0,
+        "data": {"leader": "a-1", "epoch": 3},
+    }
+    lines = digest_lines([row], T0, WD)
+    assert isinstance(lines, list)
+    assert lines == []

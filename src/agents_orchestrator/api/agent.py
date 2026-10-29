@@ -534,7 +534,7 @@ async def activity(
     async with pool.connection() as conn:
         workdir = f"{WORKDIR_ROOT}/{await _workdir(conn, agent)}"
         rows = await events_repo.recent_activity_rows(conn, agent.session_id)
-    lines, _ = feed.digest_lines(rows, datetime.now(UTC), workdir)
+    lines = feed.digest_lines(rows, datetime.now(UTC), workdir)
     stamps = {row["id"]: row["ts"] for row in rows}
     kept = [line for line in lines if peer is None or line.agent == peer]
     return Activity(
