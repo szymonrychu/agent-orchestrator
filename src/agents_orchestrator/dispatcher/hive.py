@@ -1,4 +1,4 @@
-"""Hive state and activity feed push (D3, D9, D23).
+"""Hive state push (D3, D9, D23; hive-decoupling D1, D2).
 
 `push_once` runs in the dispatcher process only, never in the singleton ingester. For each hive
 session it takes the session's advisory lock (try; skip when held) around the DB read, releases
@@ -10,10 +10,10 @@ State kept here:
 - `session_leaders.state_hash` is a JSON map `{agent_id: hash}` of the hive state each agent
   last accepted, so one failing agent never causes re-pushes to the others. The dispatcher is
   the only writer. `state_pushed_at` moves only when every receiver took the current state.
-- `session_leaders.feed_cursor` is the last event id whose activity was handed out. Event ids
-  commit out of order across the ingester's per-agent transactions, so only rows older than
-  FEED_SETTLE_SECONDS are consumed, and never past the first newer one. Bash calls still
-  awaiting a result are carried in memory (`HiveState`) and hold the stored cursor back.
+
+The hash covers only the structure (leader, epoch, members, wrapper sessions, readiness), so a
+busy/idle flip or a context change pushes nothing. Members pull live state with
+`orchestrator_me` and peers' activity with `orchestrator_activity`; nothing is streamed.
 """
 
 from __future__ import annotations
@@ -26,7 +26,6 @@ import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from typing import Any
 
 import psycopg
@@ -44,27 +43,35 @@ log = logging.getLogger(__name__)
 # Module constants by design (D14).
 PUSH_INTERVAL_SECONDS = 10
 PUSH_TIMEOUT_SECONDS = 3
-FEED_SETTLE_SECONDS = 5
-FEED_BATCH = 500
-# Under the wrapper's default max_note_chars (2000).
-FEED_MAX_CHARS = 1800
 STATE_KEY = "hive_state"
 HANDOVER_MARGIN_PCT = 15
-_FEED_TYPES = ("tool_call", "tool_result", "turn_completed")
+PULL_SENTENCE = (
+    "Call orchestrator_me for live state and context, orchestrator_activity for what peers did."
+)
 
 ClientFactory = Callable[[uuid.UUID, str], WrapperClient]
 
 
 @dataclass
 class HiveState:
-    """In-memory push state of one dispatcher: throttle clock and feed carry-over per session."""
+    """In-memory push state of one dispatcher: the throttle clock per session."""
 
     last_tick: dict[uuid.UUID, float] = field(default_factory=dict)
-    watermark: dict[uuid.UUID, int] = field(default_factory=dict)
-    carried: dict[uuid.UUID, list[dict[str, Any]]] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------- the note text
+
+
+def handover_threshold(spec: dict[str, Any], settings: Settings) -> int:
+    """Context % above which the leader should hand over instead of compacting.
+
+    The effective compaction point (`spec.auto_compact_pct`, else the pods' default
+    `settings.default_auto_compact_pct`) less HANDOVER_MARGIN_PCT, at least 1.
+    """
+    compact = spec.get("auto_compact_pct")
+    if compact is None:
+        compact = settings.default_auto_compact_pct
+    return max(compact - HANDOVER_MARGIN_PCT, 1)
 
 
 def hive_state_payload(
@@ -95,7 +102,7 @@ def hive_state_payload(
     }
 
 
-def render_hive_state(payload: dict[str, Any], slug: str, auto_compact_pct: int | None) -> str:
+def render_hive_state(payload: dict[str, Any], slug: str, threshold: int) -> str:
     """The `<hive-state>` text block pushed under the key `hive_state`."""
     clean = feed._clean
     role = "leader" if payload["you"] == payload["leader"] else "member"
@@ -113,24 +120,16 @@ def render_hive_state(payload: dict[str, Any], slug: str, auto_compact_pct: int 
         f"(epoch {payload['epoch']}). Members: {', '.join(members)}."
         + (" The hive is static: agents are not added or removed." if payload["static"] else ""),
     ]
-    if auto_compact_pct is not None:
-        threshold = max(auto_compact_pct - HANDOVER_MARGIN_PCT, 1)
-        lines.append(f"Hand over leadership instead of compacting above {threshold}% context.")
+    lines.append(f"Hand over leadership instead of compacting above {threshold}% context.")
+    lines.append(PULL_SENTENCE)
     lines.append("</hive-state>")
     return "\n".join(lines)
 
 
 def state_hash(leader: str, epoch: int, members: list[dict[str, Any]]) -> str:
-    """Changes with leader, epoch, member set, wrapper sessions, ready, state, 10% context."""
-    pct = [None if m["context_pct"] is None else int(m["context_pct"] // 10) for m in members]
-    key = [
-        leader,
-        epoch,
-        [
-            [m["pod_name"], m["ready"], m["state"], bucket, m["wrapper_session_id"]]
-            for m, bucket in zip(members, pct, strict=True)
-        ],
-    ]
+    """Changes with leader, epoch, member set, wrapper sessions and ready; never with a member's
+    state or context, which members pull with `orchestrator_me`."""
+    key = [leader, epoch, [[m["pod_name"], m["wrapper_session_id"], m["ready"]] for m in members]]
     return hashlib.sha256(json.dumps(key).encode()).hexdigest()
 
 
@@ -141,16 +140,13 @@ def state_hash(leader: str, epoch: int, members: list[dict[str, Any]]) -> str:
 class _Plan:
     session_id: uuid.UUID
     slug: str
-    auto_compact_pct: int | None
+    threshold: int
     max_replicas: int
     static: bool
     leader: str
     epoch: int
-    feed_cursor: int
-    new_cursor: int
     hashes: dict[str, str]  # per agent, the state hash it last accepted
     members: list[dict[str, Any]]
-    lines: list[feed.FeedLine]
 
     @property
     def receivers(self) -> list[dict[str, Any]]:
@@ -167,13 +163,13 @@ async def _try_lock(conn: psycopg.AsyncConnection, session_id: uuid.UUID) -> boo
 
 
 async def _read(
-    conn: psycopg.AsyncConnection, session: dict[str, Any], state: HiveState
+    conn: psycopg.AsyncConnection, session: dict[str, Any], settings: Settings
 ) -> _Plan | None:
-    """Phase 1: under the lock, read the hive and consume the settled feed rows."""
+    """Phase 1: under the lock, read the leader row and the members."""
     cid = session["id"]
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            "SELECT a.pod_name AS leader, l.epoch, l.feed_cursor, l.state_hash"
+            "SELECT a.pod_name AS leader, l.epoch, l.state_hash"
             " FROM session_leaders l JOIN agents a ON a.id = l.agent_id WHERE l.session_id = %s",
             (cid,),
         )
@@ -188,42 +184,17 @@ async def _read(
             (cid,),
         )
         members = await cur.fetchall()
-        cursor = leader["feed_cursor"]
-        start = max(state.watermark.get(cid, 0), cursor)
-        await cur.execute(
-            "SELECT e.id, e.type, e.data, e.ts, coalesce(a.pod_name, 'agent') AS agent,"
-            " e.created_at <= now() - make_interval(secs => %s) AS settled"
-            " FROM events e LEFT JOIN agents a ON a.id = e.agent_id"
-            " WHERE e.session_id = %s AND e.id > %s AND e.type = ANY(%s)"
-            " ORDER BY e.id LIMIT %s",
-            (FEED_SETTLE_SECONDS, cid, start, list(_FEED_TYPES), FEED_BATCH),
-        )
-        fetched = await cur.fetchall()
-    rows = []
-    for row in fetched:  # never past the first row that may still have a lower id in flight
-        if not row.pop("settled"):
-            break
-        rows.append(row)
-    carried = state.carried.get(cid, [])
-    lines, pending = feed.digest_lines([*carried, *rows], datetime.now(UTC))
-    watermark = rows[-1]["id"] if rows else start
-    state.watermark[cid] = watermark
-    state.carried[cid] = [r for r in [*carried, *rows] if r["id"] in set(pending)]
-    new_cursor = min([watermark, *(p - 1 for p in pending)])
     spec = session["spec"]
     return _Plan(
         session_id=cid,
         slug=session["slug"],
-        auto_compact_pct=spec.get("auto_compact_pct"),
+        threshold=handover_threshold(spec, settings),
         max_replicas=spec.get("max_replicas") or spec.get("replicas") or 1,
         static=bool(spec.get("static")),
         leader=leader["leader"],
         epoch=leader["epoch"],
-        feed_cursor=cursor,
-        new_cursor=max(new_cursor, cursor),
         hashes=_load_hashes(leader["state_hash"]),
         members=members,
-        lines=lines,
     )
 
 
@@ -252,47 +223,36 @@ async def _note(
 
 
 async def _push_agent(
-    plan: _Plan, member: dict[str, Any], due: bool, client_factory: ClientFactory
-) -> tuple[NoteOutcome | None, int]:
-    """(outcome of the hive_state push or None when it was not due, notes accepted)."""
-    state_outcome: NoteOutcome | None = None
-    sent = 0
+    plan: _Plan, member: dict[str, Any], client_factory: ClientFactory
+) -> NoteOutcome:
+    """Push the current hive_state to one member."""
+    payload = hive_state_payload(
+        member["pod_name"],
+        plan.leader,
+        plan.epoch,
+        plan.members,
+        plan.max_replicas,
+        plan.static,
+    )
+    text = render_hive_state(payload, plan.slug, plan.threshold)
     client = client_factory(plan.session_id, member["url"])
-    if due:
-        payload = hive_state_payload(
-            member["pod_name"],
-            plan.leader,
-            plan.epoch,
-            plan.members,
-            plan.max_replicas,
-            plan.static,
-        )
-        text = render_hive_state(payload, plan.slug, plan.auto_compact_pct)
-        state_outcome = await _note(client, member["wrapper_session_id"], text, STATE_KEY)
-        sent += state_outcome == "ok"
-        if state_outcome != "ok":
-            return state_outcome, sent  # no point trying the feed on a wrapper that said no
-    text = feed.render_feed(plan.lines, member["pod_name"], max_chars=FEED_MAX_CHARS)
-    if text:
-        sent += await _note(client, member["wrapper_session_id"], text) == "ok"
-    return state_outcome, sent
+    return await _note(client, member["wrapper_session_id"], text, STATE_KEY)
 
 
 async def _claim(conn: psycopg.AsyncConnection, plan: _Plan, current: str) -> list[dict[str, Any]]:
     """Under the lock, before any push: record the work as taken, so a second dispatcher that
     reads while this one is on the wire finds nothing left to push.
 
-    Advances the feed cursor and marks every receiver whose state is not current as holding
-    `current`; returns those receivers (the ones to push to). A failed push is undone in
-    `_release`; a failed feed push is not retried.
+    Marks every receiver whose state is not current as holding `current` and returns those
+    receivers (the ones to push to). A failed push is undone in `_release`.
     """
     live = {str(m["id"]) for m in plan.members}
     due = [m for m in plan.receivers if plan.hashes.get(str(m["id"])) != current]
     hashes = {k: v for k, v in plan.hashes.items() if k in live}
     hashes.update({str(m["id"]): current for m in due})
     await conn.execute(
-        "UPDATE session_leaders SET state_hash = %s, feed_cursor = %s WHERE session_id = %s",
-        (json.dumps(hashes), plan.new_cursor, plan.session_id),
+        "UPDATE session_leaders SET state_hash = %s WHERE session_id = %s",
+        (json.dumps(hashes), plan.session_id),
     )
     return due
 
@@ -326,6 +286,7 @@ async def _release(
 async def _push_session(
     pool: AsyncConnectionPool,
     session: dict[str, Any],
+    settings: Settings,
     client_factory: ClientFactory,
     state: HiveState,
     clock: Callable[[], float],
@@ -335,25 +296,18 @@ async def _push_session(
         if not await _try_lock(conn, cid):
             return 0
         state.last_tick[cid] = clock()
-        plan = await _read(conn, session, state)
+        plan = await _read(conn, session, settings)
         if plan is None:
             return 0
         current = state_hash(plan.leader, plan.epoch, plan.members)
-        due = {str(m["id"]) for m in await _claim(conn, plan, current)}
-    receivers = plan.receivers
-    results = await asyncio.gather(
-        *(_push_agent(plan, m, str(m["id"]) in due, client_factory) for m in receivers)
-    )
-    sent = sum(n for _outcome, n in results)
+        due = await _claim(conn, plan, current)
+    if not due:
+        return 0
+    outcomes = await asyncio.gather(*(_push_agent(plan, m, client_factory) for m in due))
     # disabled counts as taken (nothing to retry)
-    failed = {
-        str(m["id"])
-        for m, (outcome, _n) in zip(receivers, results, strict=True)
-        if outcome == "failed"
-    }
-    if due:
-        await _release(pool, plan, current, failed, all_ok=not failed)
-    return sent
+    failed = {str(m["id"]) for m, outcome in zip(due, outcomes, strict=True) if outcome == "failed"}
+    await _release(pool, plan, current, failed, all_ok=not failed)
+    return sum(outcome == "ok" for outcome in outcomes)
 
 
 async def push_once(
@@ -377,7 +331,7 @@ async def push_once(
         if last is not None and clock() - last < PUSH_INTERVAL_SECONDS:
             continue
         try:
-            total += await _push_session(pool, session, client_factory, state, clock)
+            total += await _push_session(pool, session, settings, client_factory, state, clock)
         except asyncio.CancelledError:
             raise
         except Exception:
