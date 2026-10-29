@@ -1104,7 +1104,7 @@ def test_fake_deny_mirrors_wrapper_default() -> None:
     from fakes.fake_wrapper import COMMAND_DENY
 
     assert {name.lower() for name in DEFAULT_COMMAND_DENY} == COMMAND_DENY
-    assert len(COMMAND_DENY) == 51
+    assert len(COMMAND_DENY) == 64
 
 
 async def test_commands_any_name_and_denied(leg: Leg) -> None:
@@ -1118,7 +1118,21 @@ async def test_commands_any_name_and_denied(leg: Leg) -> None:
         assert isinstance(record["id"], str) and record["id"]
         assert (record["name"], record["args"]) == (name, args)
         assert record["state"] == "queued" and record["origin"] == "client"
-    for name in ("exit", "Reset", "plugin", "Marketplace", "routines", "memory", "usage-credits"):
+    denied_names = (
+        "exit",
+        "Reset",
+        "plugin",
+        "Marketplace",
+        "routines",
+        "memory",
+        "usage-credits",
+        "ultrareview",
+        "MCP",
+        "allowed-tools",
+        "remote",
+        "settings",
+    )
+    for name in denied_names:
         denied = await leg.http.post(url, json={"name": name})
         assert denied.status_code == 403, name
         assert denied.json()["error"]["code"] == "command_denied"
