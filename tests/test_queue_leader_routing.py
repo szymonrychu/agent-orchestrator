@@ -392,3 +392,16 @@ async def test_session_messages_wait_for_dispatching_command(pool, dsn):
     finally:
         await d.aclose()
         await fake.stop()
+
+
+async def test_untargeted_command_without_leader_prefers_idle_free_longest(pool):
+    # no leader, no target: an idle agent before a busy one (even one with an older free_since),
+    # and among idle agents the one free the longest (the leadership pass's order)
+    c = await insert_session(pool)
+    await _agent(pool, c["id"], free_ago=1000, ordinal=0, state="busy")
+    await _agent(pool, c["id"], free_ago=10, ordinal=1)
+    longest = await _agent(pool, c["id"], free_ago=100, ordinal=2)
+    cmd = await _command(pool, c["id"])
+    claim = await _claim(pool)
+    assert claim is not None
+    assert (claim.message_id, claim.kind, claim.agent_id) == (cmd, "command", longest["id"])
