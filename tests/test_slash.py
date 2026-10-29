@@ -2,6 +2,9 @@
 (claude-code-wrapper tests/test_session_turns.py, test_slash_rule_matches_claude_parser and
 test_slash_rule_leaves_paths_and_prose), case for case, so the two sides cannot drift."""
 
+import sys
+import unicodedata
+
 import pytest
 
 from agents_orchestrator.slash import parse
@@ -19,6 +22,16 @@ COMMANDS = [
     ("/x a\nb", ("x", "a\nb")),
     ("/x\ta", ("x", "a")),
     ("/x\na", ("x", "a")),
+    ("/exit\u00a0x", ("exit", "x")),
+    ("/clear\x0bx", ("clear", "x")),
+    ("/login\rx", ("login", "x")),
+    ("\ufeff/login", ("login", "")),
+    ("/exit\u3000", ("exit", "")),
+    ("\x1b/exit", ("exit", "")),
+    ("/ex\x1bit", ("exit", "")),
+    ("/ex\u200bit", ("exit", "")),
+    ("\x1c/exit", ("exit", "")),
+    ("/exit\x1cx", ("exitx", "")),
 ]
 
 EMPTY_NAME = [
@@ -33,6 +46,8 @@ PROSE = [
     "//x",
     "/notes.txt",
     "see /compact",
+    "x\u00a0/exit",
+    "/etc/hosts\u00a0x",
     "",
 ]
 
@@ -73,3 +88,40 @@ def test_parse_strips_trailing_run_marker(text: str, expected: tuple[str, str]) 
 def test_parse_marker_on_prose_stays_prose() -> None:
     assert parse("/etc/hosts\n\n<!-- agents-webhook:42 -->") is None
     assert parse("hello\n\n<!-- agents-matrix:abc-1 -->") is None
+
+
+# Exactly JS \s (the same set as JS trim), checked under node v24.
+JS_WHITESPACE = (
+    [chr(c) for c in range(0x09, 0x0E)]
+    + [" ", "\u00a0", "\u1680"]
+    + [chr(c) for c in range(0x2000, 0x200B)]
+    + ["\u2028", "\u2029", "\u202f", "\u205f", "\u3000", "\ufeff"]
+)
+# Python's isspace adds these (and lacks U+FEFF); claude does not split a name at them.
+NOT_JS_WHITESPACE = [chr(c) for c in range(0x1C, 0x20)] + ["\u0085"]
+
+
+@pytest.mark.parametrize("char", JS_WHITESPACE, ids=lambda c: f"U+{ord(c):04X}")
+def test_parse_whitespace_set_is_js_whitespace(char: str) -> None:
+    assert parse(f"/a{char}b") == ("a", "b")
+    assert parse(f"/a{char}{char}b{char}{char}") == ("a", "b")
+    assert parse(f"{char}/a") == ("a", "")
+    assert parse(f"/{char}b") == ("", "b")
+
+
+@pytest.mark.parametrize("char", NOT_JS_WHITESPACE, ids=lambda c: f"U+{ord(c):04X}")
+def test_parse_non_js_whitespace_does_not_split_or_strip(char: str) -> None:
+    assert parse(f"/a{char}b") == ("ab", "")
+    assert parse(f"{char}/a") == ("a", "")
+    assert parse(f"/a {char}b{char}") == ("a", f"{char}b{char}")
+
+
+def test_no_whitespace_or_invisible_char_hides_a_slash_command() -> None:
+    hidden = []
+    for code in range(sys.maxunicode + 1):
+        char = chr(code)
+        if unicodedata.category(char) not in {"Zs", "Zl", "Zp", "Cc", "Cf"}:
+            continue
+        if parse(f"{char}/exit") is None or parse(f"/exit{char}x") is None:
+            hidden.append(f"U+{code:04X}")
+    assert hidden == []
