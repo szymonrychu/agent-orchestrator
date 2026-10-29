@@ -188,6 +188,26 @@ async def test_message_command_outcome_cancelled(http, pool):
     assert one == {"state": "cancelled", "result": None, "error": None, "turn_id": None}
 
 
+async def test_message_command_outcome_promoted_turn(http, pool):
+    cl = await insert_session(pool)
+    ag = await insert_agent(pool, cl["id"])
+    mid = await _sent_command(pool, cl["id"], ag["id"], "cmd_turn")
+    at = await _command_event(
+        pool,
+        cl["id"],
+        ag["id"],
+        "command_completed",
+        id="cmd_turn",
+        state="completed",
+        result="turn",
+        turn_id="turn_abc",
+    )
+    one, listed = await _command_of(http, cl["id"], mid)
+    assert one == listed
+    assert datetime.fromisoformat(one.pop("at")) == at
+    assert one == {"state": "completed", "result": "turn", "error": None, "turn_id": "turn_abc"}
+
+
 async def test_message_command_none_for_turns_and_pending(http, pool):
     cl = await insert_session(pool)
     ag = await insert_agent(pool, cl["id"])
