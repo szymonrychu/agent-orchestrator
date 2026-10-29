@@ -37,6 +37,42 @@ async def test_create_sets_generation_1(pool):
     assert await sessions.get_by_slug(conn, "nope") is None
 
 
+async def test_create_records_the_creating_service(pool):
+    async with pool.connection() as conn:
+        user = await sessions.create(conn, "by-user", SessionSpec())
+        svc = await sessions.create(
+            conn, "by-svc", SessionSpec(), created_by_service="agents-webhook"
+        )
+        got = await sessions.get(conn, svc.id)
+    assert user.created_by_service is None and not user.trigger_created
+    assert svc.created_by_service == got.created_by_service == "agents-webhook"
+    assert got.trigger_created
+
+
+def test_trigger_created_names_only_the_trigger_services():
+    base = dict(
+        id=uuid.uuid4(),
+        slug="x",
+        spec=SessionSpec(),
+        generation=1,
+        observed_generation=0,
+        desired="active",
+        status={},
+        created_at=datetime.now(UTC),
+    )
+    flags = {
+        name: sessions.Session(**base, created_by_service=name).trigger_created
+        for name in (None, "agents-webhook", "agents-schedule", "agents-matrix-connector", "other")
+    }
+    assert flags == {
+        None: False,
+        "agents-webhook": True,
+        "agents-schedule": True,
+        "agents-matrix-connector": False,
+        "other": False,
+    }
+
+
 def test_slug_rules():
     for ok in ("a", "my-session", "a1", "x" * 40):
         validate_slug(ok)

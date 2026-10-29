@@ -3500,7 +3500,7 @@
             "description": "unauthorized: missing or invalid agent credentials"
           },
           "403": {
-            "description": "forbidden (not a live agent pod) or not_leader"
+            "description": "forbidden (not a live agent pod), trigger_session or not_leader"
           },
           "413": {
             "description": "payload_too_large: the body exceeds 256 KiB"
@@ -3584,7 +3584,7 @@
             "description": "unauthorized: missing or invalid agent credentials"
           },
           "403": {
-            "description": "forbidden (not a live agent pod) or not_leader"
+            "description": "forbidden (not a live agent pod), trigger_session or not_leader"
           },
           "422": {
             "content": {
@@ -3683,7 +3683,7 @@
             "description": "unauthorized: missing or invalid agent credentials"
           },
           "403": {
-            "description": "forbidden (not a live agent pod) or not_leader"
+            "description": "forbidden (not a live agent pod), trigger_session or not_leader"
           },
           "413": {
             "description": "payload_too_large: the body exceeds 256 KiB"
@@ -3758,7 +3758,7 @@
             "description": "unauthorized: missing or invalid agent credentials"
           },
           "403": {
-            "description": "forbidden (not a live agent pod) or not_leader"
+            "description": "forbidden (not a live agent pod), trigger_session or not_leader"
           },
           "422": {
             "content": {

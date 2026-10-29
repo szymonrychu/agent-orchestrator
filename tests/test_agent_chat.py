@@ -128,7 +128,12 @@ class FakeDb:
         return agent
 
     def add_session(
-        self, slug: str, *, hive: bool, leader_ip: str = LEADER_IP
+        self,
+        slug: str,
+        *,
+        hive: bool,
+        leader_ip: str = LEADER_IP,
+        created_by_service: str | None = None,
     ) -> sessions_repo.Session:
         spec = {"replicas": 2, "max_replicas": 2} if hive else {"replicas": 1}
         session = sessions_repo.Session(
@@ -140,6 +145,7 @@ class FakeDb:
             desired="active",
             status={},
             created_at=datetime.now(UTC),
+            created_by_service=created_by_service,
         )
         self.sessions[session.id] = session
         leader = self.add_agent(session.id, 0, leader_ip)
@@ -193,10 +199,16 @@ class Rig:
             return await http.request(method, path, **kw)
 
 
-def make_rig(monkeypatch: pytest.MonkeyPatch, *, hive: bool = True, **overrides: Any) -> Rig:
+def make_rig(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    hive: bool = True,
+    created_by_service: str | None = None,
+    **overrides: Any,
+) -> Rig:
     db = FakeDb()
     db.install(monkeypatch)
-    session = db.add_session("chat-caller", hive=hive)
+    session = db.add_session("chat-caller", hive=hive, created_by_service=created_by_service)
     upstream = Upstream()
     app = create_app(settings(**overrides), pool=None)
     app.state.pool = db  # the lifespan never runs under ASGITransport, so this pool stays
@@ -205,6 +217,30 @@ def make_rig(monkeypatch: pytest.MonkeyPatch, *, hive: bool = True, **overrides:
 
 
 # -------------------------------------------------------------------------------- forwarding
+
+
+async def test_trigger_service_session_refused(monkeypatch):
+    """A session started by agents-webhook or agents-schedule (attacker-controlled text in its
+    prompt) never reaches the user's chat: 403 `trigger_session`, no upstream call, on every route
+    and for a leader and a lone session alike."""
+    for service in ("agents-webhook", "agents-schedule"):
+        for hive in (True, False):
+            rig = make_rig(monkeypatch, hive=hive, created_by_service=service)
+            for method, path, _ in ROUTES:
+                r = await rig.call(method, path)
+                assert_error(r, 403, "trigger_session")
+            assert rig.upstream.seen == [], service
+
+
+async def test_user_session_may_use_chat(monkeypatch):
+    """A user-created session (no creator) and a connector-created one keep the relay."""
+    for service in (None, "agents-matrix-connector"):
+        rig = make_rig(monkeypatch, created_by_service=service)
+        for method, path, upstream_path in ROUTES:
+            rig.upstream.seen.clear()
+            r = await rig.call(method, path)
+            assert r.status_code == 200, (service, path, r.text)
+            assert rig.upstream.seen[0].url.path == upstream_path
 
 
 async def test_forwards_with_chat_token_never_agent_token(monkeypatch):

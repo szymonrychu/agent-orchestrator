@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from agents_orchestrator.api import schemas
 from agents_orchestrator.api.errors import ApiError, not_found
+from agents_orchestrator.api.service_auth import calling_service
 from agents_orchestrator.cache.save_rule import save_skip
 from agents_orchestrator.db import agents as agents_repo
 from agents_orchestrator.db import leadership, presets, views
@@ -209,6 +210,7 @@ async def list_sessions(pool: Pool, settings: Cfg) -> list[schemas.SessionView]:
 @router.post("/sessions", status_code=201, response_model=schemas.SessionView)
 async def create_session(
     body: schemas.CreateSession,
+    request: Request,
     pool: Pool,
     settings: Cfg,
 ) -> schemas.SessionView:
@@ -225,6 +227,7 @@ async def create_session(
             validate_slug(body.slug)
         except ValueError as exc:
             raise ApiError(422, "invalid_request", str(exc)) from None
+    creator = calling_service(request)
     async with pool.connection() as conn:
         async with conn.transaction():
             await conn.execute("SELECT pg_advisory_xact_lock(%s)", (_CREATE_LOCK,))
@@ -233,9 +236,11 @@ async def create_session(
                     409, "session_limit", f"at most {settings.max_sessions} sessions are allowed"
                 )
             if body.preset_id is None:
-                session = await _insert(conn, body.slug, spec)
+                session = await _insert(conn, body.slug, spec, created_by_service=creator)
             else:
-                session = await _create_from_preset(conn, body.preset_id, body.slug, settings)
+                session = await _create_from_preset(
+                    conn, body.preset_id, body.slug, settings, creator
+                )
         return await _one_view(conn, session, settings)
 
 
@@ -250,7 +255,11 @@ async def _insert(conn, slug: str, spec: SessionSpec, **provenance) -> repo.Sess
 
 
 async def _create_from_preset(
-    conn, preset_id: uuid.UUID, slug: str | None, settings: Settings
+    conn,
+    preset_id: uuid.UUID,
+    slug: str | None,
+    settings: Settings,
+    created_by_service: str | None = None,
 ) -> repo.Session:
     """Snapshot the preset's spec, filled and validated against the current settings."""
     preset = await presets.get_for_share(conn, preset_id)
@@ -271,7 +280,11 @@ async def _create_from_preset(
     if spec.cache is not None and spec.cache.key is None:
         cache = spec.cache.model_copy(update={"key": default_cache_key(preset.id)})
         spec = spec.model_copy(update={"cache": cache})
-    provenance = {"preset_id": preset.id, "preset_name": preset.name}
+    provenance = {
+        "preset_id": preset.id,
+        "preset_name": preset.name,
+        "created_by_service": created_by_service,
+    }
     if slug is not None:
         return await _insert(conn, slug, spec, **provenance)
     for _ in range(_SLUG_ATTEMPTS):

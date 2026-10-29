@@ -53,7 +53,7 @@ def test_fresh_database_gets_all_tables(empty_dsn):
         }
         versions = [r[0] for r in c.execute("SELECT version FROM schema_migrations")]
     assert tables >= TABLES
-    assert versions == ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008"]
+    assert versions == ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009"]
 
 
 def test_presets_migration_on_existing_sessions(empty_dsn, tmp_path):
@@ -73,6 +73,7 @@ def test_presets_migration_on_existing_sessions(empty_dsn, tmp_path):
         "0006",
         "0007",
         "0008",
+        "0009",
     ]
     with psycopg.connect(empty_dsn) as c:
         row = c.execute(
@@ -513,7 +514,7 @@ def test_0005_renames_clusters_to_sessions(empty_dsn, tmp_path):
             "INSERT INTO file_locks (cluster_id, path, agent_id) VALUES (%s, 'a.py', %s)",
             (unit, agent),
         )
-    assert run_migrations(empty_dsn) == ["0005", "0006", "0007", "0008"]
+    assert run_migrations(empty_dsn) == ["0005", "0006", "0007", "0008", "0009"]
     with psycopg.connect(empty_dsn) as c:
         assert c.execute(
             "SELECT id, slug, preset_id::text, preset_name FROM sessions"
@@ -651,4 +652,24 @@ def test_0008_wrapper_resumed_at_column(empty_dsn, tmp_path):
         c.execute(sql)
         c.execute("DELETE FROM schema_migrations WHERE version = '0008'")
     assert run_migrations(empty_dsn, tmp_path) == ["0008"]
+    assert run_migrations(empty_dsn, tmp_path) == []
+
+
+def test_0009_created_by_service_column(empty_dsn, tmp_path):
+    for path in sorted(MIGRATIONS_DIR.glob("000[1-8]_*.sql")):
+        shutil.copy(path, tmp_path / path.name)
+    assert run_migrations(empty_dsn, tmp_path)[-1] == "0008"
+    with psycopg.connect(empty_dsn, autocommit=True) as c:
+        c.execute("INSERT INTO sessions (id, slug, spec) VALUES (gen_random_uuid(), 'old', '{}')")
+    shutil.copy(MIGRATIONS_DIR / "0009_created_by_service.sql", tmp_path)
+    assert run_migrations(empty_dsn, tmp_path) == ["0009"]
+    with psycopg.connect(empty_dsn) as c:
+        assert _cols(c, "sessions")["created_by_service"] == ("text", "YES")
+        assert c.execute("SELECT created_by_service FROM sessions").fetchall() == [(None,)]
+    sql = (MIGRATIONS_DIR / "0009_created_by_service.sql").read_text()
+    with psycopg.connect(empty_dsn, autocommit=True) as c:
+        c.execute(sql)
+        c.execute(sql)
+        c.execute("DELETE FROM schema_migrations WHERE version = '0009'")
+    assert run_migrations(empty_dsn, tmp_path) == ["0009"]
     assert run_migrations(empty_dsn, tmp_path) == []

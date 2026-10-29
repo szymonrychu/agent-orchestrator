@@ -34,9 +34,7 @@ import yaml
 from websockets.exceptions import InvalidStatus
 from websockets.sync.client import ClientConnection, connect
 
-from agents_orchestrator.k8s.on_start import orchestrator_allow
 from agents_orchestrator.settings import Settings
-from agents_orchestrator.spec import SessionSpec
 
 pytestmark = pytest.mark.e2e
 
@@ -288,14 +286,27 @@ HIVE_ONLY_TOOLS = {
 }
 
 
+ALONE_SESSION_TOOLS = [
+    "sessions_list",
+    "session_send",
+    "init_scripts_get",
+    "init_scripts_edit",
+    "chat_rooms",
+    "chat_send",
+    "chat_react",
+    "chat_status",
+]
+
+
 def assert_alone_session_tools(configmap: dict[str, Any]) -> None:
-    """An alone session renders the orchestrator entry with the allow list `on_start` derives for
-    it (the session, init-scripts and chat tools), so a list change cannot break only the e2e."""
+    """An alone session created by a user renders the orchestrator entry with exactly the session,
+    init-scripts and chat tools, as a literal list so a code change cannot pass by agreeing with
+    itself."""
     plugins = on_start_any_mcp(configmap).get("plugins", [])
     entry = next((p for p in plugins if p.get("name") == "orchestrator"), None)
     assert entry is not None, plugins
     assert entry["source"] == orchestrator_source() and "plugin" not in entry, entry
-    assert entry["allow"] == orchestrator_allow(SessionSpec(replicas=1)), entry
+    assert entry["allow"] == ALONE_SESSION_TOOLS, entry
     assert not set(entry["allow"]) & HIVE_ONLY_TOOLS, entry
     assert entry["config"]["hive"] is False, entry
 
