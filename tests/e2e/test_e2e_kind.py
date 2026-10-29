@@ -78,7 +78,7 @@ TURN_TIMEOUT = 300
 DISCARD_TIMEOUT = 180
 LEADER_TIMEOUT = 90  # election and handover are applied within the dispatcher poll
 HIVE_PUSH_TIMEOUT = 150  # hive push pass every 10 s
-HIVE_QUIET_WINDOW = 30  # three push passes in which no feed note may arrive
+HIVE_QUIET_WINDOW = 30  # three push passes in which no unkeyed note may arrive
 ALONE_SLUG = "e2e-alone"
 SHELL_TIMEOUT = 60
 EVIL_ORIGIN = "http://evil.example"
@@ -278,6 +278,7 @@ def on_start_any_mcp(configmap: dict[str, Any]) -> dict[str, Any]:
 
 HIVE_ONLY_TOOLS = {
     "me",
+    "activity",
     "leadership_handover",
     "lock_claim",
     "lock_release",
@@ -1177,15 +1178,25 @@ def test_hive_notes_delivered(api: httpx.Client, session: dict[str, Any]) -> Non
         return received
 
     wait_for("the hive_state note on both agents", hive_state_on_both, HIVE_PUSH_TIMEOUT, 3)
+
+    def writer_line_on_reader() -> list[dict[str, Any]] | None:
+        status, body = agent_call(
+            pod_name_of(reader), "GET", f"/agent/v1/activity?agent={pod_name_of(writer)}"
+        )
+        assert status == 200, body
+        lines = [
+            ln
+            for ln in body["lines"]
+            if ln["agent"] == pod_name_of(writer) and NOTE_FILE in ln["text"]
+        ]
+        return lines or None
+
+    pulled = wait_for("the writer's file write in the reader's activity", writer_line_on_reader, 60)
+    assert all(ln["text"].startswith(f"{pod_name_of(writer)} wrote ") for ln in pulled), pulled
+
     time.sleep(HIVE_QUIET_WINDOW)
-    feed = [
-        e
-        for e in notes()
-        if e["agent_id"] == reader["id"]
-        and e["data"].get("key") is None
-        and NOTE_FILE in e["data"].get("text", "")
-    ]
-    assert feed == [], feed
+    unkeyed = [e for e in notes() if e["data"].get("key") is None]
+    assert unkeyed == [], unkeyed
 
 
 def test_alone_session_has_no_hive_tools(api: httpx.Client, session: dict[str, Any]) -> None:
