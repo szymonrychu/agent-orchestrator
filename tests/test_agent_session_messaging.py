@@ -16,6 +16,7 @@ from test_api_agent import AGENT_PORT, client_for, headers, make_settings, set_i
 from test_api_sessions import assert_error
 
 from agents_orchestrator.api.app import create_app
+from agents_orchestrator.db import queue
 
 _ips = itertools.count(1)
 
@@ -456,3 +457,31 @@ async def test_session_send_slash_keeps_refusals(pool, dsn):
     assert_error(await _send(app, boss, other.slug, "/compact"), 429, "rate_limited")
     assert len(await _rows(pool)) == 2
     assert {r["kind"] for r in await _rows(pool)} == {"command"}
+
+
+async def test_promoted_command_turn_keeps_hop_count(pool, dsn):
+    boss = await hive(pool, "p-boss", superleader=True)
+    target = await alone(pool, "p-target")
+    sent = await _send(_app(pool, dsn, session_message_max_hops=3), boss, target.slug, "/x")
+    assert sent.status_code == 202, sent.text
+    message_id = sent.json()["message_id"]
+    # the dispatcher sent it to the target's leader, which promoted it to the turn "turn-p"
+    await _exec(
+        pool,
+        "UPDATE messages SET status = 'sent', agent_id = %s, wrapper_command_id = 'cmd_p'"
+        " WHERE id = %s",
+        (target.leader_id, message_id),
+    )
+    async with pool.connection() as conn:
+        assert await queue.link_command_turn(conn, "cmd_p", "turn-p")
+    await set_agent_status(pool, target.leader_id, state="busy", current_turn_id="turn-p")
+
+    reply = await _send(_app(pool, dsn, session_message_max_hops=3), target, boss.slug)
+    assert reply.status_code == 202, reply.text
+    (row,) = await _rows(pool, "id = %s", (reply.json()["message_id"],))
+    assert row["hop"] == 2
+
+    before = len(await _rows(pool))
+    strict = _app(pool, dsn, session_message_max_hops=1)
+    assert_error(await _send(strict, target, boss.slug), 409, "hop_limit")
+    assert len(await _rows(pool)) == before

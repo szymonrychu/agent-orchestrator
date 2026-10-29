@@ -557,13 +557,37 @@ async def mark_sent(conn: psycopg.AsyncConnection, id: int, turn_id: str) -> boo
 async def mark_sent_command(
     conn: psycopg.AsyncConnection, id: int, wrapper_command_id: str
 ) -> bool:
-    """202 on a command message: the wrapper queued it as `wrapper_command_id` (D10)."""
+    """202 on a command message: the wrapper queued it as `wrapper_command_id` (D10).
+
+    When the ingester already stored this command's `command_completed` with `result = 'turn'`
+    (the event beat this 202), the same guarded update links the promoted turn (D10 hop guard).
+    """
     row = await _transition(
         conn,
-        "UPDATE messages SET status = 'sent', wrapper_command_id = %(cmd)s, error = NULL"
+        "UPDATE messages SET status = 'sent', wrapper_command_id = %(cmd)s, error = NULL,"
+        " turn_id = (SELECT NULLIF(e.data -> 'record' ->> 'turn_id', '') FROM events e"
+        " WHERE e.agent_id = messages.agent_id AND e.type = 'command_completed'"
+        " AND e.data -> 'record' ->> 'id' = %(cmd)s AND e.data -> 'record' ->> 'result' = 'turn'"
+        " ORDER BY e.id LIMIT 1)"
         " WHERE id = %(id)s AND status = 'dispatching' AND kind = 'command'"
         " RETURNING session_id",
         {"id": id, "cmd": wrapper_command_id},
+    )
+    return row is not None
+
+
+async def link_command_turn(
+    conn: psycopg.AsyncConnection, wrapper_command_id: str, turn_id: str
+) -> bool:
+    """The one writer of "sent command, no turn -> linked turn" (D10 hop guard): a command that
+    the wrapper promoted to a turn keeps that turn id on its message, so `turn_hop` finds it and
+    a send from the promoted turn counts the command's hop plus one. Never overwrites."""
+    row = await _transition(
+        conn,
+        "UPDATE messages SET turn_id = %(turn_id)s"
+        " WHERE kind = 'command' AND status = 'sent' AND wrapper_command_id = %(cmd)s"
+        " AND turn_id IS NULL RETURNING session_id",
+        {"turn_id": turn_id, "cmd": wrapper_command_id},
     )
     return row is not None
 

@@ -1085,3 +1085,85 @@ async def test_peers_view_recorded(harness, pool) -> None:
     assert status.peer_count({"enabled": False}) == 0
     assert status.peer_count({"enabled": False, "members": members}) == 0
     assert status.peer_count({"enabled": True, "members": members}) == 2
+
+
+async def _command_message(
+    pool, h: Harness, command_id: str, *, status: str = "sent"
+) -> dict[str, Any]:
+    """A command message of the agent's session in `status`, carrying `command_id` once sent."""
+    row = await insert_message(pool, h.session_id, status=status, agent_id=h.agent_id)
+    sent = status == "sent"
+    return (
+        await fetch(
+            pool,
+            "UPDATE messages SET kind = 'command', wrapper_command_id = %s WHERE id = %s"
+            " RETURNING *",
+            (command_id if sent else None, row["id"]),
+        )
+    )[0]
+
+
+def _command_record(command_id: str, result: str, turn_id: str | None) -> dict[str, Any]:
+    return {
+        "record": {
+            "id": command_id,
+            "name": "x",
+            "args": "",
+            "origin": "client",
+            "turn_id": turn_id,
+            "state": "completed",
+            "result": result,
+        }
+    }
+
+
+async def _message_turn(pool, message_id: int) -> str | None:
+    return (await fetch(pool, "SELECT turn_id FROM messages WHERE id=%s", (message_id,)))[0][
+        "turn_id"
+    ]
+
+
+async def test_command_completed_turn_links_message(harness, pool) -> None:
+    h = await harness()
+    await h.start()
+    await h.stored_through(h.last_fake_seq())
+    promoted = await _command_message(pool, h, "cmd_turn")
+    plain = await _command_message(pool, h, "cmd_ok")
+    other = await _command_message(pool, h, "cmd_other")
+
+    h.fake.emit("command_completed", _command_record("cmd_ok", "ok", "turn-ignored"))
+    h.fake.emit("command_completed", _command_record("cmd_turn", "turn", "turn-promoted"))
+    await h.stored_through(h.last_fake_seq())
+    assert await _message_turn(pool, promoted["id"]) == "turn-promoted"
+    assert await _message_turn(pool, plain["id"]) is None
+    assert await _message_turn(pool, other["id"]) is None
+
+    # a second event for the same command never overwrites the linked turn
+    h.fake.emit("command_completed", _command_record("cmd_turn", "turn", "turn-again"))
+    await h.stored_through(h.last_fake_seq())
+    assert await _message_turn(pool, promoted["id"]) == "turn-promoted"
+
+    # a turn result without a turn id links nothing
+    h.fake.emit("command_completed", _command_record("cmd_other", "turn", None))
+    await h.stored_through(h.last_fake_seq())
+    assert await _message_turn(pool, other["id"]) is None
+
+
+async def test_command_turn_linked_when_event_precedes_sent(harness, pool) -> None:
+    h = await harness()
+    await h.start()
+    await h.stored_through(h.last_fake_seq())
+    promoted = await _command_message(pool, h, "cmd_early", status="dispatching")
+    plain = await _command_message(pool, h, "cmd_early_ok", status="dispatching")
+
+    # the events are stored while both messages are still dispatching: nothing to link yet
+    h.fake.emit("command_completed", _command_record("cmd_early", "turn", "turn-early"))
+    h.fake.emit("command_completed", _command_record("cmd_early_ok", "ok", "turn-ignored"))
+    await h.stored_through(h.last_fake_seq())
+    assert await _message_turn(pool, promoted["id"]) is None
+
+    async with pool.connection() as conn:
+        assert await queue.mark_sent_command(conn, promoted["id"], "cmd_early")
+        assert await queue.mark_sent_command(conn, plain["id"], "cmd_early_ok")
+    rows = await fetch(pool, "SELECT id, status, turn_id FROM messages ORDER BY id")
+    assert [(r["status"], r["turn_id"]) for r in rows] == [("sent", "turn-early"), ("sent", None)]
