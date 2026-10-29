@@ -1069,7 +1069,7 @@ Response 200 `{"sessions": [{"slug", "preset_name", "superleader", "leader_prese
 
 #### `POST /agent/v1/sessions/{slug}/messages`
 
-Queues a message to the session named `slug`. Body `{"text"}`, 1 to 16000 characters, no other field (the hop is never taken from the request). Response 202 `{"message_id"}`; the row carries `sender_session_id`, `sender_slug` and `hop`. Errors, checked in this order, and a refusal queues nothing:
+Queues a message to the session named `slug`. Body `{"text"}`, 1 to 16000 characters, no other field (the hop is never taken from the request). Response 202 `{"message_id"}`; the row carries `sender_session_id`, `sender_slug`, `hop` and `kind`. Slash text from a superleader (after leading whitespace the text starts with `/` and the name is a command name) is stored `kind = command`: the target's leader runs it as a command, unframed. Slash text from any other session (a leader of a session without `session_messaging` sending to a superleader) is stored `kind = turn` and delivered as a framed session message, so a plain session cannot run commands on a superleader. The kind is decided after every refusal below. Errors, checked in this order, and a refusal queues nothing:
 
 - 403 `not_leader`: the caller is not its session's current leader (the only agent of an alone session counts as leader);
 - 404 `not_found`: no session has that slug;

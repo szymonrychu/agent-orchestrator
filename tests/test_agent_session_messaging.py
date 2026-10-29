@@ -402,3 +402,57 @@ async def test_session_tools_parity(pool, dsn):
     assert row["text"] == "from the plugin"
     assert row["sender_session_id"] == plain.id
     assert row["status"] == "queued"
+
+
+async def test_session_send_slash_is_command_kind(pool, dsn):
+    app = _app(pool, dsn)
+    boss = await hive(pool, "c-boss", superleader=True)
+    plain = await alone(pool, "c-plain")
+    r = await _send(app, boss, plain.slug, "/compact")
+    assert r.status_code == 202, r.text
+    (row,) = await _rows(pool, "id = %s", (r.json()["message_id"],))
+    assert row["kind"] == "command"
+    assert row["text"] == "/compact"
+    assert row["session_id"] == plain.id
+    assert row["sender_session_id"] == boss.id
+    assert row["sender_slug"] == boss.slug
+    assert row["hop"] == 1
+    # plain prose and a path-like text from a superleader stay turns
+    for text in ("compact", "/etc/hosts"):
+        r = await _send(app, boss, plain.slug, text)
+        assert r.status_code == 202, r.text
+        (row,) = await _rows(pool, "id = %s", (r.json()["message_id"],))
+        assert row["kind"] == "turn"
+
+
+async def test_session_send_slash_from_non_superleader_stays_turn(pool, dsn):
+    app = _app(pool, dsn)
+    boss = await alone(pool, "n-boss", superleader=True)
+    worker = await hive(pool, "n-worker")
+    lone = await alone(pool, "n-lone")
+    for caller in (worker, lone):
+        r = await _send(app, caller, boss.slug, "/compact")
+        assert r.status_code == 202, r.text
+        (row,) = await _rows(pool, "id = %s", (r.json()["message_id"],))
+        assert row["kind"] == "turn"
+        assert row["text"] == "/compact"
+        assert row["sender_session_id"] == caller.id
+        assert row["session_id"] == boss.id
+
+
+async def test_session_send_slash_keeps_refusals(pool, dsn):
+    app = _app(pool, dsn, session_message_rate_per_minute=2)
+    boss = await hive(pool, "k-boss", superleader=True)
+    plain = await hive(pool, "k-plain")
+    other = await alone(pool, "k-other")
+    # not_leader comes before not_found and the kind decision
+    assert_error(
+        await _send(app, boss, other.slug, "/compact", ip=boss.member_ip), 403, "not_leader"
+    )
+    assert_error(await _send(app, plain, other.slug, "/compact"), 403, "target_not_superleader")
+    assert await _rows(pool) == []
+    for _ in range(2):
+        assert (await _send(app, boss, other.slug, "/compact")).status_code == 202
+    assert_error(await _send(app, boss, other.slug, "/compact"), 429, "rate_limited")
+    assert len(await _rows(pool)) == 2
+    assert {r["kind"] for r in await _rows(pool)} == {"command"}
