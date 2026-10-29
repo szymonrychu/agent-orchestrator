@@ -15,6 +15,7 @@ import logging
 import re
 from collections.abc import Mapping
 
+from starlette.requests import Request
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from agents_orchestrator.api.allowlist import EXEMPT_PATHS, _port
@@ -43,6 +44,15 @@ ALLOWED_ROUTES: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
 )
 
 HEALTH_METHODS = frozenset({"GET", "HEAD"})
+
+# Request-state key under which the gate hands the authenticated service name to the routes.
+STATE_KEY = "service"
+
+
+def calling_service(request: Request) -> str | None:
+    """The service name the gate authenticated for this request; None for any request that did not
+    come through the service port (a user on the main port)."""
+    return getattr(request.state, STATE_KEY, None)
 
 
 def route_allowed(method: str, path: str) -> bool:
@@ -105,6 +115,8 @@ class ServiceGate:
             response = error_response(403, "forbidden", "route is not served on the service port")
             await response(scope, receive, send)
             return
+
+        scope.setdefault("state", {})[STATE_KEY] = service
 
         async def logged_send(message: Message) -> None:
             if message["type"] == "http.response.start":

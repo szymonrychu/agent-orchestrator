@@ -18,6 +18,10 @@ from agents_orchestrator.spec import SessionSpec, validate_slug
 
 CHANNEL = "session_changed"
 
+# Service tokens (ORCH_SERVICE_TOKENS names) of the trigger services: their sessions work on
+# attacker-controlled text (PR, issue and alert bodies), so they never get the chat tools.
+TRIGGER_SERVICES = frozenset({"agents-webhook", "agents-schedule"})
+
 
 class SessionExists(Exception):
     """A session with this slug already has a row."""
@@ -61,6 +65,13 @@ class Session:
     created_at: datetime
     preset_id: uuid.UUID | None = None
     preset_name: str | None = None
+    created_by_service: str | None = None
+
+    @property
+    def trigger_created(self) -> bool:
+        """True when a trigger service created the session; NULL (a user, or a session from before
+        the column existed) is not a trigger service."""
+        return self.created_by_service in TRIGGER_SERVICES
 
 
 def _from_row(row: dict[str, Any]) -> Session:
@@ -75,6 +86,7 @@ def _from_row(row: dict[str, Any]) -> Session:
         created_at=row["created_at"],
         preset_id=row["preset_id"],
         preset_name=row["preset_name"],
+        created_by_service=row["created_by_service"],
     )
 
 
@@ -98,15 +110,16 @@ async def create(
     spec: SessionSpec,
     preset_id: uuid.UUID | None = None,
     preset_name: str | None = None,
+    created_by_service: str | None = None,
 ) -> Session:
     validate_slug(slug)
     try:
         async with conn.transaction():
             rows = await _fetch(
                 conn,
-                "INSERT INTO sessions (id, slug, spec, preset_id, preset_name)"
-                " VALUES (%s, %s, %s, %s, %s) RETURNING *",
-                (uuid.uuid4(), slug, _dump(spec), preset_id, preset_name),
+                "INSERT INTO sessions (id, slug, spec, preset_id, preset_name, created_by_service)"
+                " VALUES (%s, %s, %s, %s, %s, %s) RETURNING *",
+                (uuid.uuid4(), slug, _dump(spec), preset_id, preset_name, created_by_service),
             )
             await _notify(conn, rows[0].id)
     except psycopg.errors.UniqueViolation:

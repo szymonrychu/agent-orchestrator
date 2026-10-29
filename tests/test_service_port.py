@@ -187,6 +187,55 @@ async def test_route_allowlist(app, pool):
     assert sent == [{"type": "websocket.close", "code": 1008}]
 
 
+async def test_gate_records_the_authenticated_service_name_per_request():
+    """The gate hands the authenticated service name to the app through the request state; a
+    request on another port, or one presenting a forged header, carries none."""
+    from starlette.applications import Starlette
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+
+    async def who(request):
+        return JSONResponse({"service": getattr(request.state, "service", None)})
+
+    inner = Starlette(routes=[Route("/api/v1/meta", who)])
+    hashes = {"agents-webhook": sha(TOKEN), "agents-schedule": sha(OTHER_TOKEN)}
+    gated = service_auth.ServiceGate(inner, 8002, hashes)
+    for token, name in ((TOKEN, "agents-webhook"), (OTHER_TOKEN, "agents-schedule")):
+        async with client(gated, 8002, token=token) as c:
+            r = await c.get("/api/v1/meta", headers={"X-Orch-Service": "agents-matrix-connector"})
+            assert r.json() == {"service": name}
+    async with client(gated, 8000, token=None) as c:
+        assert (await c.get("/api/v1/meta")).json() == {"service": None}
+
+
+async def test_session_created_on_the_service_port_records_its_service(app, pool):
+    """A session a service creates stores that service's name; one created on the main port
+    stores none."""
+    async with client(app, 8002) as c:
+        r = await c.post("/api/v1/sessions", json={"preset_id": DEFAULT_ID, "slug": "wh-1"})
+        assert r.status_code == 201, r.text
+        assert "created_by_service" not in r.json()
+    async with client(app, 8002, token=OTHER_TOKEN) as c:
+        r = await c.post("/api/v1/sessions", json={"preset_id": DEFAULT_ID, "slug": "sch-1"})
+        assert r.status_code == 201, r.text
+    async with client(app, 8000, peer=INSIDE, token=None) as c:
+        r = await c.post("/api/v1/sessions", json={"preset_id": DEFAULT_ID, "slug": "user-1"})
+        assert r.status_code == 201, r.text
+    async with pool.connection() as conn:
+        cur = await conn.execute("SELECT slug, created_by_service FROM sessions ORDER BY slug")
+        rows = await cur.fetchall()
+    assert rows == [("sch-1", "agents-schedule"), ("user-1", None), ("wh-1", "agents-webhook")]
+
+
+async def test_spec_session_created_on_the_service_port_records_its_service(app, pool):
+    async with client(app, 8002) as c:
+        r = await c.post("/api/v1/sessions", json={"spec": {"replicas": 1}, "slug": "wh-spec"})
+        assert r.status_code == 201, r.text
+    async with pool.connection() as conn:
+        cur = await conn.execute("SELECT created_by_service FROM sessions WHERE slug='wh-spec'")
+        assert (await cur.fetchone())[0] == "agents-webhook"
+
+
 async def test_main_port_unchanged(app):
     async with client(app, 8000) as c:
         assert_error(await c.get("/api/v1/meta"), 403, "forbidden")

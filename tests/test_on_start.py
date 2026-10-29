@@ -6,16 +6,21 @@ import json
 import re
 import stat
 import subprocess
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 from any_mcp.config import AnyMcpConfig
 from any_mcp_tatara_orchestrator import OrchestratorPlugin
 
+from agents_orchestrator.db.sessions import Session
 from agents_orchestrator.k8s import on_start
 from agents_orchestrator.k8s.on_start import render_on_start
+from agents_orchestrator.k8s.render import render_session
 from agents_orchestrator.settings import Settings
 from agents_orchestrator.spec import SessionSpec
+from agents_orchestrator.tokens import SessionTokens
 
 HIVE_TOOLS = [
     "me",
@@ -94,6 +99,54 @@ def test_hive_session_tools(messaging, spec_fields, hive_allow):
     assert allow == [*hive_allow, *TAIL_TOOLS]
     assert allow[-len(CHAT_TOOLS) :] == CHAT_TOOLS
     assert entries(spec)["orchestrator"]["allow"] == allow
+
+
+def rendered_allow(created_by_service: str | None, **spec_fields) -> list[str]:
+    """The orchestrator allow list a session created by `created_by_service` gets in its onStart
+    script, rendered through the real session renderer."""
+    session = Session(
+        id=uuid.UUID("11111111-1111-1111-1111-111111111111"),
+        slug="alpha",
+        spec=SessionSpec.model_validate(spec_fields),
+        generation=1,
+        observed_generation=0,
+        desired="active",
+        status={},
+        created_at=datetime(2026, 10, 28, tzinfo=UTC),
+        created_by_service=created_by_service,
+    )
+    tokens = SessionTokens(auth="a" * 32, peer="p" * 32, agent="g" * 32)
+    objs = render_session(session, make_settings(), tokens)
+    script = next(o for o in objs if o["kind"] == "ConfigMap")["data"]["on-start.sh"]
+    plugins = written_config(script)["plugins"]
+    return next(p for p in plugins if p["name"] == "orchestrator")["allow"]
+
+
+def test_trigger_service_sessions_get_no_chat_tools():
+    """Security: a session started by agents-webhook or agents-schedule reads attacker-controlled
+    text, so its onStart config carries the other tools and none of the chat tools."""
+    for service in ("agents-webhook", "agents-schedule"):
+        assert rendered_allow(service, replicas=1) == [
+            *SESSION_TOOLS,
+            *INIT_SCRIPTS_TOOLS,
+        ], service
+        assert rendered_allow(service, replicas=2, max_replicas=4) == [
+            *HIVE_TOOLS,
+            "scale",
+            *SESSION_TOOLS,
+            *INIT_SCRIPTS_TOOLS,
+        ], service
+    assert on_start.orchestrator_allow(SessionSpec(replicas=1), chat=False) == [
+        *SESSION_TOOLS,
+        *INIT_SCRIPTS_TOOLS,
+    ]
+
+
+def test_other_creators_keep_the_chat_tools():
+    """User sessions (no creator) and the matrix connector's sessions keep every chat tool."""
+    for service in (None, "agents-matrix-connector"):
+        assert rendered_allow(service, replicas=1) == TAIL_TOOLS, service
+        assert rendered_allow(service, replicas=2) == [*HIVE_TOOLS, "scale", *TAIL_TOOLS], service
 
 
 def test_static_hive_has_no_scale_tool():
