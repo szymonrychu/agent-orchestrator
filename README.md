@@ -13,7 +13,7 @@ Tasks run through mise:
 - `mise run test:integration` - tests that need a real wrapper image. When `ORCH_TEST_WRAPPER_IMAGE` is unset the task builds `e2e/agent-test.Dockerfile` as `agents-orchestrator-agent-test:e2e` (the tag `scripts/e2e.sh` uses), exports it, and runs the suite; set the variable to use another image
 - `mise run test:e2e` - kind end-to-end tests
 
-CI runs both on every pull request and push: the `e2e` job runs `mise run test:e2e`, then `mise run test:integration` with `ORCH_TEST_WRAPPER_IMAGE=agents-orchestrator-agent-test:e2e`, the test agent image `scripts/e2e.sh` built on the pinned claude-code-wrapper base. The real-wrapper leg of `tests/test_fake_wrapper_contract.py` therefore runs against that wrapper on every change, and the publish gate (`images`, `chart-publish`, `chart-publish-tag` need `e2e`) covers it.
+CI runs both on every pull request and push: the `e2e` job runs `mise run test:e2e`, then `mise run test:integration` with `ORCH_TEST_WRAPPER_IMAGE=agents-orchestrator-agent-test:e2e`, the test agent image `scripts/e2e.sh` built on the pinned claude-code-wrapper base. The real-wrapper leg of `tests/test_fake_wrapper_contract.py` therefore runs against that wrapper on every change, and the publish gate (`images`, `chart-publish` and `release` need `e2e`) covers it.
 
 ## Configuration
 
