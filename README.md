@@ -13,7 +13,7 @@ Tasks run through mise:
 - `mise run test:integration` - tests that need a real wrapper image. When `ORCH_TEST_WRAPPER_IMAGE` is unset the task builds `e2e/agent-test.Dockerfile` as `agents-orchestrator-agent-test:e2e` (the tag `scripts/e2e.sh` uses), exports it, and runs the suite; set the variable to use another image
 - `mise run test:e2e` - kind end-to-end tests
 
-CI runs both on every pull request and push: the `e2e` job runs `mise run test:e2e`, then `mise run test:integration` with `ORCH_TEST_WRAPPER_IMAGE=agents-orchestrator-agent-test:e2e`, the test agent image `scripts/e2e.sh` built on the pinned claude-code-wrapper base. The real-wrapper leg of `tests/test_fake_wrapper_contract.py` therefore runs against that wrapper on every change, and the publish gate (`images`, `chart-publish`, `chart-publish-tag` need `e2e`) covers it.
+CI runs both on every pull request and push: the `e2e` job runs `mise run test:e2e`, then `mise run test:integration` with `ORCH_TEST_WRAPPER_IMAGE=agents-orchestrator-agent-test:e2e`, the test agent image `scripts/e2e.sh` built on the pinned claude-code-wrapper base. The real-wrapper leg of `tests/test_fake_wrapper_contract.py` therefore runs against that wrapper on every change, and the publish gate (`images`, `chart-publish` and `release` need `e2e`) covers it.
 
 ## Configuration
 
@@ -285,14 +285,20 @@ Command hooks run `sh -c` in the agent pod with the wrapper's full environment, 
 
 ## Releasing
 
+Every green push to `main` ends with the `release` job, which needs every other job of the run, so only a fully green build is released:
+
+- `scripts/next_version.py` computes the version from the conventional commits since the last `vX.Y.Z` git tag (every commit, branch commits behind merge commits included): a `type!:` subject or a `BREAKING CHANGE:` footer bumps major (also on 0.x), `feat` bumps minor, anything else bumps patch. With no `vX.Y.Z` tag yet the first release is `0.1.0`.
+- The job copies the run's image `harbor.szymonrichert.pl/containers/agents-orchestrator:<sha7>` to the tags `X.Y.Z`, `X.Y` and `X` with `regctl image copy` (manifest only, no layer upload), then pushes git tag `vX.Y.Z` with the job token.
+- When `HEAD` is already in a `vX.Y.Z` tag (a re-run, or a newer commit already released) the job skips everything after the version step. Release jobs run one at a time (concurrency group `release`); retry a failed one with "Re-run failed jobs".
+- agents-helmfile must pin `X.Y.Z`, never `<sha7>`: Harbor retention prunes `<sha7>` tags within hours, semver tags survive it.
+
 The chart is published to `oci://harbor.szymonrichert.pl/charts/agents-orchestrator` with immutable versions; Harbor rejects a repeated version and CI fails first with a clear message. `scripts/chart-version.sh` picks the version from `version` in `chart/agents-orchestrator/Chart.yaml`:
 
-- Every push to `main` (after the `chart`, `images`, `lint`, `test` and `e2e` jobs pass) publishes `<version>-main.<sha7>`, with `appVersion` set to `<sha7>`. agents-helmfile can pin that exact version.
-- A tag `vX.Y.Z` (after the `chart`, `lint`, `test` and `e2e` jobs pass on the tag) publishes `X.Y.Z`. The tag must equal Chart.yaml's `version`, otherwise the job fails. The tagged commit must already have been built by main CI: the job checks that `harbor.szymonrichert.pl/containers/agents-orchestrator:<sha7>` exists before packaging.
-- To release: bump `version` in Chart.yaml, merge to `main`, wait for CI, then `git tag vX.Y.Z` on that commit and push the tag.
+- Every push to `main` (after the `chart`, `images`, `lint`, `test` and `e2e` jobs pass) publishes `<version>-main.<sha7>`, with `appVersion` set to `<sha7>`. agents-helmfile can pin that exact version. Any other ref publishes nothing.
 - Gate: nothing reaches Harbor, neither the image nor a chart, until `lint`, `test` and `e2e` have passed on that commit, so a red build is never pushed or published; the chart and image publish only from jobs that need all three.
 - Publishing a version that already exists fails with `chart version <v> already published; bump chart/agents-orchestrator/Chart.yaml version`.
 - The Harbor robot (`HARBOR_USERNAME`, `HARBOR_PASSWORD`) needs push on both the `containers` and `charts` projects.
+
 ## Kubernetes permissions
 
 Only the reconciler talks to Kubernetes. Everything it touches lives in one namespace: the release namespace, `ORCH_NAMESPACE` (default `agents`), which it shares with the orchestrator's own Deployments, Service, settings ConfigMap, Secrets and, with the CNPG feature, the database. It needs a namespaced Role there (D9), rendered by the chart as `templates/role.yaml`:
