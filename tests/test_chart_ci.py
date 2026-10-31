@@ -32,7 +32,6 @@ def test_chart_job_on_every_push():
     on = ci.get("on", ci.get(True))
     assert "pull_request" in on
     assert "main" in on["push"]["branches"]
-    assert "v*" in on["push"]["tags"]
     job = ci["jobs"]["chart"]
     assert "if" not in job
     runs = _runs(job)
@@ -64,58 +63,58 @@ def test_e2e_does_not_need_pushed_image():
     assert 'docker build -t "$ORCH_IMAGE" .' in script
 
 
-def test_publish_only_main_and_tags_after_images():
-    jobs = _ci()["jobs"]
-    main = jobs["chart-publish"]
-    tag = jobs["chart-publish-tag"]
+def test_publish_only_main_after_images():
+    main = _ci()["jobs"]["chart-publish"]
     assert set(main["needs"]) == {"chart", "images"} | GATE
     assert main["if"] == "github.event_name == 'push' && github.ref == 'refs/heads/main'"
-    assert set(tag["needs"]) == {"chart"} | GATE
-    assert tag["if"] == "startsWith(github.ref, 'refs/tags/v')"
-    for job in (main, tag):
-        runs = _runs(job)
-        assert "scripts/chart-version.sh" in runs
-        assert job["env"]["CHART_REPO"] == "oci://harbor.szymonrichert.pl/charts"
-        assert 'helm push "agents-orchestrator-$VERSION.tgz" "$CHART_REPO"' in runs
-    assert "regctl image digest" in _runs(tag)
-    assert "harbor.szymonrichert.pl/containers/agents-orchestrator:$SHA7" in _runs(tag)
-    assert "regctl image digest" not in _runs(main)
+    runs = _runs(main)
+    assert 'scripts/chart-version.sh branch "$GITHUB_REF_NAME" "$GITHUB_SHA"' in runs
+    assert main["env"]["CHART_REPO"] == "oci://harbor.szymonrichert.pl/charts"
+    assert 'helm push "agents-orchestrator-$VERSION.tgz" "$CHART_REPO"' in runs
+    assert "regctl image digest" not in runs
+
+
+def test_no_tag_trigger_or_tag_publish_job():
+    ci = _ci()
+    on = ci.get("on", ci.get(True))
+    assert "tags" not in on["push"]
+    assert "chart-publish-tag" not in ci["jobs"]
+    text = (ROOT / ".github/workflows/ci.yaml").read_text()
+    assert "startsWith(github.ref, 'refs/tags" not in text
+    tag = _run("tag", f"v{_chart_version()}", SHA)
+    assert tag.returncode == 2 and tag.stdout == ""
 
 
 def test_chart_version_scheme():
     v = _chart_version()
     main = _run("branch", "main", SHA)
     assert main.returncode == 0 and main.stdout.strip() == f"{v}-main.{SHA[:7]}"
-    tag = _run("tag", f"v{v}", SHA)
-    assert tag.returncode == 0 and tag.stdout.strip() == v
-    bad = _run("tag", "v9.9.9", SHA)
-    assert bad.returncode == 1
-    assert "9.9.9" in bad.stderr and v in bad.stderr
+    for ref in (f"v{v}", "v9.9.9"):
+        tag = _run("tag", ref, SHA)
+        assert tag.returncode == 2 and tag.stdout == "", ref
     assert _run("branch", "feature", SHA).returncode == 2
     assert _run("pull_request", "1/merge", SHA).returncode == 2
     assert _run("tag", "nov1.0.0", SHA).returncode == 2
 
 
 def test_publish_refuses_existing_version():
-    for name in ("chart-publish", "chart-publish-tag"):
-        steps = _ci()["jobs"][name]["steps"]
-        runs = [s.get("run", "") for s in steps]
-        check = next(i for i, r in enumerate(runs) if "helm show chart" in r)
-        push = next(i for i, r in enumerate(runs) if "helm push" in r)
-        assert check < push
-        assert '"$CHART_REPO/agents-orchestrator"' in runs[check]
-        assert "--version" in runs[check]
-        assert "already published; bump chart/agents-orchestrator/Chart.yaml version" in runs[check]
-        assert "exit 1" in runs[check]
+    steps = _ci()["jobs"]["chart-publish"]["steps"]
+    runs = [s.get("run", "") for s in steps]
+    check = next(i for i, r in enumerate(runs) if "helm show chart" in r)
+    push = next(i for i, r in enumerate(runs) if "helm push" in r)
+    assert check < push
+    assert '"$CHART_REPO/agents-orchestrator"' in runs[check]
+    assert "--version" in runs[check]
+    assert "already published; bump chart/agents-orchestrator/Chart.yaml version" in runs[check]
+    assert "exit 1" in runs[check]
 
 
 def test_package_sets_app_version_sha7():
-    for name in ("chart-publish", "chart-publish-tag"):
-        runs = _runs(_ci()["jobs"][name])
-        cmd = 'helm package chart/agents-orchestrator --version "$VERSION" --app-version "$SHA7"'
-        assert cmd in runs
-        assert "HARBOR_USERNAME" in str(_ci()["jobs"][name])
-        assert "HARBOR_PASSWORD" in str(_ci()["jobs"][name])
+    job = _ci()["jobs"]["chart-publish"]
+    cmd = 'helm package chart/agents-orchestrator --version "$VERSION" --app-version "$SHA7"'
+    assert cmd in _runs(job)
+    assert "HARBOR_USERNAME" in str(job)
+    assert "HARBOR_PASSWORD" in str(job)
 
 
 def test_readme_documents_releasing():
@@ -126,6 +125,18 @@ def test_readme_documents_releasing():
     assert "Chart.yaml" in section
     assert "`lint`, `test` and `e2e`" in section
     assert "never pushed" in section
+    for phrase in (
+        "conventional commits",
+        "`vX.Y.Z`",
+        "`0.1.0`",
+        "`X.Y.Z`, `X.Y` and `X`",
+        "`release` job",
+        "pin `X.Y.Z`",
+    ):
+        assert phrase in section, phrase
+    assert "A tag `vX.Y.Z`" not in section
+    assert "git tag vX.Y.Z" not in section
+    assert "publishes `X.Y.Z`" not in section
 
 
 def test_e2e_job_runs_wrapper_contract_against_its_agent_image():
@@ -143,8 +154,7 @@ def test_e2e_job_runs_wrapper_contract_against_its_agent_image():
     )
     assert step["env"]["ORCH_TEST_WRAPPER_IMAGE"] == image
     assert {"lint", "test", "e2e"} <= set(_ci()["jobs"]["images"]["needs"])
-    for name in ("chart-publish", "chart-publish-tag"):
-        assert "e2e" in _ci()["jobs"][name]["needs"]
+    assert "e2e" in _ci()["jobs"]["chart-publish"]["needs"]
 
 
 def test_readme_documents_integration_in_ci():
